@@ -17,6 +17,6 @@ ig_service = IGService(
 
 ig_service.create_session()
 
-result = ig_service.search_markets("bitcoin")
+result = ig_service.search_markets("bitcoin (0.1$)")
 
 print(result)
