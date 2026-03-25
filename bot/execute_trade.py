@@ -5,15 +5,31 @@ import time
 
 from risk_manager import calculate_position_size
 
+# -------------------------
 # Load credentials
+# -------------------------
 load_dotenv()
 username = os.getenv("IG_USERNAME")
 password = os.getenv("IG_PASSWORD")
 api_key = os.getenv("IG_API_KEY")
 
+# -------------------------
 # Initialize IG
+# -------------------------
 ig_service = IGService(username, password, api_key, acc_type="DEMO")
-ig_service.create_session()  # create session once at start
+
+# -------------------------
+# Session Manager
+# -------------------------
+def ensure_session():
+    try:
+        ig_service.fetch_accounts()
+    except Exception:
+        print("Session invalid, recreating...")
+        ig_service.create_session()
+
+# Create session at startup
+ensure_session()
 
 # -------------------------
 # Asset configuration
@@ -34,6 +50,8 @@ last_trade_time = 0
 # -------------------------
 def parse_float(value):
     try:
+        if value == "null":
+            return None
         return float(value)
     except:
         return None
@@ -104,7 +122,7 @@ def place_trade_from_alert(data):
             print("Missing trend — skipping trade")
             return False
 
-        # Trend filter example
+        # Trend filter
         if action == "buy" and trend == 3:
             print("Blocked BUY — Downtrend detected")
             return False
@@ -126,6 +144,7 @@ def place_trade_from_alert(data):
         print("Error in place_trade_from_alert:", e)
         return False
 
+
 # -------------------------
 # Trade execution
 # -------------------------
@@ -140,6 +159,9 @@ def place_trade(symbol, action, sl=None, tp=None):
     direction = "BUY" if action.lower() == "buy" else "SELL"
 
     try:
+        # Ensure session is valid
+        ensure_session()
+
         # Fetch market price
         market = ig_service.fetch_market_by_epic(epic)
         bid = market["snapshot"]["bid"]
@@ -147,18 +169,16 @@ def place_trade(symbol, action, sl=None, tp=None):
         entry_price = offer if direction == "BUY" else bid
         print(f"Entry Price: {entry_price}")
 
-        # Calculate lot size dynamically
+        # Calculate position size
         size = calculate_position_size(entry_price, sl, value_per_point)
         if size is None:
             print("Position sizing failed — aborting")
             return False
 
         expected_risk = size * abs(entry_price - sl) * value_per_point
-        print(f"[TEST] Expected risk: ${expected_risk:.2f} (should be ~200 USD)")
+        print(f"[TEST] Expected risk: ${expected_risk:.2f}")
 
-        # -------------------------
-        # Place trade (comment out if testing only)
-        # -------------------------
+        # Place trade
         response = ig_service.create_open_position(
             currency_code="USD",
             direction=direction,
@@ -180,16 +200,55 @@ def place_trade(symbol, action, sl=None, tp=None):
 
         print("IG Response:", response)
 
-        if not response or response.get("dealStatus") == "REJECTED":
-            print("Trade rejected or failed")
+        if not response:
+            print("Empty response from IG")
             return False
+
+        if response.get("dealStatus") == "REJECTED":
+            print("Trade rejected:", response.get("reason"))
+            return False
+
         if response.get("status") == "OPEN":
             print("Trade SUCCESSFULLY placed")
             return response
 
-        print("Unknown response state — check manually")
         return response
 
     except Exception as e:
         print("Trade failed:", e)
+
+        # Retry once if session issue
+        if "session" in str(e).lower():
+            print("Retrying after session refresh...")
+            try:
+                ig_service.create_session()
+
+                response = ig_service.create_open_position(
+                    currency_code="USD",
+                    direction=direction,
+                    epic=epic,
+                    expiry="-",
+                    force_open=True,
+                    guaranteed_stop=False,
+                    order_type="MARKET",
+                    size=size,
+                    level=None,
+                    limit_level=tp,
+                    stop_level=sl,
+                    limit_distance=None,
+                    stop_distance=None,
+                    trailing_stop=False,
+                    trailing_stop_increment=None,
+                    quote_id=None
+                )
+
+                print("Retry IG Response:", response)
+
+                if response and response.get("status") == "OPEN":
+                    print("Trade SUCCESSFULLY placed after retry")
+                    return response
+
+            except Exception as retry_error:
+                print("Retry failed:", retry_error)
+
         return False
