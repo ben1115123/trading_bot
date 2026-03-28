@@ -17,6 +17,6 @@ ig_service = IGService(
 
 ig_service.create_session()
 
-result = ig_service.search_markets("gold")
+result = ig_service.search_markets("us tech 100")
 
 print(result)

@@ -35,7 +35,7 @@ ensure_session()
 # Asset configuration
 # -------------------------
 EPIC_CONFIG = {
-    "GOLD": {"epic": "CS.D.CFDGOLD.BMU.IP", "value_per_point": 1},
+    "US500": {"epic": "IX.D.SPTRD.IFMM.IP", "value_per_point": 1},
     "US100": {"epic": "IX.D.NASDAQ.IFMM.IP", "value_per_point": 1}
 }
 
