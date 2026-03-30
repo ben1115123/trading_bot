@@ -21,12 +21,29 @@ ig_service = IGService(username, password, api_key, acc_type="DEMO")
 # -------------------------
 # Session Manager
 # -------------------------
+last_login_time = 0
+
 def ensure_session():
+    global last_login_time
+
     try:
-        ig_service.fetch_accounts()
-    except Exception:
-        print("Session invalid, recreating...")
+        # Proactive refresh every 10 minutes
+        if time.time() - last_login_time > 600:
+            print("Refreshing session proactively...")
+            ig_service.create_session()
+            last_login_time = time.time()
+            print("Session refreshed")
+
+        else:
+            ig_service.fetch_accounts()
+
+    except Exception as e:
+        print("Session invalid:", e)
+        print("Recreating session...")
+
         ig_service.create_session()
+        last_login_time = time.time()
+        print("Session recreated successfully")
 
 # Create session at startup
 ensure_session()
@@ -88,6 +105,7 @@ def place_trade_from_alert(data):
         if buy_signal not in ["0", "1"] or sell_signal not in ["0", "1"]:
             print("Invalid signal format — skipping")
             return False
+
         if buy_signal == "1" and sell_signal == "1":
             print("Conflict signal — skipping")
             return False
@@ -118,6 +136,7 @@ def place_trade_from_alert(data):
         if sl is None or tp is None:
             print("Missing SL/TP — skipping trade")
             return False
+
         if trend is None:
             print("Missing trend — skipping trade")
             return False
@@ -126,6 +145,7 @@ def place_trade_from_alert(data):
         if action == "buy" and trend == 3:
             print("Blocked BUY — Downtrend detected")
             return False
+
         if action == "sell" and trend == 1:
             print("Blocked SELL — Uptrend detected")
             return False
@@ -134,6 +154,7 @@ def place_trade_from_alert(data):
 
         # Execute trade
         result = place_trade(symbol, action, sl, tp)
+
         if result:
             last_signal = f"{symbol}_{action}"
             last_trade_time = current_time
@@ -162,15 +183,17 @@ def place_trade(symbol, action, sl=None, tp=None):
         # Ensure session is valid
         ensure_session()
 
-        # Fetch market price
+        # Fetch market
         market = ig_service.fetch_market_by_epic(epic)
         bid = market["snapshot"]["bid"]
         offer = market["snapshot"]["offer"]
         entry_price = offer if direction == "BUY" else bid
+
         print(f"Entry Price: {entry_price}")
 
         # Calculate position size
         size = calculate_position_size(entry_price, sl, value_per_point)
+
         if size is None:
             print("Position sizing failed — aborting")
             return False
@@ -217,11 +240,22 @@ def place_trade(symbol, action, sl=None, tp=None):
     except Exception as e:
         print("Trade failed:", e)
 
-        # Retry once if session issue
-        if "session" in str(e).lower():
-            print("Retrying after session refresh...")
+        error_msg = str(e).lower()
+
+        # Retry for session/token issues
+        if "401" in error_msg or "client-token-invalid" in error_msg:
+            print("Session expired — retrying with fresh session...")
+
             try:
                 ig_service.create_session()
+
+                # Re-fetch market
+                market = ig_service.fetch_market_by_epic(epic)
+                bid = market["snapshot"]["bid"]
+                offer = market["snapshot"]["offer"]
+                entry_price = offer if direction == "BUY" else bid
+
+                size = calculate_position_size(entry_price, sl, value_per_point)
 
                 response = ig_service.create_open_position(
                     currency_code="USD",
