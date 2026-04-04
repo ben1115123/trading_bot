@@ -16,7 +16,7 @@ api_key = os.getenv("IG_API_KEY")
 # -------------------------
 # Initialize IG
 # -------------------------
-ig_service = IGService(username, password, api_key, acc_type="DEMO")
+ig_service = IGService(username, password, api_key, acc_type="LIVE")
 
 # -------------------------
 # Session Manager
@@ -26,15 +26,38 @@ last_login_time = 0
 def ensure_session():
     global last_login_time
 
+    def ensure_correct_account():
+        try:
+            accounts = ig_service.fetch_accounts()
+
+            # Get current preferred account
+            current_account = accounts.loc[
+                accounts["preferred"] == True, "accountId"
+            ].values[0]
+
+            if current_account != "TW75S":
+                ig_service.switch_account("TW75S", True)
+                print("Switched to TW75S")
+            else:
+                print("Already using TW75S")
+
+        except Exception as e:
+            print("Account check failed:", e)
+
     try:
-        # Proactive refresh every 10 minutes
+        # Refresh session every 10 minutes
         if time.time() - last_login_time > 600:
             print("Refreshing session proactively...")
             ig_service.create_session()
+
+            # ✅ Ensure correct account safely
+            ensure_correct_account()
+
             last_login_time = time.time()
             print("Session refreshed")
 
         else:
+            # Lightweight check
             ig_service.fetch_accounts()
 
     except Exception as e:
@@ -42,18 +65,19 @@ def ensure_session():
         print("Recreating session...")
 
         ig_service.create_session()
+
+        # ✅ Ensure correct account safely
+        ensure_correct_account()
+
         last_login_time = time.time()
         print("Session recreated successfully")
-
-# Create session at startup
-ensure_session()
-
 # -------------------------
 # Asset configuration
 # -------------------------
 EPIC_CONFIG = {
     "US500": {"epic": "IX.D.SPTRD.IFMM.IP", "value_per_point": 1},
-    "US100": {"epic": "IX.D.NASDAQ.IFMM.IP", "value_per_point": 1}
+    "US100": {"epic": "IX.D.NASDAQ.IFMM.IP", "value_per_point": 1},
+    "BTC": {"epic": "CS.D.BITCOIN.CFBMU.IP", "value_per_point": 0.1}
 }
 
 # -------------------------
