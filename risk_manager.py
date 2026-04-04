@@ -1,6 +1,6 @@
 # risk_manager.py
 
-RISK_PER_TRADE = 200  # USD per trade
+RISK_PER_TRADE = 15  # USD per trade
 MIN_LOT_SIZE = 0.1
 MAX_LOT_SIZE = 10
 
