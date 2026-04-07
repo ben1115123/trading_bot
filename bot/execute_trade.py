@@ -138,7 +138,7 @@ def place_trade_from_alert(data):
 
         # Cooldown
         current_time = time.time()
-        if current_time - last_trade_time < 10:
+        if current_time - last_trade_time < 1:
             print("Cooldown active — skipping trade")
             return False
 
