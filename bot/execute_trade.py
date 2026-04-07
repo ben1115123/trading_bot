@@ -23,54 +23,53 @@ ig_service = IGService(username, password, api_key, acc_type="LIVE")
 # -------------------------
 last_login_time = 0
 
+
+def recreate_session():
+    global ig_service, last_login_time
+
+    print("🔥 Recreating IG session completely...")
+
+    ig_service = IGService(username, password, api_key, acc_type="LIVE")
+    ig_service.create_session()
+
+    try:
+        accounts = ig_service.fetch_accounts()
+
+        current_account = accounts.loc[
+            accounts["preferred"] == True, "accountId"
+        ].values[0]
+
+        if current_account != "TW75S":
+            ig_service.switch_account("TW75S", True)
+            print("Switched to TW75S")
+        else:
+            print("Already using TW75S")
+
+    except Exception as e:
+        print("Account switch failed:", e)
+
+    last_login_time = time.time()
+
+
 def ensure_session():
     global last_login_time
 
-    def ensure_correct_account():
-        try:
-            accounts = ig_service.fetch_accounts()
-
-            # Get current preferred account
-            current_account = accounts.loc[
-                accounts["preferred"] == True, "accountId"
-            ].values[0]
-
-            if current_account != "TW75S":
-                ig_service.switch_account("TW75S", True)
-                print("Switched to TW75S")
-            else:
-                print("Already using TW75S")
-
-        except Exception as e:
-            print("Account check failed:", e)
-
     try:
-        # Refresh session every 10 minutes
+        # Refresh every 10 mins
         if time.time() - last_login_time > 600:
             print("Refreshing session proactively...")
-            ig_service.create_session()
-
-            # ✅ Ensure correct account safely
-            ensure_correct_account()
-
-            last_login_time = time.time()
-            print("Session refreshed")
-
+            recreate_session()
         else:
-            # Lightweight check
             ig_service.fetch_accounts()
 
     except Exception as e:
         print("Session invalid:", e)
-        print("Recreating session...")
+        recreate_session()
 
-        ig_service.create_session()
 
-        # ✅ Ensure correct account safely
-        ensure_correct_account()
+# Initialize session at start
+recreate_session()
 
-        last_login_time = time.time()
-        print("Session recreated successfully")
 # -------------------------
 # Asset configuration
 # -------------------------
@@ -86,6 +85,7 @@ EPIC_CONFIG = {
 last_signal = None
 last_trade_time = 0
 
+
 # -------------------------
 # Utils
 # -------------------------
@@ -96,6 +96,7 @@ def parse_float(value):
         return float(value)
     except:
         return None
+
 
 # -------------------------
 # Main webhook handler
@@ -108,11 +109,13 @@ def place_trade_from_alert(data):
 
     try:
         symbol = data.get("symbol")
+
         if not symbol:
             print("Missing symbol — skipping")
             return False
 
         config = EPIC_CONFIG.get(symbol)
+
         if not config:
             print("Unsupported symbol:", symbol)
             return False
@@ -125,7 +128,6 @@ def place_trade_from_alert(data):
         print("Sell Signal:", sell_signal)
         print("Trend:", trend)
 
-        # Validate signals
         if buy_signal not in ["0", "1"] or sell_signal not in ["0", "1"]:
             print("Invalid signal format — skipping")
             return False
@@ -145,10 +147,12 @@ def place_trade_from_alert(data):
             action = "buy"
             sl = parse_float(data.get("long_sl"))
             tp = parse_float(data.get("long_tp"))
+
         elif sell_signal == "1":
             action = "sell"
             sl = parse_float(data.get("short_sl"))
             tp = parse_float(data.get("short_tp"))
+
         else:
             print("No valid signal — skipping")
             return False
@@ -176,7 +180,6 @@ def place_trade_from_alert(data):
 
         print("Trend filter passed")
 
-        # Execute trade
         result = place_trade(symbol, action, sl, tp)
 
         if result:
@@ -204,10 +207,8 @@ def place_trade(symbol, action, sl=None, tp=None):
     direction = "BUY" if action.lower() == "buy" else "SELL"
 
     try:
-        # Ensure session is valid
         ensure_session()
 
-        # Fetch market
         market = ig_service.fetch_market_by_epic(epic)
         bid = market["snapshot"]["bid"]
         offer = market["snapshot"]["offer"]
@@ -215,7 +216,6 @@ def place_trade(symbol, action, sl=None, tp=None):
 
         print(f"Entry Price: {entry_price}")
 
-        # Calculate position size
         size = calculate_position_size(entry_price, sl, value_per_point)
 
         if size is None:
@@ -225,7 +225,6 @@ def place_trade(symbol, action, sl=None, tp=None):
         expected_risk = size * abs(entry_price - sl) * value_per_point
         print(f"[TEST] Expected risk: ${expected_risk:.2f}")
 
-        # Place trade
         response = ig_service.create_open_position(
             currency_code="USD",
             direction=direction,
@@ -248,7 +247,6 @@ def place_trade(symbol, action, sl=None, tp=None):
         print("IG Response:", response)
 
         if not response:
-            print("Empty response from IG")
             return False
 
         if response.get("dealStatus") == "REJECTED":
@@ -266,45 +264,13 @@ def place_trade(symbol, action, sl=None, tp=None):
 
         error_msg = str(e).lower()
 
-        # Retry for session/token issues
         if "401" in error_msg or "client-token-invalid" in error_msg:
-            print("Session expired — retrying with fresh session...")
+            print("⚠️ Session expired — FULL RESET and retry")
 
             try:
-                ig_service.create_session()
+                recreate_session()
 
-                # Re-fetch market
-                market = ig_service.fetch_market_by_epic(epic)
-                bid = market["snapshot"]["bid"]
-                offer = market["snapshot"]["offer"]
-                entry_price = offer if direction == "BUY" else bid
-
-                size = calculate_position_size(entry_price, sl, value_per_point)
-
-                response = ig_service.create_open_position(
-                    currency_code="USD",
-                    direction=direction,
-                    epic=epic,
-                    expiry="-",
-                    force_open=True,
-                    guaranteed_stop=False,
-                    order_type="MARKET",
-                    size=size,
-                    level=None,
-                    limit_level=tp,
-                    stop_level=sl,
-                    limit_distance=None,
-                    stop_distance=None,
-                    trailing_stop=False,
-                    trailing_stop_increment=None,
-                    quote_id=None
-                )
-
-                print("Retry IG Response:", response)
-
-                if response and response.get("status") == "OPEN":
-                    print("Trade SUCCESSFULLY placed after retry")
-                    return response
+                return place_trade(symbol, action, sl, tp)
 
             except Exception as retry_error:
                 print("Retry failed:", retry_error)
