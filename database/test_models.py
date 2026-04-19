@@ -201,5 +201,42 @@ def test_log_trade_full_data(temp_db):
     assert trade['status'] == 'OPEN'
 
 
+def test_log_trade_missing_required_field(temp_db):
+    """Test that log_trade raises ValueError when a required field is missing."""
+    # Missing 'symbol'
+    trade_data = {
+        'direction': 'BUY',
+        'size': 0.5,
+        'entry_price': 5150.0,
+    }
+    with pytest.raises(ValueError, match="log_trade missing required fields: \\['symbol'\\]"):
+        log_trade(trade_data)
+
+    # Missing 'direction'
+    trade_data = {
+        'symbol': 'US500',
+        'size': 0.5,
+        'entry_price': 5150.0,
+    }
+    with pytest.raises(ValueError, match="log_trade missing required fields: \\['direction'\\]"):
+        log_trade(trade_data)
+
+    # Missing multiple required fields
+    trade_data = {
+        'symbol': 'US500',
+    }
+    with pytest.raises(ValueError, match="log_trade missing required fields"):
+        log_trade(trade_data)
+
+
+def test_get_recent_trades_invalid_limit(temp_db):
+    """Test that get_recent_trades raises ValueError when limit <= 0."""
+    with pytest.raises(ValueError, match="limit must be a positive integer, got 0"):
+        get_recent_trades(limit=0)
+
+    with pytest.raises(ValueError, match="limit must be a positive integer, got -1"):
+        get_recent_trades(limit=-1)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
