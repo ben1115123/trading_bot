@@ -6,32 +6,38 @@ from dotenv import load_dotenv
 # Load environment variables from .env
 load_dotenv()
 
-# Get database path from environment or use default
-DATABASE_PATH = os.getenv("DATABASE_PATH", "database/trades.db")
+# Anchor database path to project root
+_BASE_DIR = Path(__file__).resolve().parent.parent  # project root
+DATABASE_PATH = os.getenv("DATABASE_PATH", str(_BASE_DIR / "database" / "trades.db"))
 
 
 def get_connection():
     """
     Returns a sqlite3 connection to the database file.
     Creates the database directory if it doesn't exist.
-    Uses check_same_thread=False to allow multi-threaded access.
+    Adds row_factory for dict-like row access in models.py.
     """
     # Ensure the database directory exists
     db_dir = os.path.dirname(DATABASE_PATH)
     if db_dir:
         Path(db_dir).mkdir(parents=True, exist_ok=True)
 
-    # Connect with check_same_thread=False for multi-threaded access
-    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    # Connect to database
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
     """
     Initialize the database by creating all required tables if they don't exist.
+    Enables WAL mode to prevent read/write contention.
     """
     conn = get_connection()
     cursor = conn.cursor()
+
+    # Enable WAL mode for better concurrency
+    cursor.execute("PRAGMA journal_mode=WAL")
 
     # Create trades table
     cursor.execute("""
@@ -75,7 +81,8 @@ def init_db():
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             strategy_name TEXT NOT NULL,
             symbol        TEXT NOT NULL,
-            updated_at    TEXT NOT NULL
+            updated_at    TEXT NOT NULL,
+            UNIQUE(symbol)
         )
     """)
 
