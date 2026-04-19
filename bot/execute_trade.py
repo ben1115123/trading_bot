@@ -4,6 +4,7 @@ import os
 import time
 
 from risk_manager import calculate_position_size
+from database.models import log_trade
 
 # -------------------------
 # Load credentials
@@ -255,6 +256,18 @@ def place_trade(symbol, action, sl=None, tp=None):
 
         if response.get("status") == "OPEN":
             print("Trade SUCCESSFULLY placed")
+            log_trade({
+                "symbol": symbol,
+                "direction": direction,
+                "size": size,
+                "entry_price": entry_price,
+                "sl": sl,
+                "tp": tp,
+                "deal_id": response.get("dealId"),
+                "source": "indicator",
+                "strategy_name": "manual",
+                "status": "OPEN",
+            })
             return response
 
         return response
