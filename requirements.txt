@@ -1,5 +1,17 @@
+# Web server
 fastapi
-uvicorn
+uvicorn[standard]
+
+# IG Markets broker integration
+trading-ig
+
+# HTTP / env
 requests
 python-dotenv
+
+# Data
 pandas
+
+# Dashboard
+streamlit>=1.32.0
+plotly>=5.20.0

@@ -8,3 +8,5 @@ app.include_router(router)
 @app.get("/")
 def home():
     return {"status": "bot running"}
+
+print("Trading bot starting...")

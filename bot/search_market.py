@@ -12,11 +12,11 @@ ig_service = IGService(
     username,
     password,
     api_key,
-    acc_type="DEMO"
+    acc_type="LIVE"
 )
 
 ig_service.create_session()
 
-result = ig_service.search_markets("bitcoin")
+result = ig_service.search_markets("btc")
 
 print(result)
