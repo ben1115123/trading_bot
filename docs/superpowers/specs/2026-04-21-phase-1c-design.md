@@ -116,8 +116,16 @@ CMD:     streamlit run dashboard/app.py --server.port 8501 --server.headless tru
 
 1. All files committed and pushed to GitHub (local WSL)
 2. Claude SSHes into VPS using `~/.ssh/trading-bot-new.key`
+2.5. **Data backup** — before touching anything:
+   - `docker exec bot ls /app/database/` to confirm trades.db exists inside container
+   - `docker exec bot cp /app/database/trades.db /app/database/trades.db.bak` to snapshot it
+   - Record row count: `docker exec bot sqlite3 /app/database/trades.db "SELECT COUNT(*) FROM trades;"`
 3. Claude installs `docker-compose-plugin` if not present
 4. Claude runs `git pull origin main` on VPS
+4.5. **Verify .env on VPS** — confirm `.env` exists and contains real credentials:
+   - `test -f /home/ubuntu/trading_bot/.env && echo "EXISTS" || echo "MISSING"`
+   - `grep -c "^IG_USERNAME=.\+" .env` — must return 1 (non-empty value present)
+   - If missing or empty: **stop and alert user** — do not proceed
 5. Claude runs `docker compose build` to pre-build images
 6. **Claude pauses — asks user to confirm cutover**
 7. User confirms → Claude runs `docker compose up -d`
@@ -126,7 +134,8 @@ CMD:     streamlit run dashboard/app.py --server.port 8501 --server.headless tru
 8. Claude verifies:
    - `docker compose ps` — all 3 running
    - `curl -s localhost:8000` → `{"status":"bot running"}`
-   - `curl -s -o /dev/null -w "%{http_code}" localhost:80` → 200
+   - `curl -s -o /dev/null -w "%{http_code}" localhost:80` → 200 (dashboard via nginx)
+   - `curl -s -o /dev/null -w "%{http_code}" -X POST localhost:80/webhook -H "Content-Type: application/json" -d "{}"` → 422 (bot reachable, rejects empty payload as expected)
 
 ---
 
