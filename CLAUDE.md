@@ -4,6 +4,8 @@
 A webhook-driven algorithmic trading bot that receives 
 TradingView alerts, applies trend filtering and risk 
 management, and executes live trades via the IG Markets API.
+Built in phases — current focus is VPS deployment of
+database logging and monitoring dashboard.
 
 ## Architecture
 main.py                     FastAPI app entry point
@@ -16,25 +18,111 @@ filters/rule_filters.py     Trend filter (blocks contra-trend)
 ai/ai_filter.py             Stub — always returns "ACCEPT"
 data/market_data.py         Stub — live data comes from IG
 utils/logger.py             Appends trades to logs/trade_log.csv
-database/db.py              TO BUILD — SQLite connection/setup
-database/models.py          TO BUILD — table schemas + queries
-dashboard/app.py            TO BUILD — Streamlit entry point
+database/db.py              ✅ BUILT — SQLite connection/setup
+database/models.py          ✅ BUILT — table schemas + queries
+dashboard/app.py            ✅ BUILT — Streamlit entry point
+dashboard/pages/            ✅ BUILT — all 4 pages complete
 
-## Deployment Environment
-- Bot runs on Oracle VPS (Ubuntu)
-- Bot managed as systemd service on port 8000
-- Dashboard will run as systemd service on port 8501
-- Both services on same VPS, same machine
-- Access dashboard remotely via Nginx reverse proxy
-- SSL via Certbot (Let's Encrypt)
-- Do NOT suggest Vercel, Railway, or external hosting
-- SQLite is sufficient — do NOT suggest PostgreSQL
-  unless multiple simultaneous writers are needed
+## Local Development Environment
+- OS: Windows 11 with WSL2 (Ubuntu)
+- Always work in WSL terminal — never Windows PowerShell
+- WSL project path:
+  /mnt/c/Users/tanbe/Downloads/trading_bot_skeleton
+- Claude Code runs in WSL only
+- Git SSH key: ~/.ssh/id_ed25519
+- GitHub repo: git@github.com:ben1115123/trading_bot.git
+
+## VPS Environment
+- Provider: Oracle Cloud
+- OS: Ubuntu
+- Hostname: trading-bot
+- Username: ubuntu
+- Project path: /home/ubuntu/trading_bot
+- SSH key: ~/.ssh/trading-bot-new.key
+  (copy from Windows: 
+   cp /mnt/c/Users/tanbe/Downloads/trading-bot-new.key 
+   ~/.ssh/trading-bot-new.key
+   chmod 600 ~/.ssh/trading-bot-new.key)
+- All credentials in .env — never in CLAUDE.md
+
+## VPS Current Docker State
+- Docker only — NO docker-compose installed
+- Running container: bot
+- Image name: trading_bot
+- Start command: uvicorn main:app --host 0.0.0.0 --port 8000
+- Port mapping: 0.0.0.0:80 → 8000
+- No volumes mounted (null)
+- No dashboard container yet
+- No Nginx container yet
+- VPS code is outdated — git pull required in Phase 1C
+
+## Target Docker Architecture (after Phase 1C)
+Three containers managed by docker-compose:
+
+  bot:
+    image: trading_bot
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    ports: 80:8000
+    env_file: .env
+    restart: always
+    volumes:
+      - ./database:/app/database   ← shared SQLite
+
+  dashboard:
+    image: trading_dashboard
+    command: streamlit run dashboard/app.py
+             --server.port 8501 --server.headless true
+    ports: 8501:8501
+    restart: always
+    volumes:
+      - ./database:/app/database   ← same SQLite file
+    depends_on: bot
+
+  nginx:
+    image: nginx:alpine
+    ports: 80:80
+    volumes:
+      - ./nginx/trading.conf:/etc/nginx/conf.d/default.conf
+    depends_on: [bot, dashboard]
+    restart: always
+
+Note: Bot currently uses port 80 directly.
+After Nginx is added, Nginx takes port 80 and
+routes to bot (8000) and dashboard (8501) internally.
+
+## Claude Code SSH Permissions
+Credentials loaded from .env:
+  VPS_HOST, VPS_USER, VPS_SSH_KEY
+
+Claude Code is permitted to:
+  ✅ SSH into VPS to run commands
+  ✅ Install docker-compose on VPS
+  ✅ Run docker commands on VPS
+  ✅ Git pull on VPS
+  ✅ Check container logs
+  ✅ Restart containers
+  ✅ Copy config files to VPS
+  ❌ Never modify .env on VPS
+  ❌ Never expose credentials in any output
+  ❌ Never git push from VPS
+  ❌ Never stop bot container without permission
+
+## Deployment Process (after Phase 1C)
+1. git push origin main (local WSL)
+2. Claude Code SSHs into VPS
+3. cd /home/ubuntu/trading_bot
+4. git pull origin main
+5. docker-compose down
+6. docker-compose up -d --build
+7. docker-compose ps (verify all 3 running)
+8. curl localhost:8000 (verify bot)
+9. curl localhost:8501 (verify dashboard)
 
 ## Broker Integration — IG Markets
 - Library: trading_ig (IGService)
 - Account type: LIVE (account ID: TW75S)
-- Credentials from .env: IG_USERNAME, IG_PASSWORD, IG_API_KEY
+- Credentials from .env:
+  IG_USERNAME, IG_PASSWORD, IG_API_KEY
 - Session auto-refreshes every 10 minutes
 - Full session recreate on 401/token-invalid errors
 
@@ -68,160 +156,32 @@ lot_size = RISK_PER_TRADE / (sl_distance * value_per_point)
 - Min lot: 0.1 | Max lot: 10.0
 - Entry price fetched live from IG at trade time
 
-## Running the Bot
+## Running Locally (WSL)
+cd /mnt/c/Users/tanbe/Downloads/trading_bot_skeleton
 pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
+streamlit run dashboard/app.py --server.port 8501
 
 ## Key Behaviours & Gotchas
-- Session recreated at startup (called on execute_trade.py import)
+- Session recreated at startup (on execute_trade.py import)
 - 1-second cooldown between trades (last_trade_time global)
 - place_trade auto-retries once after 401/session expiry
-- ai_filter.py is a stub — not wired into main flow
+- ai_filter.py stub — not wired into main flow
 - strategy/parser.py and filters/rule_filters.py are stubs
 - data/market_data.py returns empty dict
-- logs/trade_log.csv exists but will be deprecated
-  once Phase 1 database logging is complete
+- logs/trade_log.csv deprecated — database only now
+- Dashboard reads from database/trades.db directly
+- Bot and dashboard share SQLite via Docker volume
+- Bot currently on port 80 — Nginx will take over port 80
+  after Phase 1C, bot moves to internal port 8000 only
 
 ## Test Scripts
-| File                   | Purpose                          |
-|------------------------|----------------------------------|
-| bot/test_ig.py         | Verify IG session (DEMO account) |
-| bot/test_trade.py      | Place test BUY on XAUUSD (DEMO)  |
-| bot/search_market.py   | Search IG market epics           |
-
----
-
-## Current Build Phase
-PHASE 1 — Database Logging + Basic Monitoring UI
-
-### 1A — Database Layer
-Files to build:
-- database/db.py
-- database/models.py
-
-Schema:
-
-trades:
-  id            INTEGER PRIMARY KEY AUTOINCREMENT
-  timestamp     TEXT NOT NULL
-  symbol        TEXT NOT NULL
-  direction     TEXT NOT NULL       -- BUY or SELL
-  size          REAL NOT NULL
-  entry_price   REAL NOT NULL
-  sl            REAL
-  tp            REAL
-  deal_id       TEXT
-  pnl           REAL                -- NULL until closed
-  source        TEXT DEFAULT 'indicator'
-  strategy_name TEXT DEFAULT 'manual'
-  status        TEXT DEFAULT 'OPEN' -- OPEN | CLOSED | REJECTED
-
-backtest_results:
-  id            INTEGER PRIMARY KEY AUTOINCREMENT
-  strategy_name TEXT NOT NULL
-  symbol        TEXT NOT NULL
-  timeframe     TEXT NOT NULL
-  total_trades  INTEGER
-  win_rate      REAL
-  profit        REAL
-  drawdown      REAL
-  sharpe_ratio  REAL
-  score         REAL
-  run_at        TEXT NOT NULL
-
-active_strategy:
-  id            INTEGER PRIMARY KEY AUTOINCREMENT
-  strategy_name TEXT NOT NULL
-  symbol        TEXT NOT NULL
-  updated_at    TEXT NOT NULL
-
-Execution hook:
-- ONLY touch bot/execute_trade.py at the logging point
-- After response.get("status") == "OPEN" → call log_trade()
-- log_trade() defined in database/models.py
-- Touch nothing else in execute_trade.py
-
-### 1B — Streamlit Dashboard
-Files to build:
-- dashboard/app.py
-- dashboard/pages/01_overview.py
-- dashboard/pages/02_trade_log.py
-- dashboard/pages/03_calendar.py
-- dashboard/pages/04_backtest.py (placeholder)
-
-Pages:
-
-Overview:
-- Cards: total trades, win rate, total P&L
-- Active strategy name + symbol
-- Last 10 trades table
-- Equity curve chart (Plotly)
-
-Trade Log:
-- Full trades table
-- Filters: symbol, direction, date range, strategy
-- Export to CSV button
-
-Calendar:
-- Monthly grid
-- Green = profit day, Red = loss day, Grey = no trades
-- Click day → show that day's trades
-
-Backtest (placeholder):
-- Message: "No backtest results yet"
-- Table structure ready for Phase 3 data
-
-Tech:
-- Streamlit + Plotly
-- Reads directly from database/trades.db
-
-### 1C — VPS Deployment
-Both services on Oracle VPS (Ubuntu):
-- FastAPI bot:      port 8000 (existing)
-- Streamlit:        port 8501 (new)
-- Database:         database/trades.db (shared)
-
-Systemd service for dashboard:
-Path: /etc/systemd/system/dashboard.service
-[Unit]
-Description=Trading Dashboard
-After=network.target
-[Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu/trading_bot
-ExecStart=streamlit run dashboard/app.py
-  --server.port 8501 --server.headless true
-Restart=always
-[Install]
-WantedBy=multi-user.target
-
-Scripts to create:
-- scripts/start_all.sh   → starts both bot + dashboard
-- scripts/stop_all.sh    → stops both services
-- scripts/status.sh      → shows status of both services
-
-### 1D — Nginx + SSL Setup
-Nginx reverse proxy config for VPS:
-- yourdomain.com/dashboard → localhost:8501
-- yourdomain.com/webhook   → localhost:8000
-
-Template file to create:
-- nginx/trading.conf
-
-SSL: Certbot (Let's Encrypt) — free
-
-Remote access:
-- Dashboard viewable from any browser after Nginx setup
-- If no domain yet, use SSH tunnel temporarily:
-  ssh -L 8501:localhost:8501 ubuntu@YOUR_VPS_IP
-
-### 1E — Scalability Rules
-- All config (paths, ports, DB path) via .env
-- Database calls ONLY through database/models.py
-- New dashboard pages go in dashboard/pages/ only
-- Never write raw SQL outside models.py
-- Switching DB: change DATABASE_URL in .env only
-- New assets: add to EPIC_CONFIG in execute_trade.py
+| File                      | Purpose                        |
+|---------------------------|--------------------------------|
+| bot/test_ig.py            | Verify IG session (DEMO)       |
+| bot/test_trade.py         | Place test BUY on XAUUSD       |
+| bot/search_market.py      | Search IG market epics         |
+| scripts/seed_test_data.py | Insert fake trades for testing |
 
 ---
 
@@ -230,7 +190,104 @@ Remote access:
 - IG API execution engine
 - Risk manager ($15 USD fixed)
 - Trend filter
-- CSV trade logging (deprecated in Phase 1)
+- Phase 1A: SQLite database + all table schemas
+- Phase 1B: Streamlit dashboard (all 4 pages)
+- GitHub SSH authentication (WSL)
+- CSV trade logging (deprecated)
+
+---
+
+## Current Build Phase
+PHASE 1C — Docker + VPS Deployment
+
+### Goal
+Migrate VPS from single Docker container to
+docker-compose with bot + dashboard + nginx.
+Both bot and dashboard share same SQLite database
+via Docker volume.
+
+### Files to build
+- docker-compose.yml
+- dashboard/Dockerfile
+- nginx/trading.conf
+- scripts/deploy.sh
+- scripts/status.sh
+- .env.example
+
+### Step by step for Claude Code
+
+Step 1 — Install docker-compose on VPS:
+  ssh into VPS
+  sudo apt-get update
+  sudo apt-get install docker-compose-plugin
+  docker compose version (verify)
+
+Step 2 — Create docker-compose.yml locally
+  Manages: bot + dashboard + nginx
+  Shared volume: ./database:/app/database
+  Bot moves from port 80 to internal 8000
+  Nginx takes port 80, routes to both services
+
+Step 3 — Create dashboard/Dockerfile
+  Base: python:3.11-slim
+  Install requirements
+  Expose port 8501
+  CMD: streamlit run dashboard/app.py
+
+Step 4 — Create nginx/trading.conf
+  Route /webhook → bot:8000
+  Route / → dashboard:8501
+  No SSL yet (IP only, no domain)
+
+Step 5 — Create scripts/deploy.sh
+  SSH into VPS
+  git pull origin main
+  docker-compose down
+  docker-compose up -d --build
+  docker-compose ps
+
+Step 6 — Create .env.example
+  VPS_HOST=
+  VPS_USER=ubuntu
+  VPS_SSH_KEY=~/.ssh/trading-bot-new.key
+  DATABASE_URL=database/trades.db
+  BOT_PORT=8000
+  DASHBOARD_PORT=8501
+  IG_USERNAME=
+  IG_PASSWORD=
+  IG_API_KEY=
+
+Step 7 — Test locally first
+  docker-compose up -d --build
+  curl localhost:8000 (bot)
+  open localhost:8501 (dashboard)
+  verify both see same database
+
+Step 8 — Deploy to VPS
+  git push origin main
+  ssh into VPS
+  run deploy.sh
+  verify docker-compose ps shows 3 containers
+
+### Critical for this phase
+- Do NOT stop the bot until new docker-compose
+  is tested and ready to start immediately
+- Database must be mounted as volume BEFORE
+  stopping old container — data must not be lost
+- Verify bot is still receiving webhooks after
+  migration before marking phase complete
+
+---
+
+## Phase 1D — Nginx Access (after 1C confirmed working)
+No domain — use IP directly:
+- http://YOUR_VPS_IP → dashboard (port 80 via Nginx)
+- http://YOUR_VPS_IP/webhook → bot webhook endpoint
+- SSH tunnel for secure local access:
+  ssh -i $VPS_SSH_KEY -L 8501:localhost:8501
+  ubuntu@$VPS_HOST
+  then open http://localhost:8501
+- Add domain + SSL later if needed
 
 ---
 
@@ -249,16 +306,16 @@ PHASE 3 — Backtesting Engine
 - backend/strategies/supertrend.py
 - backend/backtesting/engine.py
 - backend/backtesting/metrics.py
-  (win rate, drawdown, Sharpe ratio)
 - Results → backtest_results table
 - Dashboard page 04 auto-populated
 
 PHASE 4 — TradingView MCP + Pine Script
 - Connect Claude Code to TradingView Desktop via MCP
+  (tradesdontlie/tradingview-mcp — CDP based)
 - Read top-rated Pine Script strategies
-- Convert Pine Script logic → Python strategy classes
+- Convert Pine Script → Python strategy classes
 - Auto-run backtest on each converted strategy
-- All results logged for comparison
+- All results logged to backtest_results table
 
 PHASE 5 — Strategy Selector
 - Score formula:
@@ -266,15 +323,30 @@ PHASE 5 — Strategy Selector
   (1-drawdown)*0.2 + sharpe*0.1
 - Auto-select best performer above threshold
 - Update active_strategy table
-- Log when strategy switches
+- Only switch if improvement > 10%
+- Log all strategy switches
 
 PHASE 6 — Daily Automation
-- scripts/run_daily.py:
-  * Backtest all strategies
-  * Score and select best
-  * Update active_strategy
+- scripts/run_daily.py
 - Cron: 0 6 * * * python scripts/run_daily.py
-- Only switch if improvement > 10%
+- Backtest → score → select → update → log
+
+PHASE 7 — Risk Management & Stability
+- Max trades per day per source
+- Max daily loss limit
+- Max total exposure
+- Strategy stability rules
+- Alerting on limit breach
+
+PHASE 8 — Production Frontend (Next.js + Vercel)
+- Rebuild dashboard in Next.js/React
+- FastAPI on VPS serves as backend API
+- Vercel hosts frontend (auto-deploy on git push)
+- Oracle VPS keeps bot + database + FastAPI
+- Architecture:
+  Vercel (Next.js) → API calls → VPS (FastAPI + SQLite)
+- Only build once Streamlit features are finalised
+- Claude Code handles Vercel deployment via Vercel CLI
 
 ---
 
@@ -282,11 +354,18 @@ PHASE 6 — Daily Automation
 - NEVER modify execute_trade.py without permission
 - NEVER create a second execution engine
 - NEVER hardcode credentials, IPs, or paths
+- NEVER expose credentials in any output or logs
+- NEVER stop the bot container without permission
 - ALWAYS use .env for all config values
 - ALWAYS log trades to database not just CSV
 - ALWAYS tag trades with source + strategy_name
 - ALWAYS ask before touching bot/ or webhook/
+- ALWAYS test locally before deploying to VPS
+- ALWAYS verify bot still works after any deployment
 - Database calls ONLY via database/models.py
 - New dashboard pages ONLY in dashboard/pages/
-- Deployment ONLY on Oracle VPS — no external platforms
+- Docker only on VPS — no systemd services
 - SQLite only — no PostgreSQL unless explicitly told
+- SSH credentials always from .env — never hardcoded
+- After every VPS deployment run docker-compose ps
+  and verify all 3 containers are running

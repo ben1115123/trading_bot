@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading_bot
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    restart: always
+    volumes:
+      - ./database:/app/database
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: trading_dashboard
+    command: streamlit run dashboard/app.py --server.port 8501 --server.headless true
+    restart: always
+    volumes:
+      - ./database:/app/database
+    depends_on:
+      - bot
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/trading.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - bot
+      - dashboard
+    restart: always
