@@ -86,6 +86,27 @@ def init_db():
         )
     """)
 
+    # Create positions table (live open positions, refreshed by poller)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS positions (
+            deal_id        TEXT PRIMARY KEY,
+            symbol         TEXT NOT NULL,
+            direction      TEXT NOT NULL,
+            size           REAL NOT NULL,
+            open_price     REAL NOT NULL,
+            current_price  REAL,
+            unrealised_pnl REAL,
+            updated_at     TEXT NOT NULL
+        )
+    """)
+
+    # Migrate trades table: add close columns for existing DBs
+    for col, defn in [("close_price", "REAL"), ("close_time", "TEXT")]:
+        try:
+            cursor.execute(f"ALTER TABLE trades ADD COLUMN {col} {defn}")
+        except Exception:
+            pass  # column already exists
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

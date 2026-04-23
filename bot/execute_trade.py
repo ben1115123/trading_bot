@@ -256,18 +256,22 @@ def place_trade(symbol, action, sl=None, tp=None):
 
         if response.get("status") == "OPEN":
             print("Trade SUCCESSFULLY placed")
-            log_trade({
-                "symbol": symbol,
-                "direction": direction,
-                "size": size,
-                "entry_price": entry_price,
-                "sl": sl,
-                "tp": tp,
-                "deal_id": response.get("dealId"),
-                "source": "indicator",
-                "strategy_name": "manual",
-                "status": "OPEN",
-            })
+            try:
+                log_trade({
+                    "symbol": symbol,
+                    "direction": direction,
+                    "size": size,
+                    "entry_price": entry_price,
+                    "sl": sl,
+                    "tp": tp,
+                    "deal_id": response.get("dealId"),
+                    "source": "tradingview_webhook",
+                    "strategy_name": "tradingview_webhook",
+                    "status": "OPEN",
+                })
+                print("Trade logged to database")
+            except Exception as log_error:
+                print("WARNING: Failed to log trade to database:", log_error)
             return response
 
         return response

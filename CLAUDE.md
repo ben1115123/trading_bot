@@ -107,7 +107,7 @@ Claude Code is permitted to:
   ❌ Never git push from VPS
   ❌ Never stop bot container without permission
 
-## Deployment Process (after Phase 1C)
+## Deployment Process (after Phase 2B)
 1. git push origin main (local WSL)
 2. Claude Code SSHs into VPS
 3. cd /home/ubuntu/trading_bot
@@ -185,110 +185,65 @@ streamlit run dashboard/app.py --server.port 8501
 
 ---
 
-## Completed ✅
+## Current Build Phase
+PHASE 2B — Live Positions Poller + Trade Close Detection
+
+### Goal
+Two things:
+1. Poll IG API for open positions every 30 seconds → show live unrealised P&L on dashboard
+2. Detect when a position closes on IG (SL/TP/manual) → update trade record with 
+   close_price, close_time, realised_pnl → enables calendar + total P&L on dashboard
+
+### Step by step for Claude Code
+
+Step 1 — Update trades table in database/models.py
+  Add columns if not already present:
+    close_price REAL
+    close_time TEXT
+    realised_pnl REAL
+    status TEXT DEFAULT 'open'  ← 'open' or 'closed'
+
+Step 2 — Add positions table to database/models.py
+  Fields: deal_id, symbol, direction, size, open_price,
+          current_price, unrealised_pnl, updated_at
+
+Step 3 — Create data/positions_poller.py
+  Every 30 seconds:
+    a) Fetch open positions from IG API
+    b) Upsert each into positions table (live unrealised P&L)
+    c) Compare current open deal_ids against trades table 
+       where status = 'open'
+    d) For any deal_id that was 'open' in DB but is now GONE 
+       from IG → it was closed
+    e) Fetch that deal from IG transaction history to get 
+       close_price and realised_pnl
+    f) Update trades table: close_price, close_time, 
+       realised_pnl, status = 'closed'
+  Runs as background thread started from main.py
+  Wrap everything in try/except — poller failure must NOT 
+  affect bot or trade execution
+
+Step 4 — Add positions page to dashboard
+  Read from positions table
+  Show: symbol, direction, size, unrealised P&L, duration open
+  Auto-refresh every 30 seconds
+
+Step 5 — Verify calendar + P&L pages now populate
+  Place a test trade via Postman
+  Wait for it to close (or manually close on IG)
+  Confirm dashboard calendar and total P&L update correctly
+
+## Completed ✅ (Updated)
+- Phase 1A: SQLite database + all table schemas
+- Phase 1B: Streamlit dashboard (all 4 pages)  
+- Phase 1C: Docker Compose on VPS (bot + dashboard + nginx)
+- Phase 1D: Remote access via Nginx — dashboard live at VPS IP
+- PHASE 2A — Trade Logging (Live IG → Database)
+
 - Webhook receiver (FastAPI)
 - IG API execution engine
 - Risk manager ($15 USD fixed)
 - Trend filter
-- Phase 1A: SQLite database + all table schemas
-- Phase 1B: Streamlit dashboard (all 4 pages)
-- GitHub SSH authentication (WSL)
-- CSV trade logging (deprecated)
-
----
-
-## Current Build Phase
-PHASE 1C — Docker + VPS Deployment
-
-### Goal
-Migrate VPS from single Docker container to
-docker-compose with bot + dashboard + nginx.
-Both bot and dashboard share same SQLite database
-via Docker volume.
-
-### Files to build
-- docker-compose.yml
-- dashboard/Dockerfile
-- nginx/trading.conf
-- scripts/deploy.sh
-- scripts/status.sh
-- .env.example
-
-### Step by step for Claude Code
-
-Step 1 — Install docker-compose on VPS:
-  ssh into VPS
-  sudo apt-get update
-  sudo apt-get install docker-compose-plugin
-  docker compose version (verify)
-
-Step 2 — Create docker-compose.yml locally
-  Manages: bot + dashboard + nginx
-  Shared volume: ./database:/app/database
-  Bot moves from port 80 to internal 8000
-  Nginx takes port 80, routes to both services
-
-Step 3 — Create dashboard/Dockerfile
-  Base: python:3.11-slim
-  Install requirements
-  Expose port 8501
-  CMD: streamlit run dashboard/app.py
-
-Step 4 — Create nginx/trading.conf
-  Route /webhook → bot:8000
-  Route / → dashboard:8501
-  No SSL yet (IP only, no domain)
-
-Step 5 — Create scripts/deploy.sh
-  SSH into VPS
-  git pull origin main
-  docker-compose down
-  docker-compose up -d --build
-  docker-compose ps
-
-Step 6 — Create .env.example
-  VPS_HOST=
-  VPS_USER=ubuntu
-  VPS_SSH_KEY=~/.ssh/trading-bot-new.key
-  DATABASE_URL=database/trades.db
-  BOT_PORT=8000
-  DASHBOARD_PORT=8501
-  IG_USERNAME=
-  IG_PASSWORD=
-  IG_API_KEY=
-
-Step 7 — Test locally first
-  docker-compose up -d --build
-  curl localhost:8000 (bot)
-  open localhost:8501 (dashboard)
-  verify both see same database
-
-Step 8 — Deploy to VPS
-  git push origin main
-  ssh into VPS
-  run deploy.sh
-  verify docker-compose ps shows 3 containers
-
-### Critical for this phase
-- Do NOT stop the bot until new docker-compose
-  is tested and ready to start immediately
-- Database must be mounted as volume BEFORE
-  stopping old container — data must not be lost
-- Verify bot is still receiving webhooks after
-  migration before marking phase complete
-
----
-
-## Phase 1D — Nginx Access (after 1C confirmed working)
-No domain — use IP directly:
-- http://YOUR_VPS_IP → dashboard (port 80 via Nginx)
-- http://YOUR_VPS_IP/webhook → bot webhook endpoint
-- SSH tunnel for secure local access:
-  ssh -i $VPS_SSH_KEY -L 8501:localhost:8501
-  ubuntu@$VPS_HOST
-  then open http://localhost:8501
-- Add domain + SSL later if needed
-
 ---
 
 ## Upcoming Phases 📋

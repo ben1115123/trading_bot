@@ -74,6 +74,97 @@ def log_trade(trade_data: dict) -> int:
     return trade_id
 
 
+def upsert_position(pos: dict) -> None:
+    required = ('deal_id', 'symbol', 'direction', 'size', 'open_price', 'updated_at')
+    missing = [f for f in required if f not in pos]
+    if missing:
+        raise ValueError(f"upsert_position missing required fields: {missing}")
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO positions
+                (deal_id, symbol, direction, size, open_price,
+                 current_price, unrealised_pnl, updated_at)
+            VALUES
+                (:deal_id, :symbol, :direction, :size, :open_price,
+                 :current_price, :unrealised_pnl, :updated_at)
+            ON CONFLICT(deal_id) DO UPDATE SET
+                current_price  = excluded.current_price,
+                unrealised_pnl = excluded.unrealised_pnl,
+                updated_at     = excluded.updated_at
+        """, {
+            "deal_id":       pos["deal_id"],
+            "symbol":        pos["symbol"],
+            "direction":     pos["direction"],
+            "size":          pos["size"],
+            "open_price":    pos["open_price"],
+            "current_price": pos.get("current_price"),
+            "unrealised_pnl": pos.get("unrealised_pnl"),
+            "updated_at":    pos["updated_at"],
+        })
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_positions() -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM positions ORDER BY updated_at DESC")
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def clear_closed_positions(active_deal_ids: list) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        if active_deal_ids:
+            placeholders = ",".join("?" * len(active_deal_ids))
+            cursor.execute(
+                f"DELETE FROM positions WHERE deal_id NOT IN ({placeholders})",
+                active_deal_ids,
+            )
+        else:
+            cursor.execute("DELETE FROM positions")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def close_trade(deal_id: str, close_price=None, close_time=None, realised_pnl=None) -> int:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE trades
+            SET close_price = ?,
+                close_time  = ?,
+                pnl         = ?,
+                status      = 'CLOSED'
+            WHERE deal_id = ?
+              AND status   = 'OPEN'
+        """, (close_price, close_time, realised_pnl, deal_id))
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def get_open_trade_deal_ids() -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT deal_id FROM trades WHERE status = 'OPEN' AND deal_id IS NOT NULL")
+        return [row["deal_id"] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_recent_trades(limit: int = 10) -> list:
     """
     Retrieve the most recent trades from the trades table.
