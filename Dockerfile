@@ -1,6 +1,9 @@
 # Use official Python image
 FROM python:3.10-slim
 
+# Flush Python stdout immediately so docker logs show print() output
+ENV PYTHONUNBUFFERED=1
+
 # Set working directory
 WORKDIR /app
 
