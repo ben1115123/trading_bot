@@ -124,8 +124,9 @@ if "timestamp" in df_display.columns:
 # Format P&L
 if "pnl" in df_display.columns:
     df_display["pnl"] = df_display["pnl"].apply(
-        lambda v: f"+${v:,.2f}" if isinstance(v, (int, float)) and not pd.isna(v) and v > 0
-        else (f"-${abs(v):,.2f}" if isinstance(v, (int, float)) and not pd.isna(v) and v < 0 else "—")
+        lambda v: f"+${v:,.2f}" if pd.notna(v) and v > 0
+        else (f"-${abs(v):,.2f}" if pd.notna(v) and v < 0
+        else "—")
     )
 
 st.dataframe(

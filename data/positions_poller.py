@@ -129,7 +129,11 @@ def _poll_loop():
 
                     symbol_info = EPIC_TO_SYMBOL.get(epic)
                     if not symbol_info:
-                        print(f"Positions poller: unknown epic {epic}, skipping")
+                        print(
+                            f"WARNING: deal_id {deal_id} epic {epic} not in EPIC_CONFIG "
+                            f"— skipping close detection for this deal to be safe"
+                        )
+                        active_deals.append(deal_id)
                         continue
 
                     symbol, vpp = symbol_info
@@ -160,8 +164,10 @@ def _poll_loop():
                 print(f"Positions updated: {len(active_deals)} open")
 
             else:
-                # No open positions — close any DB trades that are still marked OPEN
-                _detect_and_close_trades(ig_service, ensure_session, [])
+                # IG returned empty — cannot distinguish "no positions" from a transient
+                # API blip. Skip close detection entirely to avoid falsely closing live
+                # trades. A genuine close will be caught on the next poll once confirmed
+                # by IG transaction history.
                 clear_closed_positions([])
                 print("Positions: none open")
 
