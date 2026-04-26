@@ -8,12 +8,15 @@ Usage:
 """
 import sys
 import argparse
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from database.db import get_connection
 from data.positions_poller import _fetch_close_data
+
+LOOKBACK_HOURS = 120
 
 
 def _get_closed_trades_missing_pnl() -> list:
@@ -58,6 +61,20 @@ def main():
     from bot.execute_trade import ig_service, ensure_session
     ensure_session()
 
+    print("\n--- DIAGNOSTIC: IG transaction history ---")
+    _from_dt = datetime.utcnow() - timedelta(hours=LOOKBACK_HOURS)
+    _txns = ig_service.fetch_transaction_history(trans_type="ALL_DEAL", from_date=_from_dt)
+    if _txns is None or _txns.empty:
+        print("fetch_transaction_history returned empty/None")
+    else:
+        print(f"txn rows returned: {len(_txns)}")
+        print(f"txn columns: {list(_txns.columns)}")
+        if "openDateUtc" in _txns.columns:
+            print(f"openDateUtc sample: {_txns['openDateUtc'].tolist()[:5]}")
+        if "reference" in _txns.columns:
+            print(f"reference sample:   {_txns['reference'].tolist()[:5]}")
+    print("--- END DIAGNOSTIC ---\n")
+
     trades = _get_closed_trades_missing_pnl()
     if not trades:
         print("No closed trades with pnl=NULL. Nothing to do.")
@@ -80,6 +97,7 @@ def main():
             deal_id,
             deal_reference=deal_reference,
             entry_time=t.get("timestamp"),
+            lookback_hours=LOOKBACK_HOURS,
         )
 
         # Secondary: try deal_id as the reference value (old trades pre-fix,
@@ -91,6 +109,7 @@ def main():
                 deal_id,
                 deal_reference=deal_id,
                 entry_time=t.get("timestamp"),
+                lookback_hours=LOOKBACK_HOURS,
             )
 
         if close_data:
