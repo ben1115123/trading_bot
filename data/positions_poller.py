@@ -57,6 +57,11 @@ def _fetch_close_data(ig_service, deal_id: str, entry_time: str = None, lookback
             return None
 
         row = match.iloc[0]
+        # DEBUG: print raw transaction row to identify correct P&L column name
+        print(f"DEBUG _fetch_close_data: matched row for {deal_id}")
+        for col, val in row.items():
+            print(f"  {col!r}: {val!r}")
+
         return {
             "close_price":   _to_float(row.get("closeLevel")),
             "close_time":    row.get("dateUtc") or datetime.now(timezone.utc).isoformat(),
