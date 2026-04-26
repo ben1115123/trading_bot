@@ -37,6 +37,11 @@ def _fetch_close_data(ig_service, deal_id: str, entry_time: str = None, lookback
             print(f"Positions poller: no transaction history returned for {deal_id}")
             return None
 
+        # DEBUG: show columns + first few reference values to find correct match key
+        print(f"DEBUG txn columns: {list(transactions.columns)}")
+        print(f"DEBUG txn references: {transactions['reference'].tolist()[:5] if 'reference' in transactions.columns else 'NO reference col'}")
+        print(f"DEBUG looking for deal_id={deal_id}")
+
         match = transactions[transactions["reference"] == deal_id]
 
         if match.empty and entry_time and "openDateUtc" in transactions.columns:
