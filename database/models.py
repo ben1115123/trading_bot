@@ -50,6 +50,8 @@ def log_trade(trade_data: dict) -> int:
         data['tp'] = None
     if 'deal_id' not in data:
         data['deal_id'] = None
+    if 'deal_reference' not in data:
+        data['deal_reference'] = None
     if 'pnl' not in data:
         data['pnl'] = None
 
@@ -60,10 +62,10 @@ def log_trade(trade_data: dict) -> int:
         cursor.execute("""
             INSERT INTO trades
             (timestamp, symbol, direction, size, entry_price, sl, tp,
-             deal_id, pnl, source, strategy_name, status)
+             deal_id, deal_reference, pnl, source, strategy_name, status)
             VALUES
             (:timestamp, :symbol, :direction, :size, :entry_price, :sl, :tp,
-             :deal_id, :pnl, :source, :strategy_name, :status)
+             :deal_id, :deal_reference, :pnl, :source, :strategy_name, :status)
         """, data)
 
         conn.commit()

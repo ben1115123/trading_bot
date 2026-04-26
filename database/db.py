@@ -42,19 +42,20 @@ def init_db():
     # Create trades table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp     TEXT NOT NULL,
-            symbol        TEXT NOT NULL,
-            direction     TEXT NOT NULL,
-            size          REAL NOT NULL,
-            entry_price   REAL NOT NULL,
-            sl            REAL,
-            tp            REAL,
-            deal_id       TEXT,
-            pnl           REAL,
-            source        TEXT DEFAULT 'indicator',
-            strategy_name TEXT DEFAULT 'manual',
-            status        TEXT DEFAULT 'OPEN'
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp      TEXT NOT NULL,
+            symbol         TEXT NOT NULL,
+            direction      TEXT NOT NULL,
+            size           REAL NOT NULL,
+            entry_price    REAL NOT NULL,
+            sl             REAL,
+            tp             REAL,
+            deal_id        TEXT,
+            deal_reference TEXT,
+            pnl            REAL,
+            source         TEXT DEFAULT 'indicator',
+            strategy_name  TEXT DEFAULT 'manual',
+            status         TEXT DEFAULT 'OPEN'
         )
     """)
 
@@ -120,8 +121,12 @@ def init_db():
         )
     """)
 
-    # Migrate trades table: add close columns for existing DBs
-    for col, defn in [("close_price", "REAL"), ("close_time", "TEXT")]:
+    # Migrate trades table: add close + deal_reference columns for existing DBs
+    for col, defn in [
+        ("close_price",    "REAL"),
+        ("close_time",     "TEXT"),
+        ("deal_reference", "TEXT"),
+    ]:
         try:
             cursor.execute(f"ALTER TABLE trades ADD COLUMN {col} {defn}")
         except Exception:

@@ -265,6 +265,7 @@ def place_trade(symbol, action, sl=None, tp=None):
                     "sl": sl,
                     "tp": tp,
                     "deal_id": response.get("dealId"),
+                    "deal_reference": response.get("dealReference"),
                     "source": "tradingview_webhook",
                     "strategy_name": "tradingview_webhook",
                     "status": "OPEN",

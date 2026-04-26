@@ -21,13 +21,15 @@ def _to_float(val) -> float | None:
         return None
 
 
-def _fetch_close_data(ig_service, deal_id: str, entry_time: str = None, lookback_hours: int = 48) -> dict | None:
+def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entry_time: str = None, lookback_hours: int = 48) -> dict | None:
     """
-    Try to find close data for deal_id in IG transaction history.
-    Strategy 1: match by reference == deal_id (works if IG echoes dealId as reference)
-    Strategy 2: if entry_time given, match by openDateUtc within 60s of entry_time
+    Find close data for a deal in IG transaction history.
+    Primary: reference == deal_reference (IG echoes dealReference in transaction history).
+    Fallback: openDateUtc within 60s of entry_time (used when deal_reference is missing).
     """
     try:
+        time.sleep(5)  # give IG time to settle the transaction before querying
+
         from_dt = datetime.utcnow() - timedelta(hours=lookback_hours)
         transactions = ig_service.fetch_transaction_history(
             trans_type="ALL_DEAL",
@@ -37,14 +39,12 @@ def _fetch_close_data(ig_service, deal_id: str, entry_time: str = None, lookback
             print(f"Positions poller: no transaction history returned for {deal_id}")
             return None
 
-        # DEBUG: show columns + first few reference values to find correct match key
-        print(f"DEBUG txn columns: {list(transactions.columns)}")
-        print(f"DEBUG txn references: {transactions['reference'].tolist()[:5] if 'reference' in transactions.columns else 'NO reference col'}")
-        print(f"DEBUG looking for deal_id={deal_id}")
+        match = None
 
-        match = transactions[transactions["reference"] == deal_id]
+        if deal_reference and "reference" in transactions.columns:
+            match = transactions[transactions["reference"] == deal_reference]
 
-        if match.empty and entry_time and "openDateUtc" in transactions.columns:
+        if (match is None or match.empty) and entry_time and "openDateUtc" in transactions.columns:
             try:
                 entry_dt = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
                 def _near_entry(val):
@@ -57,15 +57,15 @@ def _fetch_close_data(ig_service, deal_id: str, entry_time: str = None, lookback
             except Exception as e:
                 print(f"Positions poller: entry_time match failed for {deal_id}: {e}")
 
-        if match.empty:
+        if match is None or match.empty:
             print(f"Positions poller: no transaction match for {deal_id} — will use fallback")
             return None
 
         row = match.iloc[0]
         return {
-            "close_price":   _to_float(row.get("closeLevel")),
-            "close_time":    row.get("dateUtc") or datetime.now(timezone.utc).isoformat(),
-            "realised_pnl":  _parse_pnl(row.get("profitAndLoss")),
+            "close_price":  _to_float(row.get("closeLevel")),
+            "close_time":   row.get("dateUtc") or datetime.now(timezone.utc).isoformat(),
+            "realised_pnl": _parse_pnl(row.get("profitAndLoss")),
         }
     except Exception as e:
         print(f"Positions poller: transaction history lookup failed: {e}")
@@ -94,7 +94,12 @@ def _detect_and_close_trades(ig_service, ensure_session, active_deal_ids: list) 
     for deal_id in disappeared:
         # Try transaction history first (accurate close price + realised P&L)
         trade_row = get_trade_by_deal_id(deal_id) or {}
-        close_data = _fetch_close_data(ig_service, deal_id, entry_time=trade_row.get("timestamp"))
+        close_data = _fetch_close_data(
+            ig_service,
+            deal_id,
+            deal_reference=trade_row.get("deal_reference"),
+            entry_time=trade_row.get("timestamp"),
+        )
 
         if close_data is None:
             # Fall back to last known position data (within 30s of actual close)
