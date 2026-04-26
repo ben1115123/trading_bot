@@ -61,17 +61,37 @@ def init_db():
     # Create backtest_results table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS backtest_results (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name    TEXT NOT NULL,
+            symbol           TEXT NOT NULL,
+            timeframe        TEXT NOT NULL,
+            run_at           TEXT NOT NULL,
+            candles_total    INTEGER,
+            candles_train    INTEGER,
+            candles_test     INTEGER,
+            total_trades     INTEGER,
+            win_rate         REAL,
+            total_profit     REAL,
+            max_drawdown     REAL,
+            sharpe_ratio     REAL,
+            benchmark_return REAL,
+            params_json      TEXT
+        )
+    """)
+
+    # Create backtest_trades table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_trades (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            strategy_name TEXT NOT NULL,
-            symbol        TEXT NOT NULL,
-            timeframe     TEXT NOT NULL,
-            total_trades  INTEGER,
-            win_rate      REAL,
-            profit        REAL,
-            drawdown      REAL,
-            sharpe_ratio  REAL,
-            score         REAL,
-            run_at        TEXT NOT NULL
+            backtest_id   INTEGER NOT NULL,
+            entry_time    TEXT,
+            exit_time     TEXT,
+            direction     TEXT,
+            entry_price   REAL,
+            exit_price    REAL,
+            pnl           REAL,
+            duration_mins INTEGER,
+            FOREIGN KEY (backtest_id) REFERENCES backtest_results(id)
         )
     """)
 
@@ -105,7 +125,22 @@ def init_db():
         try:
             cursor.execute(f"ALTER TABLE trades ADD COLUMN {col} {defn}")
         except Exception:
-            pass  # column already exists
+            pass
+
+    # Migrate backtest_results: add Phase 3 columns for existing DBs
+    for col, defn in [
+        ("candles_total",    "INTEGER"),
+        ("candles_train",    "INTEGER"),
+        ("candles_test",     "INTEGER"),
+        ("total_profit",     "REAL"),
+        ("max_drawdown",     "REAL"),
+        ("benchmark_return", "REAL"),
+        ("params_json",      "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE backtest_results ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
 
     # Commit changes and close connection
     conn.commit()

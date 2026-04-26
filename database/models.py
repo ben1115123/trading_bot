@@ -165,6 +165,79 @@ def get_open_trade_deal_ids() -> list:
         conn.close()
 
 
+def get_trade_by_deal_id(deal_id: str) -> dict | None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM trades WHERE deal_id = ? LIMIT 1", (deal_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def insert_backtest_result(result: dict) -> int:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO backtest_results
+                (strategy_name, symbol, timeframe, run_at,
+                 candles_total, candles_train, candles_test,
+                 total_trades, win_rate, total_profit, max_drawdown,
+                 sharpe_ratio, benchmark_return, params_json)
+            VALUES
+                (:strategy_name, :symbol, :timeframe, :run_at,
+                 :candles_total, :candles_train, :candles_test,
+                 :total_trades, :win_rate, :total_profit, :max_drawdown,
+                 :sharpe_ratio, :benchmark_return, :params_json)
+        """, result)
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def insert_backtest_trade(trade: dict) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO backtest_trades
+                (backtest_id, entry_time, exit_time, direction,
+                 entry_price, exit_price, pnl, duration_mins)
+            VALUES
+                (:backtest_id, :entry_time, :exit_time, :direction,
+                 :entry_price, :exit_price, :pnl, :duration_mins)
+        """, trade)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_backtest_results() -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM backtest_results ORDER BY run_at DESC")
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_backtest_trades(backtest_id: int) -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM backtest_trades WHERE backtest_id = ? ORDER BY entry_time ASC",
+            (backtest_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_recent_trades(limit: int = 10) -> list:
     """
     Retrieve the most recent trades from the trades table.

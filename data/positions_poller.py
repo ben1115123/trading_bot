@@ -21,22 +21,39 @@ def _to_float(val) -> float | None:
         return None
 
 
-def _fetch_close_data(ig_service, deal_id: str, lookback_hours: int = 2) -> dict | None:
+def _fetch_close_data(ig_service, deal_id: str, entry_time: str = None, lookback_hours: int = 48) -> dict | None:
     """
     Try to find close data for deal_id in IG transaction history.
-    Returns dict with close_price, close_time, realised_pnl or None.
+    Strategy 1: match by reference == deal_id (works if IG echoes dealId as reference)
+    Strategy 2: if entry_time given, match by openDateUtc within 60s of entry_time
     """
     try:
         from_dt = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
         transactions = ig_service.fetch_transaction_history(
-            trans_type="DEAL",
+            trans_type="ALL_DEAL",
             from_date=from_dt,
         )
         if transactions is None or transactions.empty:
+            print(f"Positions poller: no transaction history returned for {deal_id}")
             return None
 
         match = transactions[transactions["reference"] == deal_id]
+
+        if match.empty and entry_time and "openDateUtc" in transactions.columns:
+            try:
+                entry_dt = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+                def _near_entry(val):
+                    try:
+                        dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                        return abs((dt - entry_dt).total_seconds()) < 60
+                    except Exception:
+                        return False
+                match = transactions[transactions["openDateUtc"].apply(_near_entry)]
+            except Exception as e:
+                print(f"Positions poller: entry_time match failed for {deal_id}: {e}")
+
         if match.empty:
+            print(f"Positions poller: no transaction match for {deal_id} — will use fallback")
             return None
 
         row = match.iloc[0]
@@ -55,7 +72,7 @@ def _detect_and_close_trades(ig_service, ensure_session, active_deal_ids: list) 
     Compare open trades in DB against currently open IG positions.
     For any deal that has disappeared, mark it closed in the trades table.
     """
-    from database.models import get_open_trade_deal_ids, get_positions, close_trade
+    from database.models import get_open_trade_deal_ids, get_positions, close_trade, get_trade_by_deal_id
 
     open_in_db = get_open_trade_deal_ids()
     if not open_in_db:
@@ -71,7 +88,8 @@ def _detect_and_close_trades(ig_service, ensure_session, active_deal_ids: list) 
 
     for deal_id in disappeared:
         # Try transaction history first (accurate close price + realised P&L)
-        close_data = _fetch_close_data(ig_service, deal_id)
+        trade_row = get_trade_by_deal_id(deal_id) or {}
+        close_data = _fetch_close_data(ig_service, deal_id, entry_time=trade_row.get("timestamp"))
 
         if close_data is None:
             # Fall back to last known position data (within 30s of actual close)
@@ -107,12 +125,15 @@ def _poll_loop():
         for k, v in EPIC_CONFIG.items()
     }
 
+    _consecutive_empty = 0
+
     while True:
         try:
             ensure_session()
             df = ig_service.fetch_open_positions()
 
             if df is not None and not df.empty:
+                _consecutive_empty = 0
                 active_deals = []
 
                 for _, row in df.iterrows():
@@ -164,12 +185,13 @@ def _poll_loop():
                 print(f"Positions updated: {len(active_deals)} open")
 
             else:
-                # IG returned empty — cannot distinguish "no positions" from a transient
-                # API blip. Skip close detection entirely to avoid falsely closing live
-                # trades. A genuine close will be caught on the next poll once confirmed
-                # by IG transaction history.
+                _consecutive_empty += 1
+                if _consecutive_empty < 2:
+                    print(f"Positions: none open ({_consecutive_empty}/2 — waiting to confirm)")
+                else:
+                    print(f"Positions: none open (2/2 — confirming closes)")
+                    _detect_and_close_trades(ig_service, ensure_session, [])
                 clear_closed_positions([])
-                print("Positions: none open")
 
         except Exception as e:
             print("Positions poller error:", e)
