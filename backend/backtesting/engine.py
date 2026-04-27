@@ -23,25 +23,25 @@ def fetch_candles(ig_service, symbol: str, timeframe: str, count: int) -> list:
     result = ig_service.fetch_historical_prices_by_epic_and_num_points(
         epic=config["epic"],
         resolution=timeframe.upper(),
-        num_points=count,
+        numpoints=count,
     )
 
-    prices_df = result.get("prices")
-    if prices_df is None or prices_df.empty:
+    prices_raw = result.get("prices")
+    if not prices_raw:
         raise RuntimeError(f"No price data returned for {symbol}")
 
     candles = []
-    for ts, row in prices_df.iterrows():
+    for row in prices_raw:
         try:
-            o = (row[("bid", "Open")]  + row[("ask", "Open")])  / 2
-            h = (row[("bid", "High")]  + row[("ask", "High")])  / 2
-            l = (row[("bid", "Low")]   + row[("ask", "Low")])   / 2
-            c = (row[("bid", "Close")] + row[("ask", "Close")]) / 2
+            o = (row["openPrice"]["bid"]  + row["openPrice"]["ask"])  / 2
+            h = (row["highPrice"]["bid"]  + row["highPrice"]["ask"])  / 2
+            l = (row["lowPrice"]["bid"]   + row["lowPrice"]["ask"])   / 2
+            c = (row["closePrice"]["bid"] + row["closePrice"]["ask"]) / 2
         except (KeyError, TypeError):
             continue
         if any(v != v for v in [o, h, l, c]):  # NaN check
             continue
-        candles.append({"time": str(ts), "open": float(o), "high": float(h), "low": float(l), "close": float(c)})
+        candles.append({"time": row["snapshotTime"], "open": float(o), "high": float(h), "low": float(l), "close": float(c)})
 
     return candles
 
