@@ -50,6 +50,8 @@ def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entr
                 def _near_entry(val):
                     try:
                         dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
                         return abs((dt - entry_dt).total_seconds()) < 60
                     except Exception:
                         return False
