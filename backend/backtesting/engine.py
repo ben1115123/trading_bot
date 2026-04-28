@@ -15,33 +15,68 @@ EPIC_CONFIG = {
 RISK_PER_TRADE = 15.0  # USD, matches live bot
 
 
+_TIMEFRAME_MAP = {
+    "MINUTE": "1Min", "MINUTE_2": "2Min", "MINUTE_3": "3Min",
+    "MINUTE_5": "5Min", "MINUTE_10": "10Min", "MINUTE_15": "15Min",
+    "MINUTE_30": "30Min", "5MIN": "5Min",
+    "HOUR": "1h", "HOUR_2": "2h", "HOUR_3": "3h", "HOUR_4": "4h",
+    "DAY": "D", "WEEK": "W",
+}
+
+
 def fetch_candles(ig_service, symbol: str, timeframe: str, count: int) -> list:
     config = EPIC_CONFIG.get(symbol.upper())
     if not config:
         raise ValueError(f"Unknown symbol: {symbol}")
 
+    resolution = _TIMEFRAME_MAP.get(timeframe.upper(), timeframe)
+
     result = ig_service.fetch_historical_prices_by_epic_and_num_points(
         epic=config["epic"],
-        resolution=timeframe.upper(),
+        resolution=resolution,
         numpoints=count,
     )
 
     prices_raw = result.get("prices")
-    if not prices_raw:
+    if prices_raw is None:
         raise RuntimeError(f"No price data returned for {symbol}")
 
     candles = []
-    for row in prices_raw:
-        try:
-            o = (row["openPrice"]["bid"]  + row["openPrice"]["ask"])  / 2
-            h = (row["highPrice"]["bid"]  + row["highPrice"]["ask"])  / 2
-            l = (row["lowPrice"]["bid"]   + row["lowPrice"]["ask"])   / 2
-            c = (row["closePrice"]["bid"] + row["closePrice"]["ask"]) / 2
-        except (KeyError, TypeError):
-            continue
-        if any(v != v for v in [o, h, l, c]):  # NaN check
-            continue
-        candles.append({"time": row["snapshotTime"], "open": float(o), "high": float(h), "low": float(l), "close": float(c)})
+
+    try:
+        import pandas as pd
+        is_df = isinstance(prices_raw, pd.DataFrame)
+    except ImportError:
+        is_df = False
+
+    if is_df:
+        if prices_raw.empty:
+            raise RuntimeError(f"No price data returned for {symbol}")
+        for ts, row in prices_raw.iterrows():
+            try:
+                o = (row[("bid", "Open")]  + row[("ask", "Open")])  / 2
+                h = (row[("bid", "High")]  + row[("ask", "High")])  / 2
+                l = (row[("bid", "Low")]   + row[("ask", "Low")])   / 2
+                c = (row[("bid", "Close")] + row[("ask", "Close")]) / 2
+            except (KeyError, TypeError):
+                continue
+            if any(v != v for v in [o, h, l, c]):  # NaN check
+                continue
+            candles.append({"time": str(ts), "open": float(o), "high": float(h), "low": float(l), "close": float(c)})
+    else:
+        if not prices_raw:
+            raise RuntimeError(f"No price data returned for {symbol}")
+        for row in prices_raw:
+            try:
+                o = (row["openPrice"]["bid"]  + row["openPrice"]["ask"])  / 2
+                h = (row["highPrice"]["bid"]  + row["highPrice"]["ask"])  / 2
+                l = (row["lowPrice"]["bid"]   + row["lowPrice"]["ask"])   / 2
+                c = (row["closePrice"]["bid"] + row["closePrice"]["ask"]) / 2
+            except (KeyError, TypeError):
+                continue
+            if any(v != v for v in [o, h, l, c]):  # NaN check
+                continue
+            candles.append({"time": row["snapshotTime"], "open": float(o), "high": float(h), "low": float(l), "close": float(c)})
 
     return candles
 

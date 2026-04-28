@@ -26,11 +26,13 @@ from backend.backtesting.metrics import (
 )
 from backend.strategies.rsi import RSIStrategy
 from backend.strategies.supertrend import SuperTrendStrategy
+from backend.strategies.vwap_ema import VWAPEMAStrategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
-    "rsi": RSIStrategy,
+    "rsi":        RSIStrategy,
     "supertrend": SuperTrendStrategy,
+    "vwap_ema":   VWAPEMAStrategy,
 }
 
 PARAM_GRIDS = {
@@ -42,6 +44,10 @@ PARAM_GRIDS = {
     "supertrend": {
         "period":     [7, 10, 14],
         "multiplier": [2.0, 3.0, 4.0],
+    },
+    "vwap_ema": {
+        "ema_period":      [10, 20, 50],
+        "vwap_deviation":  [0.001, 0.002, 0.005],
     },
 }
 
