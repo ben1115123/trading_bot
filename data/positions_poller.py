@@ -256,14 +256,14 @@ def _update_trade_pnl(trade_id: int, close_price, close_time, pnl) -> int:
 def _deferred_pnl_loop():
     from bot.execute_trade import ig_service, ensure_session
 
-    DEFERRED_INTERVAL = 300   # 5 minutes between scans
-    GIVE_UP_MINUTES   = 30    # give up if close was > 30 min ago
+    DEFERRED_INTERVAL = 300    # 5 minutes between scans
+    GIVE_UP_MINUTES   = 1440  # give up if close was > 24 hours ago
 
     while True:
         time.sleep(DEFERRED_INTERVAL)
         try:
             ensure_session()
-            pending = _get_closed_trades_missing_pnl_recent(hours=2)
+            pending = _get_closed_trades_missing_pnl_recent(hours=25)
             if not pending:
                 continue
 
