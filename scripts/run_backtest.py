@@ -148,7 +148,8 @@ def create_ig_session() -> IGService:
     return svc
 
 
-def _save_run(strategy_class, symbol, timeframe, result, params) -> int:
+def _save_run(strategy_class, symbol, timeframe, result, params,
+              strategy_type: str = "swing") -> int:
     trades   = result["trades"]
     win_rate = calc_win_rate(trades)
     profit   = calc_total_profit(trades)
@@ -170,6 +171,7 @@ def _save_run(strategy_class, symbol, timeframe, result, params) -> int:
         "sharpe_ratio":     sharpe,
         "benchmark_return": result["benchmark_return"],
         "params_json":      json.dumps(params),
+        "strategy_type":    strategy_type,
     }
     backtest_id = insert_backtest_result(row)
     for t in trades:
@@ -202,8 +204,14 @@ def main():
     parser.add_argument("--sweep",         action="store_true", help="Run full parameter sweep")
     parser.add_argument("--cache",         action="store_true", help="Cache candles to disk; load if fresh (<24h)")
     parser.add_argument("--refresh-cache", action="store_true", help="Force re-fetch even if cache exists")
-    parser.add_argument("--source",        default="ig", choices=["ig", "yfinance"],
+    parser.add_argument("--source",         default="ig", choices=["ig", "yfinance"],
                         help="Data source: ig (default) or yfinance (free, no API limit)")
+    parser.add_argument("--type",           default="swing", choices=["swing", "daytrading"],
+                        help="Strategy type label stored in DB (default: swing)")
+    parser.add_argument("--session-filter", default=None, choices=["US", "24_7"],
+                        help="Only generate signals during session: US (market hours) or 24_7")
+    parser.add_argument("--max-hold",       type=int, default=None,
+                        help="Force-close trades after N candles (e.g. 78 = one US day at 5MIN)")
     args = parser.parse_args()
 
     strategy_key = args.strategy.lower()
@@ -242,11 +250,16 @@ def main():
             combos *= len(v)
         print(f"Running parameter sweep ({combos} combinations): {param_grid}\n")
 
-        sweep_results = run_parameter_sweep(strategy_class, candles, args.symbol, param_grid)
+        sweep_results = run_parameter_sweep(
+            strategy_class, candles, args.symbol, param_grid,
+            max_hold_candles=args.max_hold,
+            session_filter=args.session_filter,
+        )
 
         for r in sweep_results:
             params = r["params"]
-            bid = _save_run(strategy_class, args.symbol, args.timeframe, r, params)
+            bid = _save_run(strategy_class, args.symbol, args.timeframe, r, params,
+                            strategy_type=args.type)
             _print_run(strategy_class.name, args.symbol, args.timeframe, r, params, bid)
 
         print(f"Saved {len(sweep_results)} runs to database.")
@@ -255,8 +268,11 @@ def main():
         params   = strategy.params
         print(f"Running single backtest with params={params}\n")
 
-        result = run_backtest(strategy, candles, args.symbol)
-        bid    = _save_run(strategy_class, args.symbol, args.timeframe, result, params)
+        result = run_backtest(strategy, candles, args.symbol,
+                              max_hold_candles=args.max_hold,
+                              session_filter=args.session_filter)
+        bid    = _save_run(strategy_class, args.symbol, args.timeframe, result, params,
+                           strategy_type=args.type)
         _print_run(strategy_class.name, args.symbol, args.timeframe, result, params, bid)
         print(f"Saved to database (backtest_id={bid}).")
 

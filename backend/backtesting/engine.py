@@ -1,5 +1,5 @@
 import itertools
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.backtesting.metrics import (
     calc_win_rate, calc_max_drawdown, calc_sharpe_ratio,
@@ -81,14 +81,30 @@ def fetch_candles(ig_service, symbol: str, timeframe: str, count: int) -> list:
     return candles
 
 
+def _in_us_session(time_str: str) -> bool:
+    """True if timestamp is within US market hours (Mon-Fri, 13:30-21:00 UTC covers EDT+EST)."""
+    try:
+        dt = datetime.fromisoformat(str(time_str).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt.weekday() > 4:
+            return False
+        minutes = dt.hour * 60 + dt.minute
+        return 810 <= minutes <= 1260  # 13:30=810, 21:00=1260
+    except Exception:
+        return True  # don't filter on parse failure
+
+
 def _lot_size(sl_distance: float, value_per_point: float) -> float:
     if sl_distance <= 0:
         return 0.1
     return round(max(0.1, min(10.0, RISK_PER_TRADE / (sl_distance * value_per_point))), 2)
 
 
-def run_backtest(strategy, candles: list, symbol: str) -> dict:
-    """80/20 split — signals generated on full set for warmup, trades only on test portion."""
+def run_backtest(strategy, candles: list, symbol: str,
+                 max_hold_candles: int = None,
+                 session_filter: str = None) -> dict:
+    """80/20 split. session_filter: 'US'|'24_7'|None. max_hold_candles: force-close after N candles."""
     split = int(len(candles) * 0.8)
     test = candles[split:]
 
@@ -104,20 +120,24 @@ def run_backtest(strategy, candles: list, symbol: str) -> dict:
         last = i == len(test_signals) - 1
 
         if open_trade is not None:
+            candles_held = i - open_trade["entry_candle_idx"]
+            force_close  = max_hold_candles is not None and candles_held >= max_hold_candles
             should_close = (
                 last or
+                force_close or
                 (open_trade["direction"] == "BUY"  and sig["signal"] == "SELL") or
                 (open_trade["direction"] == "SELL" and sig["signal"] == "BUY")
             )
             if should_close:
-                ep = open_trade["entry_price"]
-                xp = candle["close"]
-                d  = open_trade["direction"]
+                ep  = open_trade["entry_price"]
+                xp  = candle["close"]
+                d   = open_trade["direction"]
                 pnl = ((xp - ep) if d == "BUY" else (ep - xp)) * open_trade["size"] * vpp
                 try:
                     dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
                 except Exception:
                     dur = 0
+                exit_reason = "max_hold" if force_close else "signal"
                 trades.append({
                     "entry_time":    open_trade["entry_time"],
                     "exit_time":     candle["time"],
@@ -126,16 +146,21 @@ def run_backtest(strategy, candles: list, symbol: str) -> dict:
                     "exit_price":    xp,
                     "pnl":           round(pnl, 2),
                     "duration_mins": max(0, dur),
+                    "exit_reason":   exit_reason,
                 })
                 open_trade = None
+
+        if session_filter == "US" and not _in_us_session(candle["time"]):
+            continue
 
         if open_trade is None and sig["signal"] in ("BUY", "SELL"):
             sl_dist = candle["high"] - candle["low"]
             open_trade = {
-                "direction":   sig["signal"],
-                "entry_price": candle["close"],
-                "entry_time":  candle["time"],
-                "size":        _lot_size(sl_dist, vpp),
+                "direction":        sig["signal"],
+                "entry_price":      candle["close"],
+                "entry_time":       candle["time"],
+                "entry_candle_idx": i,
+                "size":             _lot_size(sl_dist, vpp),
             }
 
     return {
@@ -147,12 +172,15 @@ def run_backtest(strategy, candles: list, symbol: str) -> dict:
     }
 
 
-def run_parameter_sweep(strategy_class, candles: list, symbol: str, param_grid: dict) -> list:
+def run_parameter_sweep(strategy_class, candles: list, symbol: str, param_grid: dict,
+                        max_hold_candles: int = None, session_filter: str = None) -> list:
     keys = list(param_grid.keys())
     results = []
     for combo in itertools.product(*param_grid.values()):
         params = dict(zip(keys, combo))
-        result = run_backtest(strategy_class(params=params), candles, symbol)
+        result = run_backtest(strategy_class(params=params), candles, symbol,
+                              max_hold_candles=max_hold_candles,
+                              session_filter=session_filter)
         result["params"] = params
         results.append(result)
     return results

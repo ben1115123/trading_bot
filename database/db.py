@@ -147,6 +147,12 @@ def init_db():
         except Exception:
             pass
 
+    # Migrate backtest_results: add strategy_type column
+    try:
+        cursor.execute("ALTER TABLE backtest_results ADD COLUMN strategy_type TEXT DEFAULT 'swing'")
+    except Exception:
+        pass
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

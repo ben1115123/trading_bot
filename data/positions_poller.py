@@ -217,7 +217,99 @@ def _poll_loop():
         time.sleep(30)
 
 
+def _get_closed_trades_missing_pnl_recent(hours: int = 2) -> list:
+    from database.db import get_connection
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, deal_id, deal_reference, timestamp, close_time
+            FROM trades
+            WHERE status = 'CLOSED'
+              AND pnl IS NULL
+              AND close_time > datetime('now', ?)
+        """, (f"-{hours} hours",))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def _update_trade_pnl(trade_id: int, close_price, close_time, pnl) -> int:
+    from database.db import get_connection
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE trades
+            SET close_price = ?,
+                close_time  = ?,
+                pnl         = ?
+            WHERE id = ?
+              AND pnl IS NULL
+        """, (close_price, close_time, pnl, trade_id))
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def _deferred_pnl_loop():
+    from bot.execute_trade import ig_service, ensure_session
+
+    DEFERRED_INTERVAL = 300   # 5 minutes between scans
+    GIVE_UP_MINUTES   = 30    # give up if close was > 30 min ago
+
+    while True:
+        time.sleep(DEFERRED_INTERVAL)
+        try:
+            ensure_session()
+            pending = _get_closed_trades_missing_pnl_recent(hours=2)
+            if not pending:
+                continue
+
+            for t in pending:
+                deal_id  = t["deal_id"]
+                trade_id = t["id"]
+
+                try:
+                    close_dt = datetime.fromisoformat(
+                        str(t["close_time"]).replace("Z", "+00:00"))
+                    if close_dt.tzinfo is None:
+                        close_dt = close_dt.replace(tzinfo=timezone.utc)
+                    age_mins = (datetime.now(timezone.utc) - close_dt).total_seconds() / 60
+                except Exception:
+                    age_mins = 0
+
+                if age_mins > GIVE_UP_MINUTES:
+                    print(f"WARNING: could not fetch P&L for {deal_id} "
+                          f"after {GIVE_UP_MINUTES}min — manual backfill required")
+                    continue
+
+                close_data = _fetch_close_data(
+                    ig_service, deal_id,
+                    deal_reference=t.get("deal_reference"),
+                    entry_time=t.get("timestamp"),
+                    max_attempts=1,
+                    retry_delay=1,
+                )
+                if close_data:
+                    rows = _update_trade_pnl(
+                        trade_id,
+                        close_data["close_price"],
+                        close_data["close_time"],
+                        close_data["realised_pnl"],
+                    )
+                    if rows:
+                        print(f"Positions poller (deferred): updated P&L for "
+                              f"{deal_id} pnl={close_data['realised_pnl']}")
+        except Exception as e:
+            print(f"Positions poller deferred P&L loop error: {e}")
+
+
 def start_poller():
     t = threading.Thread(target=_poll_loop, daemon=True)
     t.start()
     print("Positions poller started (30s interval)")
+    d = threading.Thread(target=_deferred_pnl_loop, daemon=True)
+    d.start()
+    print("Positions poller deferred P&L checker started (5min interval)")

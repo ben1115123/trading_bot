@@ -79,7 +79,13 @@ with st.expander("▶ Run New Backtest", expanded=False):
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 
+type_filter = st.sidebar.multiselect(
+    "Strategy type", ["swing", "daytrading"], default=["swing", "daytrading"],
+    key="type_filter")
+
 rows = get_backtest_results()
+if type_filter:
+    rows = [r for r in rows if r.get("strategy_type", "swing") in type_filter]
 
 if not rows:
     st.markdown("""

@@ -187,12 +187,12 @@ def insert_backtest_result(result: dict) -> int:
                 (strategy_name, symbol, timeframe, run_at,
                  candles_total, candles_train, candles_test,
                  total_trades, win_rate, total_profit, max_drawdown,
-                 sharpe_ratio, benchmark_return, params_json)
+                 sharpe_ratio, benchmark_return, params_json, strategy_type)
             VALUES
                 (:strategy_name, :symbol, :timeframe, :run_at,
                  :candles_total, :candles_train, :candles_test,
                  :total_trades, :win_rate, :total_profit, :max_drawdown,
-                 :sharpe_ratio, :benchmark_return, :params_json)
+                 :sharpe_ratio, :benchmark_return, :params_json, :strategy_type)
         """, result)
         conn.commit()
         return cursor.lastrowid
