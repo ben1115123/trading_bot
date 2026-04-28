@@ -50,7 +50,11 @@ def _fetch_yfinance_candles(symbol: str, timeframe: str, count: int) -> list:
             continue
         if any(v != v for v in [o, h, l, c]):
             continue
-        candles.append({"time": str(ts), "open": o, "high": h, "low": l, "close": c})
+        try:
+            vol = _get("Volume")
+        except Exception:
+            vol = 0.0
+        candles.append({"time": str(ts), "open": o, "high": h, "low": l, "close": c, "volume": vol})
     return candles[-count:]
 
 
@@ -90,6 +94,11 @@ from backend.strategies.ema_ribbon import EMARibbonStrategy
 from backend.strategies.bb_squeeze import BBSqueezeStrategy
 from backend.strategies.rsi_divergence import RSIDivergenceStrategy
 from backend.strategies.orb import ORBStrategy
+from backend.strategies.ichimoku import IchimokuStrategy
+from backend.strategies.keltner import KeltnerChannelStrategy
+from backend.strategies.stoch_rsi import StochRSIStrategy
+from backend.strategies.ema_cross_volume import EMACrossVolumeStrategy
+from backend.strategies.vwap_mean_reversion import VWAPMeanReversionStrategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
@@ -100,6 +109,11 @@ STRATEGIES = {
     "bb_squeeze":     BBSqueezeStrategy,
     "rsi_divergence": RSIDivergenceStrategy,
     "orb":            ORBStrategy,
+    "ichimoku":       IchimokuStrategy,
+    "keltner":        KeltnerChannelStrategy,
+    "stoch_rsi":        StochRSIStrategy,
+    "ema_cross_volume":     EMACrossVolumeStrategy,
+    "vwap_mean_reversion":  VWAPMeanReversionStrategy,
 }
 
 PARAM_GRIDS = {
@@ -135,6 +149,35 @@ PARAM_GRIDS = {
     "orb": {
         "candles_in_range":  [3, 6, 12],
         "breakout_buffer":   [0.0005, 0.001, 0.002],
+    },
+    "ichimoku": {
+        "tenkan":       [7, 9, 13],
+        "kijun":        [20, 26, 34],
+        "senkou_b":     [44, 52, 60],
+        "displacement": [26],
+    },
+    "keltner": {
+        "ema_period": [15, 20, 30],
+        "atr_period": [7, 10, 14],
+        "multiplier": [1.5, 2.0, 2.5],
+    },
+    "stoch_rsi": {
+        "rsi_period":   [9, 14, 21],
+        "stoch_period": [9, 14, 21],
+        "k_smooth":     [3],
+        "d_smooth":     [3],
+        "oversold":     [15, 20, 25],
+        "overbought":   [75, 80, 85],
+    },
+    "ema_cross_volume": {
+        "fast":       [5, 8, 13],
+        "slow":       [13, 21, 34],
+        "vol_period": [10, 20],
+    },
+    "vwap_mean_reversion": {
+        "std_dev_entry": [1.0, 1.5, 2.0],
+        "std_dev_exit":  [0.2],
+        "lookback":      [10, 20, 30],
     },
 }
 
