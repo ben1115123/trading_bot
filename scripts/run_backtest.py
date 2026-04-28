@@ -10,10 +10,34 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+CACHE_DIR = Path(__file__).resolve().parent / "candle_cache"
+CACHE_MAX_AGE_SECONDS = 86400  # 24 hours
+
+
+def _cache_path(symbol: str, timeframe: str, count: int) -> Path:
+    return CACHE_DIR / f"{symbol.upper()}_{timeframe.upper()}_{count}.json"
+
+
+def _load_cache(symbol: str, timeframe: str, count: int) -> list | None:
+    path = _cache_path(symbol, timeframe, count)
+    if not path.exists():
+        return None
+    if time.time() - path.stat().st_mtime > CACHE_MAX_AGE_SECONDS:
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save_cache(symbol: str, timeframe: str, count: int, candles: list) -> None:
+    CACHE_DIR.mkdir(exist_ok=True)
+    with open(_cache_path(symbol, timeframe, count), "w") as f:
+        json.dump(candles, f)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -28,13 +52,19 @@ from backend.strategies.rsi import RSIStrategy
 from backend.strategies.supertrend import SuperTrendStrategy
 from backend.strategies.vwap_ema import VWAPEMAStrategy
 from backend.strategies.ema_ribbon import EMARibbonStrategy
+from backend.strategies.bb_squeeze import BBSqueezeStrategy
+from backend.strategies.rsi_divergence import RSIDivergenceStrategy
+from backend.strategies.orb import ORBStrategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
     "rsi":        RSIStrategy,
     "supertrend": SuperTrendStrategy,
     "vwap_ema":   VWAPEMAStrategy,
-    "ema_ribbon": EMARibbonStrategy,
+    "ema_ribbon":  EMARibbonStrategy,
+    "bb_squeeze":     BBSqueezeStrategy,
+    "rsi_divergence": RSIDivergenceStrategy,
+    "orb":            ORBStrategy,
 }
 
 PARAM_GRIDS = {
@@ -55,6 +85,21 @@ PARAM_GRIDS = {
         "fast": [5, 8, 13],
         "mid":  [13, 21, 34],
         "slow": [34, 55, 89],
+    },
+    "bb_squeeze": {
+        "period":             [10, 20, 30],
+        "std_dev":            [1.5, 2.0, 2.5],
+        "squeeze_threshold":  [0.001, 0.002, 0.003],
+    },
+    "rsi_divergence": {
+        "rsi_period": [7, 14, 21],
+        "lookback":   [3, 5, 8],
+        "overbought": [65, 70, 75],
+        "oversold":   [25, 30, 35],
+    },
+    "orb": {
+        "candles_in_range":  [3, 6, 12],
+        "breakout_buffer":   [0.0005, 0.001, 0.002],
     },
 }
 
@@ -119,7 +164,9 @@ def main():
     parser.add_argument("--timeframe", required=True,       help="MINUTE | HOUR | DAY")
     parser.add_argument("--strategy",  required=True,       help="rsi | supertrend")
     parser.add_argument("--count",     type=int, default=500, help="Number of candles to fetch (default: 500)")
-    parser.add_argument("--sweep",     action="store_true", help="Run full parameter sweep")
+    parser.add_argument("--sweep",         action="store_true", help="Run full parameter sweep")
+    parser.add_argument("--cache",         action="store_true", help="Cache candles to disk; load if fresh (<24h)")
+    parser.add_argument("--refresh-cache", action="store_true", help="Force re-fetch from IG even if cache exists")
     args = parser.parse_args()
 
     strategy_key = args.strategy.lower()
@@ -129,13 +176,23 @@ def main():
 
     strategy_class = STRATEGIES[strategy_key]
 
-    print(f"Connecting to IG Markets...")
-    ig = create_ig_session()
-    print(f"Session created.")
+    candles = None
+    if args.cache and not args.refresh_cache:
+        candles = _load_cache(args.symbol, args.timeframe, args.count)
+        if candles:
+            print(f"Loaded {len(candles)} candles from cache ({args.symbol} {args.timeframe} {args.count}).")
 
-    print(f"Fetching {args.count} {args.timeframe} candles for {args.symbol}...")
-    candles = fetch_candles(ig, args.symbol, args.timeframe, args.count)
-    print(f"Fetched {len(candles)} candles.\n")
+    if candles is None:
+        print(f"Connecting to IG Markets...")
+        ig = create_ig_session()
+        print(f"Session created.")
+        print(f"Fetching {args.count} {args.timeframe} candles for {args.symbol}...")
+        candles = fetch_candles(ig, args.symbol, args.timeframe, args.count)
+        print(f"Fetched {len(candles)} candles.")
+        if args.cache or args.refresh_cache:
+            _save_cache(args.symbol, args.timeframe, args.count, candles)
+            print(f"Saved to cache.")
+    print()
 
     if args.sweep:
         param_grid = PARAM_GRIDS[strategy_key]
