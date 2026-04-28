@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tradingview": {
+      "command": "node",
+      "args": ["/home/tanbe/tradingview-mcp/src/server.js"]
+    }
+  }
+}
