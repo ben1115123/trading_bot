@@ -27,12 +27,14 @@ from backend.backtesting.metrics import (
 from backend.strategies.rsi import RSIStrategy
 from backend.strategies.supertrend import SuperTrendStrategy
 from backend.strategies.vwap_ema import VWAPEMAStrategy
+from backend.strategies.ema_ribbon import EMARibbonStrategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
     "rsi":        RSIStrategy,
     "supertrend": SuperTrendStrategy,
     "vwap_ema":   VWAPEMAStrategy,
+    "ema_ribbon": EMARibbonStrategy,
 }
 
 PARAM_GRIDS = {
@@ -48,6 +50,11 @@ PARAM_GRIDS = {
     "vwap_ema": {
         "ema_period":      [10, 20, 50],
         "vwap_deviation":  [0.001, 0.002, 0.005],
+    },
+    "ema_ribbon": {
+        "fast": [5, 8, 13],
+        "mid":  [13, 21, 34],
+        "slow": [34, 55, 89],
     },
 }
 
