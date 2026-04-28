@@ -21,54 +21,60 @@ def _to_float(val) -> float | None:
         return None
 
 
-def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entry_time: str = None, lookback_hours: int = 48) -> dict | None:
+def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entry_time: str = None, lookback_hours: int = 48, max_attempts: int = 5, retry_delay: int = 10) -> dict | None:
     """
     Find close data for a deal in IG transaction history.
     Primary: reference == deal_reference (IG echoes dealReference in transaction history).
     Fallback: openDateUtc within 60s of entry_time (used when deal_reference is missing).
+    Retries up to max_attempts times with retry_delay seconds between each attempt
+    to handle fast-closing trades where IG hasn't settled the transaction yet.
     """
     try:
-        time.sleep(5)  # give IG time to settle the transaction before querying
+        for attempt in range(1, max_attempts + 1):
+            print(f"Positions poller: fetching close data for {deal_id} attempt {attempt}/{max_attempts}...")
+            time.sleep(retry_delay)
 
-        from_dt = datetime.utcnow() - timedelta(hours=lookback_hours)
-        transactions = ig_service.fetch_transaction_history(
-            trans_type="ALL_DEAL",
-            from_date=from_dt,
-        )
-        if transactions is None or transactions.empty:
-            print(f"Positions poller: no transaction history returned for {deal_id}")
-            return None
+            from_dt = datetime.utcnow() - timedelta(hours=lookback_hours)
+            transactions = ig_service.fetch_transaction_history(
+                trans_type="ALL_DEAL",
+                from_date=from_dt,
+            )
+            if transactions is None or transactions.empty:
+                print(f"Positions poller: no transaction history returned (attempt {attempt}/{max_attempts})")
+                continue
 
-        match = None
+            match = None
 
-        if deal_reference and "reference" in transactions.columns:
-            match = transactions[transactions["reference"] == deal_reference]
+            if deal_reference and "reference" in transactions.columns:
+                match = transactions[transactions["reference"] == deal_reference]
 
-        if (match is None or match.empty) and entry_time and "openDateUtc" in transactions.columns:
-            try:
-                entry_dt = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
-                def _near_entry(val):
-                    try:
-                        dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        return abs((dt - entry_dt).total_seconds()) < 60
-                    except Exception:
-                        return False
-                match = transactions[transactions["openDateUtc"].apply(_near_entry)]
-            except Exception as e:
-                print(f"Positions poller: entry_time match failed for {deal_id}: {e}")
+            if (match is None or match.empty) and entry_time and "openDateUtc" in transactions.columns:
+                try:
+                    entry_dt = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+                    def _near_entry(val):
+                        try:
+                            dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            return abs((dt - entry_dt).total_seconds()) < 60
+                        except Exception:
+                            return False
+                    match = transactions[transactions["openDateUtc"].apply(_near_entry)]
+                except Exception as e:
+                    print(f"Positions poller: entry_time match failed for {deal_id}: {e}")
 
-        if match is None or match.empty:
-            print(f"Positions poller: no transaction match for {deal_id} — will use fallback")
-            return None
+            if match is not None and not match.empty:
+                row = match.iloc[0]
+                return {
+                    "close_price":  _to_float(row.get("closeLevel")),
+                    "close_time":   row.get("dateUtc") or datetime.now(timezone.utc).isoformat(),
+                    "realised_pnl": _parse_pnl(row.get("profitAndLoss")),
+                }
 
-        row = match.iloc[0]
-        return {
-            "close_price":  _to_float(row.get("closeLevel")),
-            "close_time":   row.get("dateUtc") or datetime.now(timezone.utc).isoformat(),
-            "realised_pnl": _parse_pnl(row.get("profitAndLoss")),
-        }
+            print(f"Positions poller: no match attempt {attempt}/{max_attempts} for {deal_id}")
+
+        print(f"Positions poller: no transaction match for {deal_id} after {max_attempts} attempts — will use fallback")
+        return None
     except Exception as e:
         print(f"Positions poller: transaction history lookup failed: {e}")
         return None
