@@ -208,3 +208,8 @@ __marimo__/
 
 # Git worktrees
 .worktrees/
+
+# Project-specific
+database/trades.db
+scripts/candle_cache/
+.claude/scheduled_tasks.lock
