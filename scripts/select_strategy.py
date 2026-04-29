@@ -31,7 +31,8 @@ SEED_STRATEGIES = {
 
 
 def _select_for_symbol(symbol: str, candidates: list, dry_run: bool) -> dict | None:
-    sym_candidates = [c for c in candidates if c["symbol"] == symbol]
+    # TODO: enable 5MIN when signal loop handles multiple timeframes
+    sym_candidates = [c for c in candidates if c["symbol"] == symbol and c.get("timeframe") == "HOUR"]
     if not sym_candidates:
         print(f"[{symbol}] No eligible strategies found.")
         return None
@@ -47,10 +48,10 @@ def _select_for_symbol(symbol: str, candidates: list, dry_run: bool) -> dict | N
         print(f"[{symbol}] Already active: {current['strategy_name']} "
               f"{current['timeframe']} (score {current['score']:.3f})")
         return best
-    elif best_score <= (current["score"] or 0) + 0.10:
+    elif best_score <= (current["score"] or 0) + 0.05:
         print(f"[{symbol}] No switch — threshold not met: "
               f"{current['score']:.3f} → {best_score:.3f} "
-              f"(need > {(current['score'] or 0) + 0.10:.3f})")
+              f"(need > {(current['score'] or 0) + 0.05:.3f})")
         return None
     else:
         reason = f"Score improved {(current['score'] or 0):.3f} → {best_score:.3f}"
