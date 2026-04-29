@@ -4,6 +4,7 @@ uvicorn[standard]
 
 # IG Markets broker integration
 trading-ig
+munch
 
 # HTTP / env
 requests
