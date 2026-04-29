@@ -1,14 +1,35 @@
 #!/usr/bin/env python3
+import os
 import sys
 import argparse
+import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dotenv import load_dotenv
+load_dotenv()
+
+from trading_ig import IGService
 from database.db import get_connection
 from database.models import close_trade
-from data.positions_poller import _parse_pnl, _to_float
+
+
+def _parse_pnl(raw) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(re.sub(r"[^0-9.\-]", "", str(raw).replace("+", "")))
+    except (ValueError, TypeError):
+        return None
+
+
+def _to_float(val) -> float | None:
+    try:
+        return float(val) if val is not None else None
+    except (ValueError, TypeError):
+        return None
 
 
 def _get_trade_by_reference(ref: str) -> dict | None:
@@ -40,14 +61,19 @@ def _fill_pnl(trade_id: int, close_price, close_time, pnl) -> None:
 
 def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
     print("Initializing IG session...")
-    from bot.execute_trade import ig_service, ensure_session
-    ensure_session()
+    ig = IGService(
+        os.getenv("IG_USERNAME"),
+        os.getenv("IG_PASSWORD"),
+        os.getenv("IG_API_KEY"),
+        acc_type="LIVE",
+    )
+    ig.create_session()
 
     from_dt = datetime.utcnow() - timedelta(days=days)
     print(f"Fetching IG transactions since {from_dt.strftime('%Y-%m-%d')}...")
 
     try:
-        transactions = ig_service.fetch_transaction_history(
+        transactions = ig.fetch_transaction_history(
             trans_type="ALL_DEAL",
             from_date=from_dt,
         )
