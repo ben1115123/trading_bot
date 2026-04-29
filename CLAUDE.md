@@ -3,22 +3,35 @@
 ## Project Overview
 Webhook-driven algorithmic trading bot. Pipeline:
 TradingView alert → webhook → Python bot → IG Markets API.
-Current focus: Phase 4 — TradingView MCP + Pine Script.
+Current focus: Phase 5 — Strategy Selector.
 
 ## Architecture
 main.py                     FastAPI entry point
 webhook/receiver.py         POST /webhook — alert parser
 bot/execute_trade.py        Trade logic, session, execution
+                            ⚠️ Trend filter disabled —
+                            Pine Script handles filtering
 risk_manager.py             Lot size ($15 USD fixed risk)
-filters/rule_filters.py     Trend filter (contra-trend block)
+filters/rule_filters.py     Trend filter (disabled)
 data/positions_poller.py    ✅ Polls IG every 30s, close detect
+                            Deferred P&L checker (5min, 24h window)
 database/db.py              ✅ SQLite connection/setup
 database/models.py          ✅ All table schemas + queries
 dashboard/app.py            ✅ Streamlit entry point
 dashboard/pages/            ✅ Pages 01-04 complete
-backend/strategies/         ✅ base.py, rsi.py, supertrend.py
+                            ⚠️ Not deployed to VPS since Phase 3
+                            Deploy after Phase 5 is complete
+backend/strategies/         ✅ 10 strategies built
+  base.py, rsi.py, supertrend.py, vwap_ema.py,
+  ema_ribbon.py, bb_squeeze.py, rsi_divergence.py,
+  orb.py, ichimoku.py, keltner.py, stoch_rsi.py,
+  ema_cross_volume.py, vwap_mean_reversion.py
 backend/backtesting/        ✅ engine.py, metrics.py
+                            Session filter + max_hold support
 scripts/run_backtest.py     ✅ CLI backtest runner
+                            --source yfinance --cache flags
+scripts/backfill_pnl.py     ✅ Backfill missing P&L
+scripts/sync_ig_trades.py   ✅ Sync manual IG trades to DB
 
 ## Environments
 
@@ -62,11 +75,11 @@ Credentials: IG_USERNAME, IG_PASSWORD, IG_API_KEY (from .env)
 Session: auto-refresh every 10min, full recreate on 401
 
 ## Supported Assets
-| Symbol | Epic                   | Value/Point |
-|--------|------------------------|-------------|
-| US500  | IX.D.SPTRD.IFMM.IP     | 1           |
-| US100  | IX.D.NASDAQ.IFMM.IP    | 1           |
-| BTC    | CS.D.BITCOIN.CFBMU.IP  | 0.1         |
+| Symbol | Epic                   | yfinance | Value/Point |
+|--------|------------------------|----------|-------------|
+| US500  | IX.D.SPTRD.IFMM.IP     | ^GSPC    | 1           |
+| US100  | IX.D.NASDAQ.IFMM.IP    | ^NDX     | 1           |
+| BTC    | CS.D.BITCOIN.CFBMU.IP  | BTC-USD  | 0.1         |
 
 ## Webhook Payload
 {
@@ -74,7 +87,8 @@ Session: auto-refresh every 10min, full recreate on 401
   "trend": "1", "long_sl": "5100.0", "long_tp": "5200.0",
   "short_sl": "5300.0", "short_tp": "5000.0"
 }
-trend "1" = up (blocks SELL) | trend "3" = down (blocks BUY)
+trend value is received but no longer filtered
+— Pine Script indicator handles filtering upstream
 
 ## Risk Management
 lot_size = 15 / (sl_distance × value_per_point)
@@ -86,23 +100,24 @@ Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
 - ALWAYS store every simulated trade in backtest_trades
 - ALWAYS calculate benchmark (buy-and-hold) per run
 - ALWAYS run parameter sweep on new strategies
-- Default timeframe: HOUR (better signal density than 5MIN)
+- ALWAYS use --source yfinance --cache on all runs
+- Default timeframe: HOUR (better signal density)
 - Default candle count: 2000
-- Minimum trades threshold: 10 trades in test window
-  — any run with <10 trades is flagged, not scored
-- Strategy focus: intraday, scalping, momentum only
-  — no swing or daily strategies unless explicitly asked
+- Minimum trades threshold:
+    swing: >= 10 trades in test window
+    daytrading: >= 5 trades in test window
+- Strategy types:
+    swing: HOUR timeframe, no session filter, no hold cap
+    daytrading: 5MIN, session-filter US or 24_7,
+                max-hold 78 (US session) or 288 (BTC)
 
 ## Data Sources
 - Backtesting: yfinance (free, no API limit) — DEFAULT
-  Use: --source yfinance --cache on all backtest runs
   Symbol map: US500→^GSPC, US100→^NDX, BTC→BTC-USD
+  Cache: scripts/candle_cache/{SYMBOL}_{TF}_{COUNT}_yf.json
 - Live trading: IG Markets API only
-  IG historical data API: 10,000 points/week — DO NOT
-  use for backtesting sweeps, reserve for live execution
-- Cache location: scripts/candle_cache/
-  Naming: {SYMBOL}_{TF}_{COUNT}_yf.json (yfinance)
-          {SYMBOL}_{TF}_{COUNT}.json (IG)
+  IG historical API: 10,000 points/week — reserved for
+  live execution only, never for backtesting
 
 ## Key Gotchas
 - Session recreated on execute_trade.py import
@@ -110,89 +125,145 @@ Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
 - place_trade auto-retries once on 401
 - Poller failure must NOT affect trade execution
 - logs/trade_log.csv deprecated — DB only
+- Trend filter disabled in execute_trade.py —
+  Pine Script handles filtering upstream
 - Positions poller: 2 consecutive empty polls before
   marking trades closed (avoids false closes on API blip)
-- Transaction history match: deal_reference (short code)
-  primary, openDateUtc proximity fallback
+- Transaction history match: deal_reference primary,
+  openDateUtc proximity fallback
+- Deferred P&L checker: runs every 5min, gives up
+  after 24 hours, logs warning if failed
+- Dashboard not deployed to VPS since Phase 3 —
+  deploy after Phase 5 complete in one clean push
 
 ## Test Scripts
-| Script                    | Purpose                  |
-|---------------------------|--------------------------|
-| bot/test_ig.py            | Verify IG session        |
-| bot/test_trade.py         | Place test BUY XAUUSD    |
-| bot/search_market.py      | Search IG epics          |
-| scripts/seed_test_data.py | Insert fake trades       |
-| scripts/backfill_pnl.py   | Backfill missing P&L     |
-| scripts/run_backtest.py   | Run/sweep backtests      |
+| Script                    | Purpose                    |
+|---------------------------|----------------------------|
+| bot/test_ig.py            | Verify IG session          |
+| bot/test_trade.py         | Place test BUY XAUUSD      |
+| bot/search_market.py      | Search IG epics            |
+| scripts/seed_test_data.py | Insert fake trades         |
+| scripts/backfill_pnl.py   | Backfill missing P&L       |
+| scripts/sync_ig_trades.py | Sync manual IG trades to DB|
+| scripts/run_backtest.py   | Run/sweep backtests        |
+| scripts/score_strategies.py | Score all backtest results|
+| scripts/select_strategy.py  | Select + activate strategy|
 
 ---
 
 ## Current Build Phase
-PHASE 4 — TradingView MCP + Pine Script Conversion
+PHASE 5 — Strategy Selector
 
 ### Goal
-Connect Claude Code to TradingView Desktop via MCP,
-read published Pine Script strategies, convert them
-to Python strategy classes, backtest each one using
-the Phase 3 engine, log all results to database.
+Score all strategies in backtest_results, auto-select
+the best performer above threshold, update
+active_strategy table so the live bot knows which
+strategy signals to follow.
 
-### MCP Setup
-Tool: tradesdontlie/tradingview-mcp (CDP-based)
-Requires: TradingView Desktop open on Windows
-Claude Code connects via Chrome DevTools Protocol
+### Top strategies from Phase 4
+| Rank | Strategy            | Symbol | TF   | Type       | Trades | Win%  | Score |
+|------|---------------------|--------|------|------------|--------|-------|-------|
+| 1    | stoch_rsi           | US100  | HOUR | swing      | 24     | 70.8% | 0.893 |
+| 2    | vwap_mean_reversion | US100  | 5MIN | daytrading | 7      | 100%  | 0.898 |
+| 3    | rsi                 | US500  | HOUR | swing      | 7      | 85.7% | 0.689 |
+| 4    | vwap_mean_reversion | US500  | 5MIN | daytrading | 7      | 85.7% | 0.681 |
+| 5    | vwap_ema            | BTC    | HOUR | swing      | 5      | 80%   | 0.654 |
 
-### What gets built
-  backend/strategies/{name}.py     One file per converted strategy
-  scripts/convert_strategy.py      Pine Script → Python converter
-  scripts/run_phase4.py            End-to-end: fetch → convert →
-                                   backtest → score → log
+### Deployment decision
+- Primary live strategy: stoch_rsi US100 HOUR
+  (largest sample, most trustworthy — 24 trades)
+- Secondary (monitor only, not live yet):
+  vwap_mean_reversion US100 5MIN
+  (100% win rate needs more trades to confirm)
 
-### Rules inherited from Phase 3
-- 80/20 out-of-sample split on every converted strategy
-- Store every simulated trade in backtest_trades
-- Run parameter sweep on each converted strategy
-- Equity curve + trade drilldown on dashboard
-- Benchmark return calculated for every run
-- Best performer per symbol surfaced on dashboard
+### New files to create
+  scripts/score_strategies.py    Score all backtest_results
+  scripts/select_strategy.py     Pick best + update active_strategy
+
+### Database changes
+  Add active_strategy table to database/models.py:
+    id              INTEGER PRIMARY KEY
+    strategy_name   TEXT
+    symbol          TEXT
+    timeframe       TEXT
+    strategy_type   TEXT    ← 'swing' or 'daytrading'
+    backtest_id     INTEGER ← which backtest run it's based on
+    score           REAL
+    activated_at    TEXT
+    params_json     TEXT    ← params to use for live signals
+    status          TEXT    ← 'active' or 'inactive'
+
+### Dashboard updates (deploy to VPS after Phase 5)
+  dashboard/pages/01_overview.py:
+    Add active strategy panel:
+      name, symbol, timeframe, type, score,
+      win rate, trade count, activated date
+    Add last 5 strategy switches as history table
+
+  dashboard/pages/04_backtest.py:
+    Highlight currently active strategy row
+    Add strategy_type filter (swing/daytrading)
+
+### Scoring formula
+  score = win_rate*0.4 + (profit/1000)*0.3 +
+          (1 - drawdown/1000)*0.2 + sharpe*0.1
+
+  Eligibility rules:
+  - total_trades >= 10 (swing) or >= 5 (daytrading)
+  - profit > 0
+  - win_rate > 0.5
+  - Must beat benchmark_return
+  - Only switch if new score > current score + 0.10
 
 ### Step by step for Claude Code
 
-Step 1 — Install and verify TradingView MCP
-  Check if tradesdontlie/tradingview-mcp is installed
-  If not: npm install -g tradingview-mcp
-  Verify connection to TradingView Desktop via CDP
-  Confirm Claude Code can read TradingView page content
+Step 1 — Add active_strategy table to database/models.py
+  Add query functions:
+    insert_active_strategy()
+    get_active_strategy()
+    get_active_strategy_history()
+  Show diff and wait for approval
 
-Step 2 — Fetch top Pine Script strategies
-  Navigate to TradingView community scripts
-  Filter: strategy scripts, sorted by popularity
-  Focus on INTRADAY strategies only:
-    - Scalping strategies
-    - Intraday momentum strategies  
-    - Opening range breakout
-    - VWAP-based strategies
-    - EMA cross on short timeframes
-  Ignore: swing trading, daily/weekly strategies,
-          buy-and-hold approaches
-  Extract top 5 strategies: name, logic, params, signals
-  Save raw Pine Script to scripts/pinescript_cache/
-  Run all backtests at 5MIN timeframe, 1000 candles
+Step 2 — Create scripts/score_strategies.py
+  Read all backtest_results from DB
+  Apply eligibility rules
+  Calculate score for each eligible run
+  Print ranked table to console
+  Show top 3 per symbol
 
-Step 3 — Convert each strategy to Python
-  Create backend/strategies/{name}.py for each
-  Must extend base.py Strategy class
-  Must implement generate_signals(candles)
-  Must expose params dict with defaults
+Step 3 — Create scripts/select_strategy.py
+  Run scoring
+  Compare best candidate vs current active
+  Only update if improvement > 10%
+  Write to active_strategy table
+  Log selection decision with reason
+  Manually seed stoch_rsi US100 HOUR as
+  first active strategy on first run
 
-Step 4 — Backtest each converted strategy
-  Run scripts/run_backtest.py for each new strategy
-  Use --sweep to test param combinations
-  All results → backtest_results + backtest_trades
+Step 4 — Update dashboard pages
+  dashboard/pages/01_overview.py:
+    Add active strategy panel
+    Add strategy switch history
+  dashboard/pages/04_backtest.py:
+    Highlight active strategy row
+    Add strategy_type filter
 
-Step 5 — Verify dashboard page 04
-  Confirm new strategies appear in summary table
-  Confirm equity curves render correctly
-  Confirm parameter comparison panel works
+Step 5 — Wire active strategy to live bot
+  bot/execute_trade.py:
+    Read active_strategy table before executing
+    Only execute if signal symbol matches
+    active strategy symbol
+    Log which strategy triggered each trade
+  ⚠️ Requires permission before touching
+     execute_trade.py — show diff first
+
+### Phase 5 rules
+- NEVER auto-deploy strategy with < 10 trades
+  (swing) or < 5 trades (daytrading)
+- ALWAYS log reason for every strategy switch
+- NEVER switch strategy during market hours
+- active_strategy is single source of truth
+- stoch_rsi US100 HOUR = first active strategy
 
 ---
 
@@ -203,25 +274,37 @@ Step 5 — Verify dashboard page 04
 - Phase 1D: Nginx remote access live
 - Phase 2A: Live trade logging → database
 - Phase 2B: Positions poller + close detection
-            (consecutive empty counter, deal_reference
-            match, timezone fix, 16 trades backfilled)
-- Phase 3:  Backtesting engine — RSI sweep (27 runs) +
-            SuperTrend verified, 29 results in DB,
-            dashboard page 04 fully populated
+            Consecutive empty counter, deal_reference
+            match, timezone fix, deferred P&L checker
+            (5min scan, 24h window)
+- Phase 3:  Backtesting engine complete
+            RSI + SuperTrend verified, 29 results in DB
+            Dashboard page 04 fully populated
+- Phase 4:  10 strategies built and backtested
+            yfinance as default data source
+            Session filter + max_hold for day trading
+            Trend filter disabled (Pine Script handles it)
+            Top: stoch_rsi US100 HOUR
+            (24 trades, 70.8% win rate, score 0.893)
 
 ---
 
 ## Upcoming Phases
-PHASE 5 — Strategy Selector
-  Score: win_rate*0.4 + profit*0.3 + (1-dd)*0.2 + sharpe*0.1
-  Only strategies beating benchmark qualify
-  Auto-select best → update active_strategy table
-  Only switch if improvement > 10%
 
 PHASE 6 — Daily Automation
+  Morning cron (6am):
+    Fresh candles → backtest all strategies →
+    score → select best → update active_strategy
+
+  Live signal loop (runs all day):
+    Every HOUR fetch latest candles from IG API →
+    run active strategy generate_signals() →
+    if signal fires → execute via bot →
+    respect risk manager
+    No TradingView dependency for execution
+
   scripts/run_daily.py
   Cron: 0 6 * * * python scripts/run_daily.py
-  Backtest → score → select → update → log
 
 PHASE 7 — Risk Management & Stability
   Max trades/day, max daily loss, max exposure
@@ -244,8 +327,15 @@ PHASE 8 — Production Frontend (Next.js + Vercel)
 - ALWAYS test locally before deploying to VPS
 - ALWAYS verify bot works after any deployment
 - ALWAYS apply 80/20 split + store trades + benchmark
+- ALWAYS use --source yfinance --cache for backtests
+- NEVER use IG API for historical candle fetches
 - Database calls ONLY via database/models.py
 - New dashboard pages ONLY in dashboard/pages/
 - Docker only on VPS — no systemd
 - SQLite only unless explicitly told otherwise
 - After every VPS deploy: docker-compose ps
+- NEVER deploy strategy with insufficient trades
+- NEVER switch active strategy during market hours
+- active_strategy table = single source of truth
+- ALWAYS log strategy switches with reason
+- Dashboard deploy: only after Phase 5 complete
