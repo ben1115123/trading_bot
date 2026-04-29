@@ -11,6 +11,7 @@ python-dotenv
 
 # Data
 pandas
+yfinance
 
 # Dashboard
 streamlit>=1.32.0
