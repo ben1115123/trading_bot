@@ -139,7 +139,19 @@ df["is_active"] = df["is_active"] & df["eligible"]
 st.markdown('<div class="section-hd">All Runs</div>', unsafe_allow_html=True)
 
 show_eligible_only = st.checkbox("Show eligible only", value=True, key="show_eligible")
-df_display = df[df["eligible"]] if show_eligible_only else df
+
+fcol1, fcol2, _ = st.columns([2, 2, 6])
+with fcol1:
+    all_strategies = ["All"] + sorted(df["strategy_name"].unique().tolist())
+    strat_filter = st.selectbox("Strategy", all_strategies, key="strat_filter")
+with fcol2:
+    sym_filter = st.selectbox("Symbol", ["All", "US500", "US100", "BTC"], key="sym_filter")
+
+df_display = df[df["eligible"]].copy() if show_eligible_only else df.copy()
+if strat_filter != "All":
+    df_display = df_display[df_display["strategy_name"] == strat_filter]
+if sym_filter != "All":
+    df_display = df_display[df_display["symbol"] == sym_filter]
 
 disp_cols = ["id", "strategy_name", "symbol", "timeframe", "total_trades",
              "win_rate_pct", "total_profit", "max_drawdown",
@@ -149,10 +161,12 @@ disp_cols = [c for c in disp_cols if c in df_display.columns]
 eligible_df = df[df["eligible"]]
 best_per_symbol = set(eligible_df.groupby("symbol")["score"].idxmax().values) if not eligible_df.empty else set()
 
-st.dataframe(
+event = st.dataframe(
     df_display[disp_cols],
     use_container_width=True,
     hide_index=True,
+    on_select="rerun",
+    selection_mode="single-row",
     column_config={
         "id":            st.column_config.NumberColumn("ID",        format="%d", width="small"),
         "strategy_name": st.column_config.TextColumn("Strategy"),
@@ -171,6 +185,10 @@ st.dataframe(
     },
 )
 
+sel = event.selection.rows
+if sel:
+    st.session_state["inspect_run_id"] = int(df_display.iloc[sel[0]]["id"])
+
 best_rows = eligible_df[eligible_df.index.isin(best_per_symbol)][["symbol", "strategy_name", "timeframe", "score"]] if not eligible_df.empty else pd.DataFrame()
 if not best_rows.empty:
     st.caption("Best per symbol: " + "  |  ".join(
@@ -183,13 +201,22 @@ if not best_rows.empty:
 
 st.markdown('<div class="section-hd">Inspect Run</div>', unsafe_allow_html=True)
 
+if df_display.empty:
+    st.info("No runs match the current filters.")
+    st.stop()
+
 run_options = {
     f"ID {int(r['id'])} — {r['strategy_name']} {r['symbol']} {r['timeframe']}  "
     f"[trades={int(r['total_trades'])}  profit=${r['total_profit']:.2f}  score={r['score']:.3f}]": int(r["id"])
-    for _, r in df.iterrows()
+    for _, r in df_display.iterrows()
 }
-selected_label = st.selectbox("Select run", list(run_options.keys()), key="inspect_run")
+option_ids = list(run_options.values())
+stored_id = st.session_state.get("inspect_run_id")
+default_idx = option_ids.index(stored_id) if stored_id in option_ids else 0
+
+selected_label = st.selectbox("Select run", list(run_options.keys()), index=default_idx, key="inspect_run")
 selected_id = run_options[selected_label]
+st.session_state["inspect_run_id"] = selected_id
 selected_row = df[df["id"] == selected_id].iloc[0]
 
 trades = get_backtest_trades(selected_id)
