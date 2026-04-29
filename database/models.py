@@ -282,6 +282,9 @@ def insert_active_strategy(data: dict) -> int:
     if missing:
         raise ValueError(f"insert_active_strategy missing required fields: {missing}")
 
+    # Work on a copy to avoid mutating caller's dict (Fix 1)
+    data = data.copy()
+
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -292,18 +295,28 @@ def insert_active_strategy(data: dict) -> int:
             data['updated_at'] = datetime.now(timezone.utc).isoformat()
 
         cursor.execute("""
-            INSERT OR REPLACE INTO active_strategy
+            INSERT INTO active_strategy
                 (strategy_name, symbol, timeframe, strategy_type, backtest_id,
                  score, activated_at, params_json, status, updated_at)
             VALUES
                 (:strategy_name, :symbol, :timeframe, :strategy_type, :backtest_id,
                  :score, :activated_at, :params_json, :status, :updated_at)
+            ON CONFLICT(symbol) DO UPDATE SET
+                strategy_name = excluded.strategy_name,
+                timeframe = excluded.timeframe,
+                strategy_type = excluded.strategy_type,
+                backtest_id = excluded.backtest_id,
+                score = excluded.score,
+                activated_at = excluded.activated_at,
+                params_json = excluded.params_json,
+                status = excluded.status,
+                updated_at = excluded.updated_at
         """, data)
 
         active_strategy_id = cursor.lastrowid
 
         reason = data.get('reason', 'manual')
-        changed_at = data.get('updated_at', datetime.now(timezone.utc).isoformat())
+        changed_at = data['updated_at']
 
         cursor.execute("""
             INSERT INTO active_strategy_history
