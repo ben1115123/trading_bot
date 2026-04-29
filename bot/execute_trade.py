@@ -4,7 +4,7 @@ import os
 import time
 
 from risk_manager import calculate_position_size
-from database.models import log_trade
+from database.models import log_trade, get_active_strategy
 
 # -------------------------
 # Load credentials
@@ -121,6 +121,17 @@ def place_trade_from_alert(data):
             print("Unsupported symbol:", symbol)
             return False
 
+        active = get_active_strategy()
+        if not active:
+            print("Warning: no active strategy configured — executing trade anyway (fallback mode)")
+            strategy_name = "tradingview_webhook"
+        else:
+            if symbol != active["symbol"]:
+                print(f"Note: {symbol} signal received — active strategy is {active['strategy_name']} {active['symbol']} — executing anyway")
+            else:
+                print(f"Active strategy: {active['strategy_name']} {active['symbol']} {active['timeframe']}")
+            strategy_name = active["strategy_name"]
+
         buy_signal = data.get("buy_signal")
         sell_signal = data.get("sell_signal")
         trend = parse_float(data.get("trend"))
@@ -181,7 +192,7 @@ def place_trade_from_alert(data):
 
         # print("Trend filter passed")
 
-        result = place_trade(symbol, action, sl, tp)
+        result = place_trade(symbol, action, sl, tp, strategy_name=strategy_name)
 
         if result:
             last_signal = f"{symbol}_{action}"
@@ -197,7 +208,7 @@ def place_trade_from_alert(data):
 # -------------------------
 # Trade execution
 # -------------------------
-def place_trade(symbol, action, sl=None, tp=None):
+def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_webhook"):
     print("===================================")
     print(f"Executing Trade: {symbol} | Action: {action} | SL: {sl} | TP: {tp}")
 
@@ -267,7 +278,7 @@ def place_trade(symbol, action, sl=None, tp=None):
                     "deal_id": response.get("dealId"),
                     "deal_reference": response.get("dealReference"),
                     "source": "tradingview_webhook",
-                    "strategy_name": "tradingview_webhook",
+                    "strategy_name": strategy_name,
                     "status": "OPEN",
                 })
                 print("Trade logged to database")
