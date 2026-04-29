@@ -166,20 +166,20 @@ def place_trade_from_alert(data):
             print("Missing SL/TP — skipping trade")
             return False
 
-        if trend is None:
-            print("Missing trend — skipping trade")
-            return False
+        # if trend is None:
+        #     print("Missing trend — skipping trade")
+        #     return False
 
-        # Trend filter
-        if action == "buy" and trend == 3:
-            print("Blocked BUY — Downtrend detected")
-            return False
+        # Trend filter (disabled)
+        # if action == "buy" and trend == 3:
+        #     print("Blocked BUY — Downtrend detected")
+        #     return False
 
-        if action == "sell" and trend == 1:
-            print("Blocked SELL — Uptrend detected")
-            return False
+        # if action == "sell" and trend == 1:
+        #     print("Blocked SELL — Uptrend detected")
+        #     return False
 
-        print("Trend filter passed")
+        # print("Trend filter passed")
 
         result = place_trade(symbol, action, sl, tp)
 
