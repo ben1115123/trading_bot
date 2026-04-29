@@ -18,6 +18,7 @@ services:
       dockerfile: dashboard/Dockerfile
     image: trading_dashboard
     command: streamlit run dashboard/app.py --server.port 8501 --server.headless true
+    env_file: .env
     restart: always
     volumes:
       - ./database:/app/database
