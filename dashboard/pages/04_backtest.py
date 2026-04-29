@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import streamlit as st
 import pandas as pd
-from database.models import get_backtest_results, get_backtest_trades
+from database.models import get_backtest_results, get_backtest_trades, get_active_strategy
 
 st.set_page_config(page_title="Backtest · Trading Bot", layout="wide")
 
@@ -107,6 +107,15 @@ df["win_rate_pct"]    = (df["win_rate"].fillna(0) * 100).round(1)
 df["benchmark_pct"]   = (df["benchmark_return"].fillna(0) * 100).round(2)
 df = df.sort_values("score", ascending=False).reset_index(drop=True)
 
+active = get_active_strategy()
+df["is_active"] = df.apply(lambda r:
+    active is not None and
+    r["strategy_name"] == active["strategy_name"] and
+    r["symbol"] == active["symbol"] and
+    r["timeframe"] == active["timeframe"],
+    axis=1
+)
+
 
 # ── Summary table ─────────────────────────────────────────────────────────────
 
@@ -114,7 +123,7 @@ st.markdown('<div class="section-hd">All Runs</div>', unsafe_allow_html=True)
 
 disp_cols = ["id", "strategy_name", "symbol", "timeframe", "total_trades",
              "win_rate_pct", "total_profit", "max_drawdown",
-             "sharpe_ratio", "benchmark_pct", "score", "run_at"]
+             "sharpe_ratio", "benchmark_pct", "score", "is_active", "run_at"]
 disp_cols = [c for c in disp_cols if c in df.columns]
 
 best_per_symbol = set(df.groupby("symbol")["score"].idxmax().values)
@@ -135,6 +144,7 @@ st.dataframe(
         "sharpe_ratio":  st.column_config.NumberColumn("Sharpe",    format="%.3f"),
         "benchmark_pct": st.column_config.NumberColumn("Benchmark", format="%.2f%%"),
         "score":         st.column_config.ProgressColumn("Score", min_value=0, max_value=1, format="%.3f"),
+        "is_active":     st.column_config.CheckboxColumn("Active", width="small"),
         "run_at":        st.column_config.TextColumn("Run At"),
     },
 )

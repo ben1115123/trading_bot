@@ -35,10 +35,19 @@ def fetch_summary():
         total_pnl = row["s"] or 0.0
 
         cur.execute("""
-            SELECT strategy_name, symbol FROM active_strategy
-            ORDER BY updated_at DESC LIMIT 1
+            SELECT strategy_name, symbol, timeframe, strategy_type, score, activated_at
+            FROM active_strategy ORDER BY activated_at DESC LIMIT 1
         """)
         strategy_row = cur.fetchone()
+
+        try:
+            cur.execute("""
+                SELECT strategy_name, symbol, timeframe, score, reason, changed_at
+                FROM active_strategy_history ORDER BY changed_at DESC LIMIT 5
+            """)
+            history_rows = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            history_rows = []
 
         cur.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 10")
         recent = [dict(r) for r in cur.fetchall()]
@@ -53,10 +62,10 @@ def fetch_summary():
         conn.close()
 
     win_rate = (wins / total * 100) if total > 0 else 0.0
-    return total, wins, losses, win_rate, total_pnl, strategy_row, recent, pnl_rows
+    return total, wins, losses, win_rate, total_pnl, strategy_row, history_rows, recent, pnl_rows
 
 
-total, wins, losses, win_rate, total_pnl, strategy_row, recent, pnl_rows = fetch_summary()
+total, wins, losses, win_rate, total_pnl, strategy_row, history_rows, recent, pnl_rows = fetch_summary()
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -98,6 +107,10 @@ st.markdown(f"""
 st.markdown('<div class="section-hd">Active Strategy</div>', unsafe_allow_html=True)
 
 if strategy_row:
+    _tf       = strategy_row['timeframe'] or "—"
+    _type     = strategy_row['strategy_type'] or "—"
+    _score    = f"{strategy_row['score']:.3f}" if strategy_row['score'] else "—"
+    _activated = strategy_row['activated_at'][:10] if strategy_row['activated_at'] else "—"
     st.markdown(f"""
     <div class="info-band">
       <div class="info-tile">
@@ -108,8 +121,37 @@ if strategy_row:
         <div class="lbl">Symbol</div>
         <div class="val">{strategy_row['symbol']}</div>
       </div>
+      <div class="info-tile">
+        <div class="lbl">Timeframe</div>
+        <div class="val">{_tf}</div>
+      </div>
+      <div class="info-tile">
+        <div class="lbl">Type</div>
+        <div class="val">{_type}</div>
+      </div>
+      <div class="info-tile">
+        <div class="lbl">Score</div>
+        <div class="val">{_score}</div>
+      </div>
+      <div class="info-tile">
+        <div class="lbl">Activated</div>
+        <div class="val">{_activated}</div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
+
+    if history_rows:
+        st.markdown('<div class="section-hd">Strategy History</div>', unsafe_allow_html=True)
+        hist_df = pd.DataFrame(history_rows)
+        hist_df = hist_df.rename(columns={
+            "changed_at":     "Changed",
+            "strategy_name":  "Strategy",
+            "symbol":         "Symbol",
+            "timeframe":      "TF",
+            "score":          "Score",
+            "reason":         "Reason",
+        })
+        st.dataframe(hist_df, use_container_width=True, hide_index=True)
 else:
     st.markdown("""
     <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
