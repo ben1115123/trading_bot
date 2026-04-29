@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import streamlit as st
 import pandas as pd
 from database.db import get_connection
+from database.models import log_trade
 
 st.set_page_config(page_title="Trade Log · Trading Bot", layout="wide")
 
@@ -63,6 +64,51 @@ with st.expander("↻ Sync from IG", expanded=False):
             st.error("Sync failed")
             st.code(proc.stderr or proc.stdout or "(no output)")
         if apply_sync and proc.returncode == 0:
+            st.rerun()
+
+
+# ── Add manual trade ──────────────────────────────────────────────────────────
+
+with st.expander("➕ Add manual trade", expanded=False):
+    with st.form("manual_trade_form"):
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            mt_symbol    = st.text_input("Symbol", placeholder="e.g. XAUUSD")
+            mt_direction = st.selectbox("Direction", ["BUY", "SELL"])
+        with fc2:
+            mt_size        = st.number_input("Size", min_value=0.0, step=0.01, format="%.2f")
+            mt_entry_price = st.number_input("Entry price", min_value=0.0, step=0.01, format="%.4f")
+        with fc3:
+            mt_close_price = st.number_input("Close price (optional)", min_value=0.0, step=0.01, format="%.4f", value=0.0)
+            mt_pnl         = st.number_input("P&L (optional)", step=0.01, format="%.2f", value=0.0)
+
+        fd1, fd2 = st.columns(2)
+        with fd1:
+            mt_datetime = st.text_input("Date/time (UTC)", value=__import__('datetime').datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+        with fd2:
+            mt_strategy = st.text_input("Strategy / notes (optional)", placeholder="e.g. manual scalp")
+
+        submitted = st.form_submit_button("Add trade", type="primary")
+
+    if submitted:
+        if not mt_symbol or mt_size <= 0 or mt_entry_price <= 0:
+            st.error("Symbol, size and entry price are required.")
+        else:
+            has_close = mt_close_price > 0
+            trade_data = {
+                "timestamp":     mt_datetime,
+                "symbol":        mt_symbol.upper().strip(),
+                "direction":     mt_direction,
+                "size":          mt_size,
+                "entry_price":   mt_entry_price,
+                "close_price":   mt_close_price if has_close else None,
+                "pnl":           mt_pnl if mt_pnl != 0.0 else None,
+                "source":        "manual",
+                "strategy_name": mt_strategy.strip() or "manual",
+                "status":        "CLOSED" if has_close else "OPEN",
+            }
+            trade_id = log_trade(trade_data)
+            st.success(f"Trade added — ID {trade_id}")
             st.rerun()
 
 
