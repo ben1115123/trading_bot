@@ -17,6 +17,21 @@ inject_css()
 
 # ── Score ─────────────────────────────────────────────────────────────────────
 
+def _is_eligible(row) -> bool:
+    stype = row.get("strategy_type") or "swing"
+    min_trades = 5 if stype == "daytrading" else 10
+    if (row.get("total_trades") or 0) < min_trades:
+        return False
+    if (row.get("total_profit") or 0) <= 0:
+        return False
+    if (row.get("win_rate") or 0) <= 0.5:
+        return False
+    benchmark = row.get("benchmark_return")
+    if benchmark is not None and (row.get("total_profit", 0) / 1000) <= benchmark:
+        return False
+    return True
+
+
 def _compute_scores(df: pd.DataFrame) -> pd.Series:
     def norm(s, invert=False):
         mn, mx = s.min(), s.max()
@@ -115,21 +130,27 @@ df["is_active"] = df.apply(lambda r:
     r["timeframe"] == active["timeframe"],
     axis=1
 )
+df["eligible"] = df.apply(_is_eligible, axis=1)
+df["is_active"] = df["is_active"] & df["eligible"]
 
 
 # ── Summary table ─────────────────────────────────────────────────────────────
 
 st.markdown('<div class="section-hd">All Runs</div>', unsafe_allow_html=True)
 
+show_eligible_only = st.checkbox("Show eligible only", value=True, key="show_eligible")
+df_display = df[df["eligible"]] if show_eligible_only else df
+
 disp_cols = ["id", "strategy_name", "symbol", "timeframe", "total_trades",
              "win_rate_pct", "total_profit", "max_drawdown",
-             "sharpe_ratio", "benchmark_pct", "score", "is_active", "run_at"]
-disp_cols = [c for c in disp_cols if c in df.columns]
+             "sharpe_ratio", "benchmark_pct", "score", "eligible", "is_active", "run_at"]
+disp_cols = [c for c in disp_cols if c in df_display.columns]
 
-best_per_symbol = set(df.groupby("symbol")["score"].idxmax().values)
+eligible_df = df[df["eligible"]]
+best_per_symbol = set(eligible_df.groupby("symbol")["score"].idxmax().values) if not eligible_df.empty else set()
 
 st.dataframe(
-    df[disp_cols],
+    df_display[disp_cols],
     use_container_width=True,
     hide_index=True,
     column_config={
@@ -144,12 +165,13 @@ st.dataframe(
         "sharpe_ratio":  st.column_config.NumberColumn("Sharpe",    format="%.3f"),
         "benchmark_pct": st.column_config.NumberColumn("Benchmark", format="%.2f%%"),
         "score":         st.column_config.ProgressColumn("Score", min_value=0, max_value=1, format="%.3f"),
+        "eligible":      st.column_config.CheckboxColumn("Eligible", width="small"),
         "is_active":     st.column_config.CheckboxColumn("Active", width="small"),
         "run_at":        st.column_config.TextColumn("Run At"),
     },
 )
 
-best_rows = df[df.index.isin(best_per_symbol)][["symbol", "strategy_name", "timeframe", "score"]]
+best_rows = eligible_df[eligible_df.index.isin(best_per_symbol)][["symbol", "strategy_name", "timeframe", "score"]] if not eligible_df.empty else pd.DataFrame()
 if not best_rows.empty:
     st.caption("Best per symbol: " + "  |  ".join(
         f"**{r['symbol']}** → {r['strategy_name']} {r['timeframe']} (score {r['score']:.3f})"
