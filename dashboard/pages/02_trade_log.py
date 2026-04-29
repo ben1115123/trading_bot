@@ -1,4 +1,5 @@
 import sys
+import subprocess
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -33,6 +34,37 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 trades = fetch_all_trades()
+
+
+# ── Sync from IG ──────────────────────────────────────────────────────────────
+
+with st.expander("↻ Sync from IG", expanded=False):
+    sync_days = st.number_input("Lookback days", min_value=1, max_value=90, value=7, step=1, key="sync_days")
+    col_dry, col_apply, _ = st.columns([1, 1, 5])
+    with col_dry:
+        dry_run = st.button("Dry run", key="sync_dry")
+    with col_apply:
+        apply_sync = st.button("Apply sync", type="primary", key="sync_apply")
+
+    if dry_run or apply_sync:
+        script = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "sync_ig_trades.py")
+        cmd = [sys.executable, script, "--days", str(int(sync_days))]
+        if apply_sync:
+            cmd.append("--confirm")
+        with st.spinner("Syncing from IG..."):
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parent.parent.parent),
+            )
+        if proc.returncode == 0:
+            st.success("Sync complete")
+            st.code(proc.stdout or "(no output)")
+        else:
+            st.error("Sync failed")
+            st.code(proc.stderr or proc.stdout or "(no output)")
+        if apply_sync and proc.returncode == 0:
+            st.rerun()
+
 
 if not trades:
     st.markdown("""
