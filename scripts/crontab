@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Daily run at 6am UTC — log() in run_daily.py writes to /app/logs/daily_run.log
+0 6 * * * root cd /app && /usr/local/bin/python3 scripts/run_daily.py > /dev/null 2>&1
