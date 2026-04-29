@@ -153,6 +153,36 @@ def init_db():
     except Exception:
         pass
 
+    # Migrate active_strategy: add Phase 5 columns
+    for col, defn in [
+        ("timeframe",     "TEXT"),
+        ("strategy_type", "TEXT"),
+        ("backtest_id",   "INTEGER"),
+        ("score",         "REAL"),
+        ("activated_at",  "TEXT"),
+        ("params_json",   "TEXT"),
+        ("status",        "TEXT DEFAULT 'active'"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE active_strategy ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
+
+    # Create active_strategy_history table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_strategy_history (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            timeframe     TEXT,
+            strategy_type TEXT,
+            score         REAL,
+            activated_at  TEXT,
+            reason        TEXT,
+            changed_at    TEXT NOT NULL
+        )
+    """)
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

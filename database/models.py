@@ -274,3 +274,96 @@ def get_recent_trades(limit: int = 10) -> list:
     trades = [dict(row) for row in rows]
 
     return trades
+
+
+def insert_active_strategy(data: dict) -> int:
+    required = ('strategy_name', 'symbol', 'timeframe', 'strategy_type', 'score', 'activated_at', 'params_json')
+    missing = [f for f in required if f not in data]
+    if missing:
+        raise ValueError(f"insert_active_strategy missing required fields: {missing}")
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+
+        if 'status' not in data:
+            data['status'] = 'active'
+        if 'updated_at' not in data:
+            data['updated_at'] = datetime.now(timezone.utc).isoformat()
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO active_strategy
+                (strategy_name, symbol, timeframe, strategy_type, backtest_id,
+                 score, activated_at, params_json, status, updated_at)
+            VALUES
+                (:strategy_name, :symbol, :timeframe, :strategy_type, :backtest_id,
+                 :score, :activated_at, :params_json, :status, :updated_at)
+        """, data)
+
+        active_strategy_id = cursor.lastrowid
+
+        reason = data.get('reason', 'manual')
+        changed_at = data.get('updated_at', datetime.now(timezone.utc).isoformat())
+
+        cursor.execute("""
+            INSERT INTO active_strategy_history
+                (strategy_name, symbol, timeframe, strategy_type, score,
+                 activated_at, reason, changed_at)
+            VALUES
+                (:strategy_name, :symbol, :timeframe, :strategy_type, :score,
+                 :activated_at, :reason, :changed_at)
+        """, {
+            'strategy_name': data['strategy_name'],
+            'symbol': data['symbol'],
+            'timeframe': data['timeframe'],
+            'strategy_type': data['strategy_type'],
+            'score': data['score'],
+            'activated_at': data['activated_at'],
+            'reason': reason,
+            'changed_at': changed_at,
+        })
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return active_strategy_id
+
+
+def get_active_strategy(symbol: str = None) -> dict | None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+
+        if symbol:
+            cursor.execute("""
+                SELECT * FROM active_strategy
+                WHERE symbol = ? AND status = 'active'
+                LIMIT 1
+            """, (symbol,))
+        else:
+            cursor.execute("""
+                SELECT * FROM active_strategy
+                WHERE status = 'active'
+                ORDER BY activated_at DESC
+                LIMIT 1
+            """)
+
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_active_strategy_history(limit: int = 10) -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM active_strategy_history
+            ORDER BY changed_at DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
