@@ -122,12 +122,13 @@ df["win_rate_pct"]    = (df["win_rate"].fillna(0) * 100).round(1)
 df["benchmark_pct"]   = (df["benchmark_return"].fillna(0) * 100).round(2)
 df = df.sort_values("score", ascending=False).reset_index(drop=True)
 
-active = get_active_strategy()
-df["is_active"] = df.apply(lambda r:
-    active is not None and
-    r["strategy_name"] == active["strategy_name"] and
-    r["symbol"] == active["symbol"] and
-    r["timeframe"] == active["timeframe"],
+active_list = get_active_strategy()
+active_set = {
+    (a["strategy_name"], a["symbol"], a["timeframe"])
+    for a in active_list
+}
+df["is_active"] = df.apply(
+    lambda r: (r["strategy_name"], r["symbol"], r["timeframe"]) in active_set,
     axis=1
 )
 df["eligible"] = df.apply(_is_eligible, axis=1)

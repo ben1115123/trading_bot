@@ -121,15 +121,12 @@ def place_trade_from_alert(data):
             print("Unsupported symbol:", symbol)
             return False
 
-        active = get_active_strategy()
+        active = get_active_strategy(symbol=symbol)
         if not active:
             print("Warning: no active strategy configured — executing trade anyway (fallback mode)")
             strategy_name = "tradingview_webhook"
         else:
-            if symbol != active["symbol"]:
-                print(f"Note: {symbol} signal received — active strategy is {active['strategy_name']} {active['symbol']} — executing anyway")
-            else:
-                print(f"Active strategy: {active['strategy_name']} {active['symbol']} {active['timeframe']}")
+            print(f"Active strategy: {active['strategy_name']} {active['symbol']} {active['timeframe']}")
             strategy_name = active["strategy_name"]
 
         buy_signal = data.get("buy_signal")

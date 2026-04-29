@@ -343,7 +343,7 @@ def insert_active_strategy(data: dict) -> int:
     return active_strategy_id
 
 
-def get_active_strategy(symbol: str = None) -> dict | None:
+def get_active_strategy(symbol: str = None) -> dict | list | None:
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -354,16 +354,16 @@ def get_active_strategy(symbol: str = None) -> dict | None:
                 WHERE symbol = ? AND status = 'active'
                 LIMIT 1
             """, (symbol,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
         else:
             cursor.execute("""
                 SELECT * FROM active_strategy
                 WHERE status = 'active'
-                ORDER BY activated_at DESC
-                LIMIT 1
+                ORDER BY symbol ASC
             """)
-
-        row = cursor.fetchone()
-        return dict(row) if row else None
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows]
     finally:
         conn.close()
 
