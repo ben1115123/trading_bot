@@ -140,7 +140,8 @@ def _check_symbol(symbol: str, last_fired: dict) -> None:
 
     try:
         result = place_trade(symbol, action.lower(), sl=sl, tp=tp,
-                             strategy_name=strategy_name)
+                             strategy_name=strategy_name,
+                             source="signal_loop")
         if result:
             last_fired[symbol] = last_candle_ts
             print(f"[signal_loop] [{symbol}] Trade placed ✓")

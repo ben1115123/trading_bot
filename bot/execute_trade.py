@@ -4,7 +4,7 @@ import os
 import time
 
 from risk_manager import calculate_position_size
-from database.models import log_trade, get_active_strategy
+from database.models import log_trade
 
 # -------------------------
 # Load credentials
@@ -121,13 +121,7 @@ def place_trade_from_alert(data):
             print("Unsupported symbol:", symbol)
             return False
 
-        active = get_active_strategy(symbol=symbol)
-        if not active:
-            print("Warning: no active strategy configured — executing trade anyway (fallback mode)")
-            strategy_name = "tradingview_webhook"
-        else:
-            print(f"Active strategy: {active['strategy_name']} {active['symbol']} {active['timeframe']}")
-            strategy_name = active["strategy_name"]
+        strategy_name = "swiftalgo"
 
         buy_signal = data.get("buy_signal")
         sell_signal = data.get("sell_signal")
@@ -189,7 +183,8 @@ def place_trade_from_alert(data):
 
         # print("Trend filter passed")
 
-        result = place_trade(symbol, action, sl, tp, strategy_name=strategy_name)
+        result = place_trade(symbol, action, sl, tp, strategy_name=strategy_name,
+                             source="tradingview_webhook")
 
         if result:
             last_signal = f"{symbol}_{action}"
@@ -205,7 +200,7 @@ def place_trade_from_alert(data):
 # -------------------------
 # Trade execution
 # -------------------------
-def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_webhook"):
+def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_webhook", source="tradingview_webhook"):
     print("===================================")
     print(f"Executing Trade: {symbol} | Action: {action} | SL: {sl} | TP: {tp}")
 
@@ -274,7 +269,7 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
                     "tp": tp,
                     "deal_id": response.get("dealId"),
                     "deal_reference": response.get("dealReference"),
-                    "source": "tradingview_webhook",
+                    "source": source,
                     "strategy_name": strategy_name,
                     "status": "OPEN",
                 })
@@ -296,7 +291,9 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
             try:
                 recreate_session()
 
-                return place_trade(symbol, action, sl, tp)
+                return place_trade(symbol, action, sl, tp,
+                                   strategy_name=strategy_name,
+                                   source=source)
 
             except Exception as retry_error:
                 print("Retry failed:", retry_error)
