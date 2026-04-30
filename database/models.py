@@ -380,3 +380,43 @@ def get_active_strategy_history(limit: int = 10) -> list:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def log_signal_check(data: dict) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO signal_log
+                (checked_at, symbol, strategy_name, timeframe,
+                 candle_time, signal, trade_placed, error)
+            VALUES
+                (:checked_at, :symbol, :strategy_name, :timeframe,
+                 :candle_time, :signal, :trade_placed, :error)
+        """, {
+            "checked_at":    data.get("checked_at", datetime.now(timezone.utc).isoformat()),
+            "symbol":        data["symbol"],
+            "strategy_name": data.get("strategy_name"),
+            "timeframe":     data.get("timeframe"),
+            "candle_time":   data.get("candle_time"),
+            "signal":        data.get("signal", "NONE"),
+            "trade_placed":  int(data.get("trade_placed", 0)),
+            "error":         data.get("error"),
+        })
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_signal_checks(limit: int = 50) -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM signal_log
+            ORDER BY id DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()

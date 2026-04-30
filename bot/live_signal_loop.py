@@ -3,7 +3,7 @@ import time
 import json
 from datetime import datetime, timezone
 
-from database.models import get_active_strategy
+from database.models import get_active_strategy, log_signal_check
 from bot.execute_trade import place_trade
 
 from backend.strategies.rsi import RSIStrategy
@@ -113,10 +113,16 @@ def _check_symbol(symbol: str, last_fired: dict) -> None:
 
     action         = signals[-1].get("signal", "NONE")
     last_candle_ts = candles[-1]["time"]
+    now_utc        = datetime.now(timezone.utc).isoformat()
 
     print(f"[signal_loop] [{symbol}] {strategy_name} @ {last_candle_ts}: {action}")
 
     if action not in ("BUY", "SELL"):
+        log_signal_check({
+            "checked_at": now_utc, "symbol": symbol,
+            "strategy_name": strategy_name, "timeframe": timeframe,
+            "candle_time": last_candle_ts, "signal": "NONE", "trade_placed": 0,
+        })
         return
 
     if last_fired.get(symbol) == last_candle_ts:
@@ -126,6 +132,12 @@ def _check_symbol(symbol: str, last_fired: dict) -> None:
     atr = _calc_atr(candles)
     if atr is None:
         print(f"[signal_loop] [{symbol}] ATR failed — skipping")
+        log_signal_check({
+            "checked_at": now_utc, "symbol": symbol,
+            "strategy_name": strategy_name, "timeframe": timeframe,
+            "candle_time": last_candle_ts, "signal": action, "trade_placed": 0,
+            "error": "ATR calculation failed",
+        })
         return
 
     entry = candles[-1]["close"]
@@ -142,12 +154,24 @@ def _check_symbol(symbol: str, last_fired: dict) -> None:
         result = place_trade(symbol, action.lower(), sl=sl, tp=tp,
                              strategy_name=strategy_name,
                              source="signal_loop")
+        log_signal_check({
+            "checked_at": now_utc, "symbol": symbol,
+            "strategy_name": strategy_name, "timeframe": timeframe,
+            "candle_time": last_candle_ts, "signal": action,
+            "trade_placed": 1 if result else 0,
+        })
         if result:
             last_fired[symbol] = last_candle_ts
             print(f"[signal_loop] [{symbol}] Trade placed ✓")
         else:
             print(f"[signal_loop] [{symbol}] Trade returned False")
     except Exception as e:
+        log_signal_check({
+            "checked_at": now_utc, "symbol": symbol,
+            "strategy_name": strategy_name, "timeframe": timeframe,
+            "candle_time": last_candle_ts, "signal": "ERROR",
+            "trade_placed": 0, "error": str(e),
+        })
         print(f"[signal_loop] [{symbol}] Exception: {e}")
 
 

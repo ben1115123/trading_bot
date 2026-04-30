@@ -183,6 +183,21 @@ def init_db():
         )
     """)
 
+    # Create signal_log table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS signal_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            checked_at    TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            strategy_name TEXT,
+            timeframe     TEXT,
+            candle_time   TEXT,
+            signal        TEXT,
+            trade_placed  INTEGER DEFAULT 0,
+            error         TEXT
+        )
+    """)
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

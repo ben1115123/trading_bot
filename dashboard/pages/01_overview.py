@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import streamlit as st
@@ -58,14 +59,20 @@ def fetch_summary():
         """)
         pnl_rows = [dict(r) for r in cur.fetchall()]
 
+        try:
+            cur.execute("SELECT * FROM signal_log ORDER BY id DESC LIMIT 20")
+            signal_rows = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            signal_rows = []
+
     finally:
         conn.close()
 
     win_rate = (wins / total * 100) if total > 0 else 0.0
-    return total, wins, losses, win_rate, total_pnl, strategy_rows, history_rows, recent, pnl_rows
+    return total, wins, losses, win_rate, total_pnl, strategy_rows, history_rows, recent, pnl_rows, signal_rows
 
 
-total, wins, losses, win_rate, total_pnl, strategy_rows, history_rows, recent, pnl_rows = fetch_summary()
+total, wins, losses, win_rate, total_pnl, strategy_rows, history_rows, recent, pnl_rows, signal_rows = fetch_summary()
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -148,6 +155,103 @@ if history_rows:
         "reason":        "Reason",
     })
     st.dataframe(hist_df, use_container_width=True, hide_index=True)
+
+
+# ── Signal Monitor ────────────────────────────────────────────────────────────
+
+st.markdown('<div class="section-hd">Signal Monitor</div>', unsafe_allow_html=True)
+
+
+def _fmt_ts(ts):
+    if not ts:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return ts[:16]
+
+
+def _next_check(ts):
+    if not ts:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return (dt + timedelta(hours=1)).strftime("%H:%M UTC")
+    except Exception:
+        return "—"
+
+
+_SIG_COLOR = {"BUY": "#22C55E", "SELL": "#EF4444", "NONE": "#8B949E", "ERROR": "#F97316"}
+
+signal_by_symbol = {}
+for _row in signal_rows:
+    _sym = _row["symbol"]
+    if _sym not in signal_by_symbol:
+        signal_by_symbol[_sym] = _row
+
+sig_cols = st.columns(3)
+for col, symbol in zip(sig_cols, ["US500", "US100", "BTC"]):
+    with col:
+        r = signal_by_symbol.get(symbol)
+        if r:
+            sig   = (r["signal"] or "NONE").upper()
+            color = _SIG_COLOR.get(sig, "#8B949E")
+            strat = r["strategy_name"] or "—"
+            tf    = r["timeframe"] or "—"
+            chk   = _fmt_ts(r["checked_at"])
+            cndl  = r["candle_time"][:16] if r["candle_time"] else "—"
+            nxt   = _next_check(r["checked_at"])
+            err_html = (
+                f'<div class="info-tile"><div class="lbl">Error</div>'
+                f'<div class="val" style="color:#F97316">{r["error"]}</div></div>'
+                if r.get("error") else ""
+            )
+            st.markdown(f"""
+            <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <div style="font-size:13px;font-weight:600;color:#58A6FF">{symbol}</div>
+                <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
+                            padding:2px 10px;border-radius:4px">{sig}</div>
+              </div>
+              <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat} · {tf}</div></div>
+              <div class="info-tile"><div class="lbl">Candle</div><div class="val">{cndl}</div></div>
+              <div class="info-tile"><div class="lbl">Checked</div><div class="val">{chk}</div></div>
+              <div class="info-tile"><div class="lbl">Next check</div><div class="val">{nxt}</div></div>
+              {err_html}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
+                        padding:16px 20px;color:#8B949E;font-size:13px">
+              <div style="font-weight:600;color:#58A6FF;margin-bottom:8px">{symbol}</div>
+              No data yet.
+            </div>
+            """, unsafe_allow_html=True)
+
+if signal_rows:
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+    sig_df = pd.DataFrame(signal_rows)
+    _sig_cols = [c for c in
+        ["checked_at", "symbol", "strategy_name", "timeframe",
+         "candle_time", "signal", "trade_placed", "error"]
+        if c in sig_df.columns]
+    st.dataframe(
+        sig_df[_sig_cols],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "checked_at":    st.column_config.TextColumn("Time"),
+            "symbol":        st.column_config.TextColumn("Symbol"),
+            "strategy_name": st.column_config.TextColumn("Strategy"),
+            "timeframe":     st.column_config.TextColumn("TF"),
+            "candle_time":   st.column_config.TextColumn("Candle"),
+            "signal":        st.column_config.TextColumn("Signal"),
+            "trade_placed":  st.column_config.NumberColumn("Trade", format="%d"),
+            "error":         st.column_config.TextColumn("Error"),
+        },
+    )
 
 
 # ── Equity Curve ──────────────────────────────────────────────────────────────
