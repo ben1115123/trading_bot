@@ -172,6 +172,68 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ── Strategy History ──────────────────────────────────────────────────────────
+
+st.markdown('<div class="section-hd">Strategy History</div>', unsafe_allow_html=True)
+
+try:
+    _hist_conn = get_connection()
+    try:
+        _hist_cur = _hist_conn.cursor()
+        _hist_cur.execute("""
+            SELECT changed_at, symbol, strategy_name, timeframe, score, reason
+            FROM active_strategy_history
+            ORDER BY changed_at DESC LIMIT 10
+        """)
+        _hist_rows = [dict(r) for r in _hist_cur.fetchall()]
+    finally:
+        _hist_conn.close()
+
+    if _hist_rows:
+        _hist_df = pd.DataFrame(_hist_rows)
+        _hist_df["changed_at"] = _hist_df["changed_at"].apply(
+            lambda t: (
+                datetime.fromisoformat(t.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M UTC")
+                if t else "—"
+            )
+        )
+        _hist_df = _hist_df.rename(columns={
+            "changed_at":    "Changed",
+            "symbol":        "Symbol",
+            "strategy_name": "Strategy",
+            "timeframe":     "TF",
+            "score":         "Score",
+            "reason":        "Reason",
+        })
+        st.dataframe(
+            _hist_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Changed":  st.column_config.TextColumn("Changed"),
+                "Symbol":   st.column_config.TextColumn("Symbol"),
+                "Strategy": st.column_config.TextColumn("Strategy"),
+                "TF":       st.column_config.TextColumn("TF"),
+                "Score":    st.column_config.NumberColumn("Score", format="%.3f"),
+                "Reason":   st.column_config.TextColumn("Reason"),
+            },
+        )
+    else:
+        st.markdown("""
+        <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
+                    padding:24px;text-align:center;color:#8B949E;font-size:13px">
+          No strategy changes recorded yet.
+        </div>
+        """, unsafe_allow_html=True)
+except Exception:
+    st.markdown("""
+    <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
+                padding:24px;text-align:center;color:#8B949E;font-size:13px">
+      Strategy history unavailable.
+    </div>
+    """, unsafe_allow_html=True)
+
+
 # ── Period filter ─────────────────────────────────────────────────────────────
 
 period = st.selectbox(
