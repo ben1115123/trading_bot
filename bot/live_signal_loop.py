@@ -18,7 +18,18 @@ MARKET_CLOSE_UTC = {
     "BTC":   None,
 }
 
+TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "HOUR": 3600, "DAY": 86400}
+
 _last_signal: dict[str, str] = {}
+_last_checked: dict[str, datetime] = {}
+
+
+def _is_due(symbol: str, timeframe: str) -> bool:
+    interval = TIMEFRAME_SECONDS.get(timeframe, 3600)
+    last = _last_checked.get(symbol)
+    if last is None:
+        return True
+    return (datetime.now(timezone.utc) - last).total_seconds() >= interval * 0.9
 
 
 def _is_blocked(symbol: str) -> bool:
@@ -71,12 +82,7 @@ def _weekend_close_positions() -> None:
         print(f"[signal_loop] Weekend close error: {e}")
 
 
-def _check_symbol(symbol: str) -> None:
-    active = get_active_strategy(symbol=symbol)
-    if active is None:
-        print(f"[signal_loop] [{symbol}] No active strategy — skipping")
-        return
-
+def _check_symbol(symbol: str, active: dict) -> None:
     strategy_name = active["strategy_name"]
     timeframe     = active.get("timeframe", "HOUR")
     params_json   = active.get("params_json") or "{}"
@@ -124,7 +130,7 @@ def _check_symbol(symbol: str) -> None:
         log_signal_check(log_data)
         return
 
-    # Use candles[-2] — last completed candle; [-1] is the in-progress current hour
+    # Use candles[-2] — last completed candle; [-1] is the in-progress current candle
     sig         = signals[-2]
     candle      = candles[-2]
     signal      = sig.get("signal", "NONE")
@@ -180,7 +186,7 @@ def _check_symbol(symbol: str) -> None:
 
 
 def _loop() -> None:
-    print("[signal_loop] Starting hourly signal loop")
+    print("[signal_loop] Starting signal loop (5-min wake, timeframe-aware)")
     while True:
         now = datetime.now(timezone.utc)
         print(f"\n[signal_loop] === Cycle at {now.strftime('%Y-%m-%d %H:%M:%S UTC')} ===")
@@ -189,15 +195,22 @@ def _loop() -> None:
             _weekend_close_positions()
 
         for symbol in SYMBOLS:
+            active = get_active_strategy(symbol=symbol)
+            if active is None:
+                continue
+            timeframe = active.get("timeframe", "HOUR")
+            if not _is_due(symbol, timeframe):
+                continue
             try:
-                _check_symbol(symbol)
+                _check_symbol(symbol, active)
+                _last_checked[symbol] = datetime.now(timezone.utc)
             except Exception as e:
                 print(f"[signal_loop] [{symbol}] unhandled error: {e}")
 
         now            = datetime.now(timezone.utc)
-        secs_past_hour = now.minute * 60 + now.second
-        sleep_secs     = max(60, 3600 - secs_past_hour)
-        print(f"[signal_loop] Sleeping {sleep_secs}s until next hour")
+        secs_past_5min = (now.minute % 5) * 60 + now.second
+        sleep_secs     = max(30, 300 - secs_past_5min)
+        print(f"[signal_loop] Sleeping {sleep_secs}s until next 5-min boundary")
         time.sleep(sleep_secs)
 
 
