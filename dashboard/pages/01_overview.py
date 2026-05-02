@@ -36,6 +36,17 @@ def fetch_data():
         except Exception:
             signal_rows = []
 
+        try:
+            cur.execute("""
+                SELECT * FROM signal_log
+                WHERE symbol='US100' AND timeframe='5MIN'
+                ORDER BY id DESC LIMIT 1
+            """)
+            _r = cur.fetchone()
+            us100_5min = dict(_r) if _r else None
+        except Exception:
+            us100_5min = None
+
         last_trade_by_symbol = {}
         for sym in ["US500", "US100", "BTC"]:
             cur.execute("""
@@ -64,10 +75,10 @@ def fetch_data():
     finally:
         conn.close()
 
-    return strategy_rows, signal_rows, last_trade_by_symbol, today_pnl, today_count, pnl_rows
+    return strategy_rows, signal_rows, last_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min
 
 
-strategy_rows, signal_rows, last_trade_by_symbol, today_pnl, today_count, pnl_rows = fetch_data()
+strategy_rows, signal_rows, last_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min = fetch_data()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -179,10 +190,15 @@ if cron_info and cron_info["ts"]:
 
 st.markdown('<div class="section-hd">Signal Monitor</div>', unsafe_allow_html=True)
 
-sig_cols = st.columns(3)
-for col, symbol in zip(sig_cols, ["US500", "US100", "BTC"]):
+_CARDS = [
+    ("US500", "US500",        signal_by_symbol.get("US500"), None),
+    ("US100", "US100",        signal_by_symbol.get("US100"), None),
+    ("US100", "US100 · 5MIN", us100_5min,                   "US session only 14:30–21:00 UTC"),
+    ("BTC",   "BTC",          signal_by_symbol.get("BTC"),  None),
+]
+sig_cols = st.columns(4)
+for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
     with col:
-        r          = signal_by_symbol.get(symbol)
         strat_row  = strategy_by_symbol.get(symbol)
         last_trade = last_trade_by_symbol.get(symbol)
 
@@ -213,6 +229,11 @@ for col, symbol in zip(sig_cols, ["US500", "US100", "BTC"]):
                 '<div class="val" style="color:#8B949E">No trades yet</div></div>'
             )
 
+        subtitle_html = (
+            f'<div style="font-size:11px;color:#8B949E;margin-top:2px">{subtitle}</div>'
+            if subtitle else ""
+        )
+
         if r:
             sig        = (r.get("signal") or "NONE").upper()
             color      = _SIG_COLOR.get(sig, "#8B949E")
@@ -228,11 +249,15 @@ for col, symbol in zip(sig_cols, ["US500", "US100", "BTC"]):
             )
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-                <div style="font-size:13px;font-weight:600;color:#58A6FF">{symbol}</div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <div>
+                  <div style="font-size:13px;font-weight:600;color:#58A6FF">{label}</div>
+                  {subtitle_html}
+                </div>
                 <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
                             padding:2px 10px;border-radius:4px">{sig}</div>
               </div>
+              <div style="height:8px"></div>
               <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
               <div class="info-tile"><div class="lbl">Candle</div><div class="val">{cndl}</div></div>
               <div class="info-tile"><div class="lbl">Checked</div><div class="val">{chk}</div></div>
@@ -246,7 +271,11 @@ for col, symbol in zip(sig_cols, ["US500", "US100", "BTC"]):
             tf         = strat_row["timeframe"] if strat_row else "—"
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px;font-size:13px">
-              <div style="font-weight:600;color:#58A6FF;margin-bottom:12px">{symbol}</div>
+              <div style="margin-bottom:4px">
+                <div style="font-weight:600;color:#58A6FF">{label}</div>
+                {subtitle_html}
+              </div>
+              <div style="height:8px"></div>
               <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
               <div class="info-tile"><div class="lbl">Signal</div>
                 <div class="val" style="color:#8B949E">No data yet</div></div>
