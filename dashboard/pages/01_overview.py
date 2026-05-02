@@ -59,7 +59,7 @@ def fetch_data():
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         cur.execute("""
             SELECT SUM(pnl) as s, COUNT(*) as n FROM trades
-            WHERE pnl IS NOT NULL AND status = 'closed'
+            WHERE pnl IS NOT NULL AND UPPER(status) = 'CLOSED'
               AND DATE(timestamp) = ?
         """, (today_utc,))
         row = cur.fetchone()
@@ -208,7 +208,7 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
             direction = (last_trade.get("direction") or "?").upper()
             status    = last_trade.get("status", "")
             ep_str    = f"${ep:,.2f}" if ep else "?"
-            if status == "closed" and pnl_val is not None:
+            if str(status).upper() == "CLOSED" and pnl_val is not None:
                 sign      = "+" if pnl_val >= 0 else ""
                 clr       = "#22C55E" if pnl_val >= 0 else "#EF4444"
                 mark      = "✓" if pnl_val >= 0 else "✗"
