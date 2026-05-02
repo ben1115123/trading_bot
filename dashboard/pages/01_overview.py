@@ -251,8 +251,7 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                 <div>
-                  <div style="font-size:13px;font-weight:600;color:#58A6FF">{label}</div>
-                  {subtitle_html}
+                  <div style="font-size:13px;font-weight:600;color:#58A6FF">{label}</div>{subtitle_html}
                 </div>
                 <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
                             padding:2px 10px;border-radius:4px">{sig}</div>
@@ -272,8 +271,7 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px;font-size:13px">
               <div style="margin-bottom:4px">
-                <div style="font-weight:600;color:#58A6FF">{label}</div>
-                {subtitle_html}
+                <div style="font-weight:600;color:#58A6FF">{label}</div>{subtitle_html}
               </div>
               <div style="height:8px"></div>
               <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
