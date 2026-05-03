@@ -47,14 +47,24 @@ def fetch_data():
         except Exception:
             us100_5min = None
 
-        last_trade_by_symbol = {}
+        last_bot_trade_by_symbol   = {}
+        last_swift_trade_by_symbol = {}
         for sym in ["US500", "US100", "BTC"]:
             cur.execute("""
                 SELECT direction, entry_price, pnl, status
-                FROM trades WHERE symbol = ? ORDER BY id DESC LIMIT 1
+                FROM trades WHERE symbol = ? AND source = 'signal_loop'
+                ORDER BY id DESC LIMIT 1
             """, (sym,))
             row = cur.fetchone()
-            last_trade_by_symbol[sym] = dict(row) if row else None
+            last_bot_trade_by_symbol[sym] = dict(row) if row else None
+
+            cur.execute("""
+                SELECT direction, entry_price, pnl, status
+                FROM trades WHERE symbol = ? AND source = 'tradingview_webhook'
+                ORDER BY id DESC LIMIT 1
+            """, (sym,))
+            row = cur.fetchone()
+            last_swift_trade_by_symbol[sym] = dict(row) if row else None
 
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         cur.execute("""
@@ -75,10 +85,10 @@ def fetch_data():
     finally:
         conn.close()
 
-    return strategy_rows, signal_rows, last_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min
+    return strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min
 
 
-strategy_rows, signal_rows, last_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min = fetch_data()
+strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min = fetch_data()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -112,6 +122,27 @@ def _age_hours(ts_str):
         return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
     except Exception:
         return None
+
+
+def _trade_line(trade, icon, label, color):
+    if not trade:
+        return (f'<div style="font-size:12px;color:#8B949E;margin-top:4px">'
+                f'{icon} <span style="color:{color}">{label}:</span> No trades yet</div>')
+    ep        = trade.get("entry_price")
+    pnl_val   = trade.get("pnl")
+    direction = (trade.get("direction") or "?").upper()
+    status    = trade.get("status", "")
+    ep_str    = f"${ep:,.2f}" if ep else "?"
+    if str(status).upper() == "CLOSED" and pnl_val is not None:
+        sign = "+" if pnl_val >= 0 else ""
+        clr  = "#22C55E" if pnl_val >= 0 else "#EF4444"
+        mark = "✓" if pnl_val >= 0 else "✗"
+        return (f'<div style="font-size:12px;color:#8B949E;margin-top:4px">'
+                f'{icon} <span style="color:{color}">{label}:</span> '
+                f'{direction} @ {ep_str} → <span style="color:{clr}">{sign}${pnl_val:,.2f} {mark}</span></div>')
+    return (f'<div style="font-size:12px;color:#8B949E;margin-top:4px">'
+            f'{icon} <span style="color:{color}">{label}:</span> '
+            f'{direction} @ {ep_str} → <span style="color:#F59E0B">OPEN</span></div>')
 
 
 def _parse_daily_log(log_path):
@@ -199,35 +230,15 @@ _CARDS = [
 sig_cols = st.columns(4)
 for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
     with col:
-        strat_row  = strategy_by_symbol.get(symbol)
-        last_trade = last_trade_by_symbol.get(symbol)
-
-        if last_trade:
-            ep        = last_trade.get("entry_price")
-            pnl_val   = last_trade.get("pnl")
-            direction = (last_trade.get("direction") or "?").upper()
-            status    = last_trade.get("status", "")
-            ep_str    = f"${ep:,.2f}" if ep else "?"
-            if str(status).upper() == "CLOSED" and pnl_val is not None:
-                sign      = "+" if pnl_val >= 0 else ""
-                clr       = "#22C55E" if pnl_val >= 0 else "#EF4444"
-                mark      = "✓" if pnl_val >= 0 else "✗"
-                trade_html = (
-                    f'<div class="info-tile"><div class="lbl">Last trade</div>'
-                    f'<div class="val">{direction} @ {ep_str} → '
-                    f'<span style="color:{clr}">{sign}${pnl_val:,.2f} {mark}</span></div></div>'
-                )
-            else:
-                trade_html = (
-                    f'<div class="info-tile"><div class="lbl">Last trade</div>'
-                    f'<div class="val">{direction} @ {ep_str} → '
-                    f'<span style="color:#F59E0B">OPEN</span></div></div>'
-                )
-        else:
-            trade_html = (
-                '<div class="info-tile"><div class="lbl">Last trade</div>'
-                '<div class="val" style="color:#8B949E">No trades yet</div></div>'
-            )
+        strat_row   = strategy_by_symbol.get(symbol)
+        bot_trade   = last_bot_trade_by_symbol.get(symbol)
+        swift_trade = last_swift_trade_by_symbol.get(symbol)
+        trade_html  = (
+            '<div class="info-tile"><div class="lbl">Last trades</div><div class="val">'
+            + _trade_line(bot_trade,   "🤖", "Bot",   "#58A6FF")
+            + _trade_line(swift_trade, "⚡", "Swift", "#A78BFA")
+            + '</div></div>'
+        )
 
         subtitle_html = (
             f'<div style="font-size:11px;color:#8B949E;margin-top:2px">{subtitle}</div>'
