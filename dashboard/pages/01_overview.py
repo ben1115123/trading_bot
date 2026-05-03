@@ -82,13 +82,24 @@ def fetch_data():
         """)
         pnl_rows = [dict(r) for r in cur.fetchall()]
 
+        cur.execute("""
+            SELECT COUNT(*) as n,
+                   COALESCE(ABS(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END)), 0) as losses
+            FROM trades
+            WHERE source = 'signal_loop'
+            AND DATE(timestamp) = ?
+        """, (today_utc,))
+        risk_row         = dict(cur.fetchone())
+        today_bot_trades = risk_row["n"]
+        today_bot_losses = risk_row["losses"]
+
     finally:
         conn.close()
 
-    return strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min
+    return strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses
 
 
-strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min = fetch_data()
+strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses = fetch_data()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -316,6 +327,16 @@ else:
       No daily run recorded yet
     </div>
     """, unsafe_allow_html=True)
+
+loss_color = "#EF4444" if today_bot_losses >= 60 else "#8B949E"
+st.markdown(f"""
+<div style="background:#161B22;border:1px solid #30363D;border-radius:8px;
+            padding:10px 20px;font-size:12px;color:#8B949E;margin-top:6px">
+  Today (bot): <span style="color:#E6EDF3">{today_bot_trades} trades</span> ·
+  <span style="color:{loss_color}">${today_bot_losses:.2f} losses</span> ·
+  limit $75
+</div>
+""", unsafe_allow_html=True)
 
 
 # ── Section 4 — Today's P&L ───────────────────────────────────────────────────

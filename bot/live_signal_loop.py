@@ -20,6 +20,10 @@ MARKET_CLOSE_UTC = {
 
 TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "HOUR": 3600, "DAY": 86400}
 
+MAX_DAILY_LOSS_USD    = 75.0   # primary guardrail — hard stop
+MAX_TRADES_PER_DAY    = 20     # bug catcher only
+MAX_TRADES_PER_SYMBOL = 6      # bug catcher only
+
 _last_signal: dict[str, str] = {}
 _last_checked: dict[str, datetime] = {}
 
@@ -82,6 +86,60 @@ def _weekend_close_positions() -> None:
         print(f"[signal_loop] Weekend close error: {e}")
 
 
+def _get_daily_stats() -> dict:
+    from database.db import get_connection
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        cur.execute("""
+            SELECT COUNT(*) as n,
+                   COALESCE(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END), 0) as losses
+            FROM trades
+            WHERE source = 'signal_loop'
+            AND DATE(timestamp) = ?
+        """, (today,))
+        row = dict(cur.fetchone())
+
+        cur.execute("""
+            SELECT symbol, COUNT(*) as n
+            FROM trades
+            WHERE source = 'signal_loop'
+            AND DATE(timestamp) = ?
+            GROUP BY symbol
+        """, (today,))
+        by_symbol = {r["symbol"]: r["n"] for r in cur.fetchall()}
+
+        return {
+            "total_trades": row["n"],
+            "total_losses": abs(row["losses"]),
+            "by_symbol":    by_symbol,
+        }
+    finally:
+        conn.close()
+
+
+def _risk_check(symbol: str, stats: dict) -> str | None:
+    """Returns reason string if blocked, None if ok to trade.
+    Loss limit is the real guardrail.
+    Trade counts are safety nets for runaway signals only.
+    """
+    if stats["total_losses"] >= MAX_DAILY_LOSS_USD:
+        return (f"daily loss limit hit "
+                f"(${stats['total_losses']:.2f} >= "
+                f"${MAX_DAILY_LOSS_USD})")
+
+    if stats["total_trades"] >= MAX_TRADES_PER_DAY:
+        return f"max daily trades reached ({MAX_TRADES_PER_DAY})"
+
+    sym_count = stats["by_symbol"].get(symbol, 0)
+    if sym_count >= MAX_TRADES_PER_SYMBOL:
+        return f"max trades for {symbol} today ({MAX_TRADES_PER_SYMBOL})"
+
+    return None
+
+
 def _check_symbol(symbol: str, active: dict) -> None:
     strategy_name = active["strategy_name"]
     timeframe     = active.get("timeframe", "HOUR")
@@ -102,6 +160,15 @@ def _check_symbol(symbol: str, active: dict) -> None:
         print(f"[signal_loop] [{symbol}] blocked — near market close")
         log_data["signal"] = "BLOCKED"
         log_data["error"]  = "near market close"
+        log_signal_check(log_data)
+        return
+
+    stats       = _get_daily_stats()
+    risk_reason = _risk_check(symbol, stats)
+    if risk_reason:
+        print(f"[signal_loop] [{symbol}] risk limit: {risk_reason}")
+        log_data["signal"] = "BLOCKED"
+        log_data["error"]  = f"risk limit: {risk_reason}"
         log_signal_check(log_data)
         return
 
