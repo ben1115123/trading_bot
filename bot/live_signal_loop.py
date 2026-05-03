@@ -97,7 +97,7 @@ def _get_daily_stats() -> dict:
             SELECT COUNT(*) as n,
                    COALESCE(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END), 0) as losses
             FROM trades
-            WHERE source = 'signal_loop'
+            WHERE source IN ('signal_loop', 'live_signal_loop')
             AND DATE(timestamp) = ?
         """, (today,))
         row = dict(cur.fetchone())
@@ -105,7 +105,7 @@ def _get_daily_stats() -> dict:
         cur.execute("""
             SELECT symbol, COUNT(*) as n
             FROM trades
-            WHERE source = 'signal_loop'
+            WHERE source IN ('signal_loop', 'live_signal_loop')
             AND DATE(timestamp) = ?
             GROUP BY symbol
         """, (today,))

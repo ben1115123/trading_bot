@@ -115,15 +115,27 @@ def fetch_performance(period: str) -> dict:
         # By source
         source_stats: dict = {}
         for src in ["tradingview_webhook", "signal_loop"]:
-            cur.execute(
-                f"""
-                SELECT COUNT(*) as n,
-                       SUM(pnl) as s,
-                       SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as w
-                FROM trades WHERE {base_cond} AND source = ?
-                """,
-                base_params + [src],
-            )
+            if src == "signal_loop":
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*) as n,
+                           SUM(pnl) as s,
+                           SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as w
+                    FROM trades WHERE {base_cond}
+                      AND source IN ('signal_loop', 'live_signal_loop')
+                    """,
+                    base_params,
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*) as n,
+                           SUM(pnl) as s,
+                           SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as w
+                    FROM trades WHERE {base_cond} AND source = ?
+                    """,
+                    base_params + [src],
+                )
             source_stats[src] = dict(cur.fetchone())
 
         # Best / worst 5

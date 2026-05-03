@@ -52,7 +52,7 @@ def fetch_data():
         for sym in ["US500", "US100", "BTC"]:
             cur.execute("""
                 SELECT direction, entry_price, pnl, status
-                FROM trades WHERE symbol = ? AND source = 'signal_loop'
+                FROM trades WHERE symbol = ? AND source IN ('signal_loop', 'live_signal_loop')
                 ORDER BY id DESC LIMIT 1
             """, (sym,))
             row = cur.fetchone()
@@ -86,7 +86,7 @@ def fetch_data():
             SELECT COUNT(*) as n,
                    COALESCE(ABS(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END)), 0) as losses
             FROM trades
-            WHERE source = 'signal_loop'
+            WHERE source IN ('signal_loop', 'live_signal_loop')
             AND DATE(timestamp) = ?
         """, (today_utc,))
         risk_row         = dict(cur.fetchone())
