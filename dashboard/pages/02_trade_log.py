@@ -123,7 +123,10 @@ if not trades:
     st.stop()
 
 df_raw = pd.DataFrame(trades)
-df_raw["timestamp"] = pd.to_datetime(df_raw["timestamp"], errors="coerce", utc=True)
+df_raw["timestamp"] = pd.to_datetime(
+    df_raw["timestamp"], errors="coerce", utc=False
+).dt.tz_localize(None)
+df_raw = df_raw.dropna(subset=["timestamp"])
 
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
