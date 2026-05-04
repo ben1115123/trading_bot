@@ -93,13 +93,29 @@ def fetch_data():
         today_bot_trades = risk_row["n"]
         today_bot_losses = risk_row["losses"]
 
+        cur.execute("""
+            SELECT symbol, strategy_name, source,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+                   COALESCE(SUM(pnl), 0) as total_pnl
+            FROM trades
+            WHERE pnl IS NOT NULL
+            AND status = 'CLOSED'
+            GROUP BY symbol, strategy_name, source
+        """)
+        strategy_stats = {
+            f"{r['symbol']}_{r['strategy_name']}": dict(r)
+            for r in cur.fetchall()
+        }
+
     finally:
         conn.close()
 
-    return strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses
+    return strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses, strategy_stats
 
 
-strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses = fetch_data()
+strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses, strategy_stats = fetch_data()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -154,6 +170,21 @@ def _trade_line(trade, icon, label, color):
     return (f'<div style="font-size:12px;color:#8B949E;margin-top:4px">'
             f'{icon} <span style="color:{color}">{label}:</span> '
             f'{direction} @ {ep_str} → <span style="color:#F59E0B">OPEN</span></div>')
+
+
+def _live_stats_html(stats_key, strategy_stats):
+    st_data = strategy_stats.get(stats_key)
+    if not st_data or st_data.get("total", 0) == 0:
+        return '<div style="font-size:11px;color:#8B949E;margin-top:2px">No live data yet</div>'
+    total  = st_data["total"]
+    wins   = st_data["wins"]
+    losses = st_data["losses"]
+    wr     = wins / total * 100
+    pnl    = st_data["total_pnl"]
+    color  = "#22C55E" if wr >= 50 else "#EF4444"
+    sign   = "+" if pnl >= 0 else ""
+    return (f'<div style="font-size:11px;color:{color};margin-top:2px">'
+            f'Live: {wr:.0f}% ({wins}W/{losses}L) · {sign}${pnl:,.2f}</div>')
 
 
 def _parse_daily_log(log_path):
@@ -264,11 +295,12 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
             chk        = _fmt_ts(r["checked_at"])
             cndl       = r["candle_time"][:16] if r.get("candle_time") else "—"
             nxt        = _next_check(r["checked_at"])
-            err_html   = (
+            err_html        = (
                 f'<div class="info-tile"><div class="lbl">Error</div>'
                 f'<div class="val" style="color:#F97316">{r["error"]}</div></div>'
                 if r.get("error") else ""
             )
+            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}", strategy_stats)
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
@@ -280,6 +312,7 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
               </div>
               <div style="height:8px"></div>
               <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
+              {live_stats_html}
               <div class="info-tile"><div class="lbl">Candle</div><div class="val">{cndl}</div></div>
               <div class="info-tile"><div class="lbl">Checked</div><div class="val">{chk}</div></div>
               <div class="info-tile"><div class="lbl">Next check</div><div class="val">{nxt}</div></div>
@@ -288,8 +321,9 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
             </div>
             """, unsafe_allow_html=True)
         else:
-            strat_name = strat_row["strategy_name"] if strat_row else "—"
-            tf         = strat_row["timeframe"] if strat_row else "—"
+            strat_name      = strat_row["strategy_name"] if strat_row else "—"
+            tf              = strat_row["timeframe"] if strat_row else "—"
+            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}", strategy_stats)
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px;font-size:13px">
               <div style="margin-bottom:4px">
@@ -297,6 +331,7 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
               </div>
               <div style="height:8px"></div>
               <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
+              {live_stats_html}
               <div class="info-tile"><div class="lbl">Signal</div>
                 <div class="val" style="color:#8B949E">No data yet</div></div>
               {trade_html}

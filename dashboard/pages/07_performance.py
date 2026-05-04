@@ -138,6 +138,24 @@ def fetch_performance(period: str) -> dict:
                 )
             source_stats[src] = dict(cur.fetchone())
 
+        # By strategy
+        cur.execute(
+            f"""
+            SELECT strategy_name, source,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                   COALESCE(SUM(pnl), 0) as total_pnl,
+                   COALESCE(AVG(pnl), 0) as avg_pnl
+            FROM trades
+            WHERE {base_cond}
+            AND status = 'CLOSED'
+            GROUP BY strategy_name, source
+            ORDER BY total_pnl DESC
+            """,
+            base_params,
+        )
+        strategy_stats = [dict(r) for r in cur.fetchall()]
+
         # Best / worst 5
         cur.execute(
             f"""
@@ -163,16 +181,17 @@ def fetch_performance(period: str) -> dict:
         conn.close()
 
     return {
-        "trade_count":  trade_count,
-        "total_pnl":    total_pnl,
-        "avg_pnl":      avg_pnl,
-        "win_rate":     win_rate,
-        "wins":         wins,
-        "daily":        daily,
-        "symbol_stats": symbol_stats,
-        "source_stats": source_stats,
-        "top_winners":  top_winners,
-        "top_losers":   top_losers,
+        "trade_count":    trade_count,
+        "total_pnl":      total_pnl,
+        "avg_pnl":        avg_pnl,
+        "win_rate":       win_rate,
+        "wins":           wins,
+        "daily":          daily,
+        "symbol_stats":   symbol_stats,
+        "source_stats":   source_stats,
+        "strategy_stats": strategy_stats,
+        "top_winners":    top_winners,
+        "top_losers":     top_losers,
     }
 
 
@@ -445,7 +464,56 @@ for col, src in zip(st.columns(2), ["tradingview_webhook", "signal_loop"]):
         """, unsafe_allow_html=True)
 
 
-# ── Row 5 — Best and worst trades ─────────────────────────────────────────────
+# ── Row 5 — By strategy ───────────────────────────────────────────────────────
+
+st.markdown('<div class="section-hd">By Strategy</div>', unsafe_allow_html=True)
+
+_SRC_LABEL = {
+    "live_signal_loop":    "Bot",
+    "signal_loop":         "Bot",
+    "tradingview_webhook": "SwiftAlgo",
+    "manual":              "Manual",
+}
+
+if d["strategy_stats"]:
+    _strat_rows = []
+    for _sr in d["strategy_stats"]:
+        _n   = _sr["total"] or 0
+        _w   = _sr["wins"] or 0
+        _wr  = (_w / _n * 100) if _n > 0 else 0.0
+        _pnl = _sr["total_pnl"] or 0.0
+        _avg = _sr["avg_pnl"] or 0.0
+        _strat_rows.append({
+            "Strategy":  _sr["strategy_name"] or "—",
+            "Source":    _SRC_LABEL.get(_sr["source"] or "", _sr["source"] or "—"),
+            "Trades":    _n,
+            "Win Rate":  f"{_wr:.1f}%",
+            "Total P&L": f"+${_pnl:,.2f}" if _pnl >= 0 else f"-${abs(_pnl):,.2f}",
+            "Avg P&L":   f"+${_avg:,.2f}" if _avg >= 0 else f"-${abs(_avg):,.2f}",
+        })
+    st.dataframe(
+        pd.DataFrame(_strat_rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Strategy":  st.column_config.TextColumn("Strategy"),
+            "Source":    st.column_config.TextColumn("Source"),
+            "Trades":    st.column_config.NumberColumn("Trades", format="%d"),
+            "Win Rate":  st.column_config.TextColumn("Win Rate"),
+            "Total P&L": st.column_config.TextColumn("Total P&L"),
+            "Avg P&L":   st.column_config.TextColumn("Avg P&L"),
+        },
+    )
+else:
+    st.markdown("""
+    <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
+                padding:24px;text-align:center;color:#8B949E;font-size:13px">
+      No strategy data for selected period.
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ── Row 6 — Best and worst trades ─────────────────────────────────────────────
 
 st.markdown('<div class="section-hd">Best &amp; Worst Trades</div>', unsafe_allow_html=True)
 
