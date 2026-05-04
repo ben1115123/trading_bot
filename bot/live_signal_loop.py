@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
-from database.models import get_active_strategy, log_signal_check
+from database.models import get_active_strategies, log_signal_check
 
 SYMBOLS = ["US500", "US100", "BTC"]
 
@@ -30,7 +30,7 @@ _last_checked: dict[str, datetime] = {}
 
 def _is_due(symbol: str, timeframe: str) -> bool:
     interval = TIMEFRAME_SECONDS.get(timeframe, 3600)
-    last = _last_checked.get(symbol)
+    last = _last_checked.get((symbol, timeframe))
     if last is None:
         return True
     return (datetime.now(timezone.utc) - last).total_seconds() >= interval * 0.9
@@ -227,12 +227,12 @@ def _check_symbol(symbol: str, active: dict) -> None:
         log_signal_check(log_data)
         return
 
-    if _last_signal.get(symbol) == dedup_key:
-        print(f"[signal_loop] [{symbol}] duplicate {signal} for {candle_time} — skipping")
+    if _last_signal.get((symbol, timeframe)) == dedup_key:
+        print(f"[signal_loop] [{symbol}/{timeframe}] duplicate {signal} for {candle_time} — skipping")
         log_signal_check(log_data)
         return
 
-    _last_signal[symbol] = dedup_key
+    _last_signal[(symbol, timeframe)] = dedup_key
 
     # SL/TP from candle range — matches backtesting engine's sl_dist = high - low
     sl_dist = candle["high"] - candle["low"]
@@ -277,17 +277,15 @@ def _loop() -> None:
             _weekend_close_positions()
 
         for symbol in SYMBOLS:
-            active = get_active_strategy(symbol=symbol)
-            if active is None:
-                continue
-            timeframe = active.get("timeframe", "HOUR")
-            if not _is_due(symbol, timeframe):
-                continue
-            try:
-                _check_symbol(symbol, active)
-                _last_checked[symbol] = datetime.now(timezone.utc)
-            except Exception as e:
-                print(f"[signal_loop] [{symbol}] unhandled error: {e}")
+            for active in get_active_strategies(symbol=symbol):
+                timeframe = active.get("timeframe", "HOUR")
+                if not _is_due(symbol, timeframe):
+                    continue
+                try:
+                    _check_symbol(symbol, active)
+                    _last_checked[(symbol, timeframe)] = datetime.now(timezone.utc)
+                except Exception as e:
+                    print(f"[signal_loop] [{symbol}/{timeframe}] unhandled error: {e}")
 
         now            = datetime.now(timezone.utc)
         secs_past_5min = (now.minute % 5) * 60 + now.second

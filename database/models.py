@@ -301,7 +301,7 @@ def insert_active_strategy(data: dict) -> int:
             VALUES
                 (:strategy_name, :symbol, :timeframe, :strategy_type, :backtest_id,
                  :score, :activated_at, :params_json, :status, :updated_at)
-            ON CONFLICT(symbol) DO UPDATE SET
+            ON CONFLICT(symbol, timeframe) DO UPDATE SET
                 strategy_name = excluded.strategy_name,
                 timeframe = excluded.timeframe,
                 strategy_type = excluded.strategy_type,
@@ -343,17 +343,24 @@ def insert_active_strategy(data: dict) -> int:
     return active_strategy_id
 
 
-def get_active_strategy(symbol: str = None) -> dict | list | None:
+def get_active_strategy(symbol: str = None, timeframe: str = None) -> dict | list | None:
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         if symbol:
-            cursor.execute("""
-                SELECT * FROM active_strategy
-                WHERE symbol = ? AND status = 'active'
-                LIMIT 1
-            """, (symbol,))
+            if timeframe:
+                cursor.execute("""
+                    SELECT * FROM active_strategy
+                    WHERE symbol = ? AND timeframe = ? AND status = 'active'
+                    LIMIT 1
+                """, (symbol, timeframe))
+            else:
+                cursor.execute("""
+                    SELECT * FROM active_strategy
+                    WHERE symbol = ? AND status = 'active'
+                    LIMIT 1
+                """, (symbol,))
             row = cursor.fetchone()
             return dict(row) if row else None
         else:
@@ -364,6 +371,21 @@ def get_active_strategy(symbol: str = None) -> dict | list | None:
             """)
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_active_strategies(symbol: str) -> list:
+    """All active rows for a symbol — one per timeframe."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM active_strategy
+            WHERE symbol = ? AND status = 'active'
+            ORDER BY timeframe ASC
+        """, (symbol,))
+        return [dict(r) for r in cursor.fetchall()]
     finally:
         conn.close()
 

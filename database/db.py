@@ -168,6 +168,40 @@ def init_db():
         except Exception:
             pass
 
+    # Migrate active_strategy: UNIQUE(symbol) → UNIQUE(symbol, timeframe)
+    try:
+        cursor.execute("SELECT sql FROM sqlite_master WHERE name='active_strategy'")
+        ddl = cursor.fetchone()
+        if ddl and "UNIQUE(symbol)" in ddl[0] and "symbol, timeframe" not in ddl[0]:
+            cursor.execute("ALTER TABLE active_strategy RENAME TO _active_strategy_old")
+            cursor.execute("""
+                CREATE TABLE active_strategy (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    strategy_name TEXT NOT NULL,
+                    symbol        TEXT NOT NULL,
+                    updated_at    TEXT NOT NULL,
+                    timeframe     TEXT,
+                    strategy_type TEXT,
+                    backtest_id   INTEGER,
+                    score         REAL,
+                    activated_at  TEXT,
+                    params_json   TEXT,
+                    status        TEXT DEFAULT 'active',
+                    UNIQUE(symbol, timeframe)
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO active_strategy
+                    (id, strategy_name, symbol, updated_at, timeframe, strategy_type,
+                     backtest_id, score, activated_at, params_json, status)
+                SELECT id, strategy_name, symbol, updated_at, timeframe, strategy_type,
+                       backtest_id, score, activated_at, params_json, status
+                FROM _active_strategy_old
+            """)
+            cursor.execute("DROP TABLE _active_strategy_old")
+    except Exception:
+        pass
+
     # Create active_strategy_history table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS active_strategy_history (

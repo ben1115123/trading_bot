@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from database.models import insert_active_strategy, get_active_strategy
+from database.models import insert_active_strategy, get_active_strategy, get_active_strategies
 from scripts.score_strategies import score_strategies
 
 SYMBOLS = ["BTC", "US100", "US500"]
@@ -39,7 +39,7 @@ def _select_for_symbol(symbol: str, candidates: list, dry_run: bool) -> dict | N
 
     best = sym_candidates[0]  # already sorted score DESC
     best_score = best["score"]
-    current = get_active_strategy(symbol=symbol)
+    current = get_active_strategy(symbol=symbol, timeframe="HOUR")
 
     if current is None:
         reason = f"No active strategy for {symbol} — first activation"
