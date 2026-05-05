@@ -3,7 +3,7 @@
 ## Project Overview
 Webhook-driven algorithmic trading bot. Pipeline:
 TradingView alert → webhook → Python bot → IG Markets API.
-Current focus: Phase 5 — Strategy Selector.
+Current focus: Phase 6 — Daily Automation.
 
 ## Architecture
 main.py                     FastAPI entry point
@@ -135,135 +135,97 @@ Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
   after 24 hours, logs warning if failed
 - Dashboard not deployed to VPS since Phase 3 —
   deploy after Phase 5 complete in one clean push
+- active_strategy holds 1 row per symbol (upsert on select)
+- get_active_strategy(symbol) → dict | None
+- get_active_strategy() → list of all active rows
 
 ## Test Scripts
-| Script                    | Purpose                    |
-|---------------------------|----------------------------|
-| bot/test_ig.py            | Verify IG session          |
-| bot/test_trade.py         | Place test BUY XAUUSD      |
-| bot/search_market.py      | Search IG epics            |
-| scripts/seed_test_data.py | Insert fake trades         |
-| scripts/backfill_pnl.py   | Backfill missing P&L       |
-| scripts/sync_ig_trades.py | Sync manual IG trades to DB|
-| scripts/run_backtest.py   | Run/sweep backtests        |
-| scripts/score_strategies.py | Score all backtest results|
-| scripts/select_strategy.py  | Select + activate strategy|
+| Script                      | Purpose                     |
+|-----------------------------|-----------------------------|
+| bot/test_ig.py              | Verify IG session           |
+| bot/test_trade.py           | Place test BUY XAUUSD       |
+| bot/search_market.py        | Search IG epics             |
+| scripts/seed_test_data.py   | Insert fake trades          |
+| scripts/backfill_pnl.py     | Backfill missing P&L        |
+| scripts/sync_ig_trades.py   | Sync manual IG trades to DB |
+| scripts/run_backtest.py     | Run/sweep backtests         |
+| scripts/score_strategies.py | Score all backtest results  |
+| scripts/select_strategy.py  | Select + activate strategy  |
 
 ---
 
 ## Current Build Phase
-PHASE 5 — Strategy Selector
+PHASE 6 — Daily Automation
 
 ### Goal
-Score all strategies in backtest_results, auto-select
-the best performer above threshold, update
-active_strategy table so the live bot knows which
-strategy signals to follow.
+Remove TradingView dependency for signal execution.
+Morning cron rescores + reselects strategy.
+Live signal loop runs active strategy all day via yfinance candles.
 
-### Top strategies from Phase 4
-| Rank | Strategy            | Symbol | TF   | Type       | Trades | Win%  | Score |
-|------|---------------------|--------|------|------------|--------|-------|-------|
-| 1    | stoch_rsi           | US100  | HOUR | swing      | 24     | 70.8% | 0.893 |
-| 2    | vwap_mean_reversion | US100  | 5MIN | daytrading | 7      | 100%  | 0.898 |
-| 3    | rsi                 | US500  | HOUR | swing      | 7      | 85.7% | 0.689 |
-| 4    | vwap_mean_reversion | US500  | 5MIN | daytrading | 7      | 85.7% | 0.681 |
-| 5    | vwap_ema            | BTC    | HOUR | swing      | 5      | 80%   | 0.654 |
+### Architecture
+  scripts/run_daily.py          Orchestrator (cron entry point)
+  scripts/daily_backtest.py     Fresh candles → backtest all strategies
+  scripts/score_strategies.py   ✅ Score all backtest_results
+  scripts/select_strategy.py    ✅ Pick best + update active_strategy
+  scripts/live_signal_loop.py   Every HOUR: fetch candles → generate signals → execute
 
-### Deployment decision
-- Primary live strategy: stoch_rsi US100 HOUR
-  (largest sample, most trustworthy — 24 trades)
-- Secondary (monitor only, not live yet):
-  vwap_mean_reversion US100 5MIN
-  (100% win rate needs more trades to confirm)
+### Morning cron (6am UTC)
+  1. Fetch fresh candles (yfinance, 2000 HOUR candles per symbol)
+  2. Run backtest for all strategies × all symbols
+  3. Score results → select best per symbol
+  4. Update active_strategy table
+  Cron: 0 6 * * * python scripts/run_daily.py
+
+### Live signal loop
+  - Runs continuously after morning cron
+  - Every HOUR:
+      fetch latest candles from yfinance
+      run active_strategy.generate_signals()
+      if signal fires → call execute_trade.py
+      respect risk manager (no change to lot sizing)
+  - No TradingView webhook needed for execution
+  - TradingView alerts may still trigger as backup/monitor
 
 ### New files to create
-  scripts/score_strategies.py    Score all backtest_results
-  scripts/select_strategy.py     Pick best + update active_strategy
+  scripts/run_daily.py          Morning orchestrator
+  scripts/live_signal_loop.py   Hourly signal poller
 
 ### Database changes
-  Add active_strategy table to database/models.py:
-    id              INTEGER PRIMARY KEY
-    strategy_name   TEXT
-    symbol          TEXT
-    timeframe       TEXT
-    strategy_type   TEXT    ← 'swing' or 'daytrading'
-    backtest_id     INTEGER ← which backtest run it's based on
-    score           REAL
-    activated_at    TEXT
-    params_json     TEXT    ← params to use for live signals
-    status          TEXT    ← 'active' or 'inactive'
-
-### Dashboard updates (deploy to VPS after Phase 5)
-  dashboard/pages/01_overview.py:
-    Add active strategy panel:
-      name, symbol, timeframe, type, score,
-      win rate, trade count, activated date
-    Add last 5 strategy switches as history table
-
-  dashboard/pages/04_backtest.py:
-    Highlight currently active strategy row
-    Add strategy_type filter (swing/daytrading)
-
-### Scoring formula
-  score = win_rate*0.4 + (profit/1000)*0.3 +
-          (1 - drawdown/1000)*0.2 + sharpe*0.1
-
-  Eligibility rules:
-  - total_trades >= 10 (swing) or >= 5 (daytrading)
-  - profit > 0
-  - win_rate > 0.5
-  - Must beat benchmark_return
-  - Only switch if new score > current score + 0.10
+  None — active_strategy table already live from Phase 5
 
 ### Step by step for Claude Code
 
-Step 1 — Add active_strategy table to database/models.py
-  Add query functions:
-    insert_active_strategy()
-    get_active_strategy()
-    get_active_strategy_history()
+Step 1 — Create scripts/run_daily.py
+  Calls daily_backtest → score_strategies → select_strategy
+  Logs each step with timestamp
+  Sends summary to logs/daily_run.log
+  Show file and wait for approval
+
+Step 2 — Create scripts/live_signal_loop.py
+  Loads active_strategy for each symbol
+  Every HOUR: fetch candles → generate_signals()
+  If BUY/SELL signal: call execute_trade logic
+  Tracks last signal to avoid duplicate fires
+  Respects 1s cooldown + market hours
+  Show file and wait for approval
+
+Step 3 — Wire loop into Docker
+  Add live_signal_loop to docker-compose.yml
+  as a 4th container (or as a thread in bot container)
   Show diff and wait for approval
 
-Step 2 — Create scripts/score_strategies.py
-  Read all backtest_results from DB
-  Apply eligibility rules
-  Calculate score for each eligible run
-  Print ranked table to console
-  Show top 3 per symbol
+Step 4 — Deploy to VPS
+  git pull → docker-compose up -d --build
+  Verify all containers up
+  Tail logs to confirm first hourly cycle runs
 
-Step 3 — Create scripts/select_strategy.py
-  Run scoring
-  Compare best candidate vs current active
-  Only update if improvement > 10%
-  Write to active_strategy table
-  Log selection decision with reason
-  Manually seed stoch_rsi US100 HOUR as
-  first active strategy on first run
-
-Step 4 — Update dashboard pages
-  dashboard/pages/01_overview.py:
-    Add active strategy panel
-    Add strategy switch history
-  dashboard/pages/04_backtest.py:
-    Highlight active strategy row
-    Add strategy_type filter
-
-Step 5 — Wire active strategy to live bot
-  bot/execute_trade.py:
-    Read active_strategy table before executing
-    Only execute if signal symbol matches
-    active strategy symbol
-    Log which strategy triggered each trade
-  ⚠️ Requires permission before touching
-     execute_trade.py — show diff first
-
-### Phase 5 rules
-- NEVER auto-deploy strategy with < 10 trades
-  (swing) or < 5 trades (daytrading)
-- ALWAYS log reason for every strategy switch
-- NEVER switch strategy during market hours
-- active_strategy is single source of truth
-- stoch_rsi US100 HOUR = first active strategy
+### Phase 6 rules
+- NEVER fetch candles from IG API (yfinance only)
+- NEVER bypass active_strategy table
+- ALWAYS log every signal check + outcome
+- NEVER run live_signal_loop without active strategy seeded
+- ALWAYS test with paper/dry-run mode first
+- ⚠️ Requires permission before touching execute_trade.py
 
 ---
 
@@ -286,25 +248,16 @@ Step 5 — Wire active strategy to live bot
             Trend filter disabled (Pine Script handles it)
             Top: stoch_rsi US100 HOUR
             (24 trades, 70.8% win rate, score 0.893)
+- Phase 5:  Strategy Selector complete
+            Per-symbol active strategies seeded:
+            US100 → stoch_rsi HOUR (0.893)
+            US500 → rsi HOUR (0.689)
+            BTC   → vwap_ema HOUR (0.654)
+            3-panel dashboard, score/select scripts live
 
 ---
 
 ## Upcoming Phases
-
-PHASE 6 — Daily Automation
-  Morning cron (6am):
-    Fresh candles → backtest all strategies →
-    score → select best → update active_strategy
-
-  Live signal loop (runs all day):
-    Every HOUR fetch latest candles from IG API →
-    run active strategy generate_signals() →
-    if signal fires → execute via bot →
-    respect risk manager
-    No TradingView dependency for execution
-
-  scripts/run_daily.py
-  Cron: 0 6 * * * python scripts/run_daily.py
 
 PHASE 7 — Risk Management & Stability
   Max trades/day, max daily loss, max exposure
