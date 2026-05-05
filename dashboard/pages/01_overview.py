@@ -176,15 +176,23 @@ def _live_stats_html(stats_key, strategy_stats):
     st_data = strategy_stats.get(stats_key)
     if not st_data or st_data.get("total", 0) == 0:
         return '<div style="font-size:11px;color:#8B949E;margin-top:2px">No live data yet</div>'
-    total  = st_data["total"]
-    wins   = st_data["wins"]
-    losses = st_data["losses"]
-    wr     = wins / total * 100
-    pnl    = st_data["total_pnl"]
-    color  = "#22C55E" if wr >= 50 else "#EF4444"
-    sign   = "+" if pnl >= 0 else ""
-    return (f'<div style="font-size:11px;color:{color};margin-top:2px">'
-            f'Live: {wr:.0f}% ({wins}W/{losses}L) · {sign}${pnl:,.2f}</div>')
+    total     = st_data["total"]
+    wins      = st_data["wins"]
+    losses    = st_data["losses"]
+    win_rate  = wins / total * 100
+    total_pnl = st_data["total_pnl"]
+    win_color = "#22C55E" if win_rate >= 50 else "#EF4444"
+    sign      = "+" if total_pnl >= 0 else ""
+    return (
+        f'<div style="font-size:11px;margin-bottom:8px">'
+        f'<span style="color:{win_color};background:{win_color}22;'
+        f'padding:2px 8px;border-radius:4px;font-weight:700">'
+        f'{win_rate:.0f}%</span>'
+        f'<span style="color:#8B949E;font-size:10px;margin-left:6px">'
+        f'{wins}W/{losses}L · '
+        f'{sign}${total_pnl:.2f}</span>'
+        f'</div>'
+    )
 
 
 def _parse_daily_log(log_path):

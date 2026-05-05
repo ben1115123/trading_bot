@@ -71,14 +71,8 @@ def fetch_performance(period: str) -> dict:
         wins     = cur.fetchone()["n"]
         win_rate = (wins / trade_count * 100) if trade_count > 0 else 0.0
 
-        # Total count including open/NULL-pnl rows
-        _total_cond   = "1=1"
-        _total_params: list = []
-        if cutoff:
-            _total_cond   = "timestamp >= ?"
-            _total_params = [cutoff]
-        cur.execute(f"SELECT COUNT(*) as n FROM trades WHERE {_total_cond}", _total_params)
-        total_db_count = cur.fetchone()["n"] or 0
+        cur.execute("SELECT COUNT(*) as n FROM trades")
+        total_in_db = cur.fetchone()["n"] or 0
 
         # 14-day daily chart (fixed window — always last 14 calendar days)
         daily: dict = {
@@ -191,7 +185,7 @@ def fetch_performance(period: str) -> dict:
 
     return {
         "trade_count":    trade_count,
-        "total_db_count": total_db_count,
+        "total_in_db":    total_in_db,
         "total_pnl":      total_pnl,
         "avg_pnl":        avg_pnl,
         "win_rate":       win_rate,
@@ -314,7 +308,7 @@ st.markdown(f"""
   <div class="kpi-card blue">
     <div class="kpi-label">Trade Count</div>
     <div class="kpi-value">{d['trade_count']}</div>
-    <div class="kpi-sub">{d['trade_count']} with P&amp;L ({d['total_db_count']} total in DB)</div>
+    <div class="kpi-sub">{d['trade_count']} with P&amp;L · {d['total_in_db']} total in DB</div>
   </div>
   <div class="kpi-card {avg_card}">
     <div class="kpi-label">Avg P&amp;L / Trade</div>
