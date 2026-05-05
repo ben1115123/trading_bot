@@ -71,6 +71,15 @@ def fetch_performance(period: str) -> dict:
         wins     = cur.fetchone()["n"]
         win_rate = (wins / trade_count * 100) if trade_count > 0 else 0.0
 
+        # Total count including open/NULL-pnl rows
+        _total_cond   = "1=1"
+        _total_params: list = []
+        if cutoff:
+            _total_cond   = "timestamp >= ?"
+            _total_params = [cutoff]
+        cur.execute(f"SELECT COUNT(*) as n FROM trades WHERE {_total_cond}", _total_params)
+        total_db_count = cur.fetchone()["n"] or 0
+
         # 14-day daily chart (fixed window — always last 14 calendar days)
         daily: dict = {
             str(today - timedelta(days=i)): {"wins": 0, "total": 0, "pnl": 0.0}
@@ -182,6 +191,7 @@ def fetch_performance(period: str) -> dict:
 
     return {
         "trade_count":    trade_count,
+        "total_db_count": total_db_count,
         "total_pnl":      total_pnl,
         "avg_pnl":        avg_pnl,
         "win_rate":       win_rate,
@@ -304,7 +314,7 @@ st.markdown(f"""
   <div class="kpi-card blue">
     <div class="kpi-label">Trade Count</div>
     <div class="kpi-value">{d['trade_count']}</div>
-    <div class="kpi-sub">{period}</div>
+    <div class="kpi-sub">{d['trade_count']} with P&amp;L ({d['total_db_count']} total in DB)</div>
   </div>
   <div class="kpi-card {avg_card}">
     <div class="kpi-label">Avg P&amp;L / Trade</div>
@@ -399,12 +409,13 @@ for col, sym in zip(st.columns(3), ["US500", "US100", "BTC"]):
         tot_str,  tot_cls  = _fmt_pnl(tot)
         best_str, best_cls = _fmt_pnl(s["best"])
         wrst_str, wrst_cls = _fmt_pnl(s["worst"])
+        wr_color = "#22C55E" if wr_s >= 50 else "#EF4444"
 
         st.markdown(f"""
         <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
           <div style="font-size:13px;font-weight:600;color:#58A6FF;margin-bottom:12px">{sym}</div>
           <div class="info-tile">
-            <div class="lbl">Win Rate</div><div class="val">{wr_s:.1f}%</div>
+            <div class="lbl">Win Rate</div><div class="val"><span style="background:{wr_color}22;color:{wr_color};padding:2px 10px;border-radius:4px;font-weight:700">{wr_s:.1f}%</span></div>
           </div>
           <div class="info-tile">
             <div class="lbl">Total P&amp;L</div>
@@ -443,6 +454,7 @@ for col, src in zip(st.columns(2), ["tradingview_webhook", "signal_loop"]):
         wr_src = (s["w"] / n * 100) if n > 0 else 0.0
 
         tot_str, tot_cls = _fmt_pnl(tot)
+        wr_src_color = "#22C55E" if wr_src >= 50 else "#EF4444"
 
         st.markdown(f"""
         <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
@@ -454,7 +466,7 @@ for col, src in zip(st.columns(2), ["tradingview_webhook", "signal_loop"]):
             <div class="lbl">Trades</div><div class="val">{n}</div>
           </div>
           <div class="info-tile">
-            <div class="lbl">Win Rate</div><div class="val">{wr_src:.1f}%</div>
+            <div class="lbl">Win Rate</div><div class="val"><span style="background:{wr_src_color}22;color:{wr_src_color};padding:2px 10px;border-radius:4px;font-weight:700">{wr_src:.1f}%</span></div>
           </div>
           <div class="info-tile">
             <div class="lbl">Total P&amp;L</div>
@@ -476,34 +488,45 @@ _SRC_LABEL = {
 }
 
 if d["strategy_stats"]:
-    _strat_rows = []
+    _rows_html = ""
     for _sr in d["strategy_stats"]:
-        _n   = _sr["total"] or 0
-        _w   = _sr["wins"] or 0
-        _wr  = (_w / _n * 100) if _n > 0 else 0.0
-        _pnl = _sr["total_pnl"] or 0.0
-        _avg = _sr["avg_pnl"] or 0.0
-        _strat_rows.append({
-            "Strategy":  _sr["strategy_name"] or "—",
-            "Source":    _SRC_LABEL.get(_sr["source"] or "", _sr["source"] or "—"),
-            "Trades":    _n,
-            "Win Rate":  f"{_wr:.1f}%",
-            "Total P&L": f"+${_pnl:,.2f}" if _pnl >= 0 else f"-${abs(_pnl):,.2f}",
-            "Avg P&L":   f"+${_avg:,.2f}" if _avg >= 0 else f"-${abs(_avg):,.2f}",
-        })
-    st.dataframe(
-        pd.DataFrame(_strat_rows),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Strategy":  st.column_config.TextColumn("Strategy"),
-            "Source":    st.column_config.TextColumn("Source"),
-            "Trades":    st.column_config.NumberColumn("Trades", format="%d"),
-            "Win Rate":  st.column_config.TextColumn("Win Rate"),
-            "Total P&L": st.column_config.TextColumn("Total P&L"),
-            "Avg P&L":   st.column_config.TextColumn("Avg P&L"),
-        },
-    )
+        _n        = _sr["total"] or 0
+        _w        = _sr["wins"] or 0
+        _wr       = (_w / _n * 100) if _n > 0 else 0.0
+        _pnl      = _sr["total_pnl"] or 0.0
+        _avg      = _sr["avg_pnl"] or 0.0
+        _wr_color = "#22C55E" if _wr >= 50 else "#EF4444"
+        _pnl_color = "#22C55E" if _pnl >= 0 else "#EF4444"
+        _avg_color = "#22C55E" if _avg >= 0 else "#EF4444"
+        _pnl_str  = f"+${_pnl:,.2f}" if _pnl >= 0 else f"-${abs(_pnl):,.2f}"
+        _avg_str  = f"+${_avg:,.2f}" if _avg >= 0 else f"-${abs(_avg):,.2f}"
+        _src_lbl  = _SRC_LABEL.get(_sr["source"] or "", _sr["source"] or "—")
+        _strat    = _sr["strategy_name"] or "—"
+        _rows_html += f"""<tr style="border-bottom:1px solid #21262D">
+          <td style="padding:10px 16px;color:#E6EDF3">{_strat}</td>
+          <td style="padding:10px 16px;color:#8B949E">{_src_lbl}</td>
+          <td style="padding:10px 16px;color:#E6EDF3">{_n}</td>
+          <td style="padding:10px 16px"><span style="background:{_wr_color}22;color:{_wr_color};padding:2px 10px;border-radius:4px;font-weight:700">{_wr:.1f}%</span></td>
+          <td style="padding:10px 16px;color:{_pnl_color}">{_pnl_str}</td>
+          <td style="padding:10px 16px;color:{_avg_color}">{_avg_str}</td>
+        </tr>"""
+    st.markdown(f"""
+    <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;overflow:hidden">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="border-bottom:1px solid #30363D">
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Strategy</th>
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Source</th>
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Trades</th>
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Win Rate</th>
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Total P&amp;L</th>
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Avg P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody>{_rows_html}</tbody>
+      </table>
+    </div>
+    """, unsafe_allow_html=True)
 else:
     st.markdown("""
     <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
