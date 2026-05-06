@@ -84,7 +84,7 @@ EPIC_CONFIG = {
 # Global state
 # -------------------------
 last_signal = None
-last_trade_time = 0
+last_trade_time = {}  # keyed by symbol
 
 
 # -------------------------
@@ -141,8 +141,8 @@ def place_trade_from_alert(data):
 
         # Cooldown
         current_time = time.time()
-        if current_time - last_trade_time < 1:
-            print("Cooldown active — skipping trade")
+        if current_time - last_trade_time.get(symbol, 0) < 1:
+            print(f"[cooldown] {symbol} — skipping, within 1s cooldown")
             return False
 
         # Determine action
@@ -188,7 +188,7 @@ def place_trade_from_alert(data):
 
         if result:
             last_signal = f"{symbol}_{action}"
-            last_trade_time = current_time
+            last_trade_time[symbol] = current_time
 
         return result
 
