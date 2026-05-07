@@ -1,4 +1,5 @@
 import sys
+import json as _json
 import subprocess
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -58,7 +59,20 @@ with st.expander("↻ Sync from IG", expanded=False):
                 cwd=str(Path(__file__).resolve().parent.parent.parent),
             )
         if proc.returncode == 0:
-            st.success("Sync complete")
+            _summary = None
+            for _line in reversed((proc.stdout or "").splitlines()):
+                _line = _line.strip()
+                if _line.startswith("{"):
+                    try:
+                        _d = _json.loads(_line)
+                        _ins = _d.get("inserted", 0)
+                        _upd = _d.get("closed", 0) + _d.get("filled", 0)
+                        _skp = _d.get("skipped", 0)
+                        _summary = f"{_ins} new trades imported · {_upd} updated · {_skp} skipped"
+                    except Exception:
+                        pass
+                    break
+            st.success(_summary or "Sync complete")
             st.code(proc.stdout or "(no output)")
         else:
             st.error("Sync failed")

@@ -2,6 +2,7 @@
 import os
 import sys
 import argparse
+import json
 import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,13 @@ load_dotenv()
 from trading_ig import IGService
 from database.db import get_connection
 from database.models import close_trade
+
+INSTRUMENT_TO_SYMBOL = {
+    "US 500 Cash ($1)":      "US500",
+    "US Tech 100 Cash ($1)": "US100",
+    "Bitcoin ($0.1)":        "BTC",
+    "Spot Gold ($1)":        "XAUUSD",
+}
 
 
 def _parse_pnl(raw) -> float | None:
@@ -42,6 +50,26 @@ def _get_trade_by_reference(ref: str) -> dict | None:
         )
         row = cur.fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _insert_imported_trade(data: dict) -> int:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO trades
+            (timestamp, symbol, direction, size, entry_price,
+             deal_reference, close_price, close_time, pnl,
+             source, strategy_name, status)
+            VALUES
+            (:timestamp, :symbol, :direction, :size, :entry_price,
+             :deal_reference, :close_price, :close_time, :pnl,
+             :source, :strategy_name, :status)
+        """, data)
+        conn.commit()
+        return cur.lastrowid
     finally:
         conn.close()
 
@@ -87,7 +115,7 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
 
     print(f"Found {len(transactions)} transaction(s)\n")
 
-    closed = filled = skipped = 0
+    inserted = closed = filled = skipped = 0
 
     for _, tx in transactions.iterrows():
         ref         = str(tx.get("reference", "") or "").strip()
@@ -102,8 +130,34 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
         trade = _get_trade_by_reference(ref)
 
         if trade is None:
-            print(f"  SKIP  ref={ref} — not in DB")
-            skipped += 1
+            instrument = str(tx.get("instrumentName", "")).strip()
+            symbol = INSTRUMENT_TO_SYMBOL.get(instrument)
+            if symbol is None:
+                print(f"  SKIP  ref={ref} instrument={instrument!r} — unknown")
+                skipped += 1
+                continue
+            size_raw   = str(tx.get("size", "0")).strip()
+            size       = abs(_to_float(size_raw) or 0.0)
+            direction  = "BUY" if not size_raw.startswith("-") else "SELL"
+            open_time  = str(tx.get("openDateUtc") or close_time)
+            entry_price = _to_float(tx.get("openLevel"))
+            print(f"  INSERT ref={ref} {symbol} {direction} size={size} entry={entry_price} pnl={pnl}")
+            if confirm:
+                _insert_imported_trade({
+                    "timestamp":      open_time,
+                    "symbol":         symbol,
+                    "direction":      direction,
+                    "size":           size,
+                    "entry_price":    entry_price,
+                    "deal_reference": ref,
+                    "close_price":    close_price,
+                    "close_time":     close_time,
+                    "pnl":            pnl,
+                    "source":         "ig_import",
+                    "strategy_name":  "manual",
+                    "status":         "CLOSED",
+                })
+            inserted += 1
             continue
 
         if trade["status"] == "OPEN":
@@ -122,13 +176,15 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
             skipped += 1
 
     print(f"\n{'Applied' if confirm else '[Dry run]'}:")
+    print(f"  Inserted (new import):  {inserted}")
     print(f"  Closed (OPEN → CLOSED): {closed}")
     print(f"  Filled (missing P&L):   {filled}")
     print(f"  Skipped (no change):    {skipped}")
-    if not confirm and (closed + filled) > 0:
+    if not confirm and (inserted + closed + filled) > 0:
         print("\nRe-run with --confirm to apply changes.")
+    print(json.dumps({"inserted": inserted, "closed": closed, "filled": filled, "skipped": skipped}))
 
-    return {"closed": closed, "filled": filled, "skipped": skipped}
+    return {"inserted": inserted, "closed": closed, "filled": filled, "skipped": skipped}
 
 
 if __name__ == "__main__":
