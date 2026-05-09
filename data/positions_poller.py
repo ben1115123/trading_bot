@@ -80,6 +80,21 @@ def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entr
         return None
 
 
+def _verify_closed_on_ig(ig_service, deal_id: str) -> bool:
+    try:
+        positions = ig_service.fetch_open_positions()
+        if positions is None or positions.empty:
+            return True
+        open_ids = positions["dealId"].tolist()
+        is_closed = deal_id not in open_ids
+        if not is_closed:
+            print(f"[poller] {deal_id} still open on IG — skipping false close")
+        return is_closed
+    except Exception as e:
+        print(f"[poller] verify failed for {deal_id}: {e}")
+        return False
+
+
 def _detect_and_close_trades(ig_service, ensure_session, active_deal_ids: list) -> None:
     """
     Compare open trades in DB against currently open IG positions.
@@ -100,6 +115,8 @@ def _detect_and_close_trades(ig_service, ensure_session, active_deal_ids: list) 
     pos_snapshot = {p["deal_id"]: p for p in get_positions()}
 
     for deal_id in disappeared:
+        if not _verify_closed_on_ig(ig_service, deal_id):
+            continue
         # Try transaction history first (accurate close price + realised P&L)
         trade_row = get_trade_by_deal_id(deal_id) or {}
         close_data = _fetch_close_data(
@@ -155,13 +172,13 @@ def _poll_loop():
                 active_deals = []
 
                 for _, row in df.iterrows():
-                    deal_id    = row.get("position.dealId")
-                    epic       = row.get("market.epic")
-                    direction  = row.get("position.direction")
-                    size       = row.get("position.size")
-                    open_price = row.get("position.openLevel") or row.get("position.level")
-                    bid        = row.get("market.bid")
-                    offer      = row.get("market.offer")
+                    deal_id    = row.get("dealId")
+                    epic       = row.get("epic")
+                    direction  = row.get("direction")
+                    size       = row.get("size")
+                    open_price = row.get("level")
+                    bid        = row.get("bid")
+                    offer      = row.get("offer")
 
                     if not deal_id or not epic:
                         continue

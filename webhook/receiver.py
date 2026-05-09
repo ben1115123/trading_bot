@@ -54,6 +54,12 @@ async def webhook_endpoint(request: Request):
     print("✅ Webhook received:", data)
 
     try:
+        symbol = data.get("symbol", "")
+        from bot.live_signal_loop import _is_blocked
+        if _is_blocked(symbol):
+            print(f"[webhook] {symbol} blocked — near market close")
+            return {"status": "blocked", "reason": "near market close"}
+
         webhook_losses = _get_webhook_losses_today()
         if webhook_losses >= WEBHOOK_DAILY_LOSS_LIMIT:
             print(f"[webhook] SwiftAlgo daily loss limit hit "

@@ -86,19 +86,21 @@ def _weekend_close_positions() -> None:
                 direction = "SELL" if pos.get("direction") == "BUY" else "BUY"
                 size      = pos.get("size")
                 expiry    = pos.get("expiry", "-")
-                ig_service.close_open_position(
-                    deal_id=deal_id,
-                    direction=direction,
-                    epic=epic,
-                    expiry=expiry,
-                    level=None,
-                    order_type="MARKET",
-                    quote_id=None,
-                    size=size,
-                )
-                print(f"[signal_loop] Closed {deal_id} ({epic})")
+                print(f"[weekend_close] Closing {deal_id} {epic} {direction} size={size}")
+                try:
+                    ig_service.close_open_position(
+                        deal_id=deal_id,
+                        direction=direction,
+                        epic=epic,
+                        expiry=expiry,
+                        order_type="MARKET",
+                        size=size,
+                    )
+                    print(f"[weekend_close] ✓ Closed {deal_id}")
+                except Exception as e:
+                    print(f"[weekend_close] ✗ Failed to close {deal_id}: {e}")
     except Exception as e:
-        print(f"[signal_loop] Weekend close error: {e}")
+        print(f"[weekend_close] Error fetching positions: {e}")
 
 
 def _get_daily_stats() -> dict:
