@@ -232,6 +232,25 @@ def init_db():
         )
     """)
 
+    # Create paper_trades table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            checked_at    TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            strategy_name TEXT,
+            timeframe     TEXT,
+            candle_time   TEXT,
+            signal        TEXT,
+            entry_price   REAL,
+            sl            REAL,
+            tp            REAL,
+            simulated_pnl REAL,
+            outcome       TEXT DEFAULT 'PENDING',
+            params_json   TEXT
+        )
+    """)
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

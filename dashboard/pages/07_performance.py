@@ -579,3 +579,85 @@ with bw_right:
         unsafe_allow_html=True,
     )
     _trade_table(d["top_losers"], "losing trades")
+
+
+# ── Row 7 — Paper vs Live ─────────────────────────────────────────────────────
+
+st.markdown('<div class="section-hd">📄 Paper vs Live</div>', unsafe_allow_html=True)
+
+try:
+    _pconn = get_connection()
+    try:
+        _pcur = _pconn.cursor()
+        _pcur.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
+                   COALESCE(SUM(simulated_pnl), 0) as total_pnl
+            FROM paper_trades
+        """)
+        _pr       = dict(_pcur.fetchone())
+        _p_total  = _pr["total"]     or 0
+        _p_wins   = _pr["wins"]      or 0
+        _p_losses = _pr["losses"]    or 0
+        _p_pnl    = _pr["total_pnl"] or 0.0
+        _p_wr     = (_p_wins / (_p_wins + _p_losses) * 100) if (_p_wins + _p_losses) > 0 else 0.0
+    finally:
+        _pconn.close()
+
+    pv_left, pv_right = st.columns(2)
+
+    with pv_left:
+        st.markdown(
+            '<div class="section-hd" style="margin-top:4px">Live (Bot)</div>',
+            unsafe_allow_html=True,
+        )
+        s_bot    = d["source_stats"]["signal_loop"]
+        n_bot    = s_bot["n"] or 0
+        tot_bot  = s_bot["s"] or 0.0
+        wr_bot   = (s_bot["w"] / n_bot * 100) if n_bot > 0 else 0.0
+        tot_str, tot_cls = _fmt_pnl(tot_bot)
+        wr_color = "#22C55E" if wr_bot >= 50 else "#EF4444"
+        st.markdown(f"""
+        <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
+          <div class="info-tile"><div class="lbl">Trades</div><div class="val">{n_bot}</div></div>
+          <div class="info-tile">
+            <div class="lbl">Win Rate</div>
+            <div class="val"><span style="background:{wr_color}22;color:{wr_color};padding:2px 10px;border-radius:4px;font-weight:700">{wr_bot:.1f}%</span></div>
+          </div>
+          <div class="info-tile">
+            <div class="lbl">Total P&amp;L</div>
+            <div class="val"><span class="cal-pnl {tot_cls}">{tot_str}</span></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with pv_right:
+        st.markdown(
+            '<div class="section-hd" style="margin-top:4px">Paper (Simulated)</div>',
+            unsafe_allow_html=True,
+        )
+        _resolved = _p_wins + _p_losses
+        wr_color_p  = "#3B82F6" if _p_wr >= 50 else "#8B5CF6"
+        pnl_str_p, pnl_cls_p = _fmt_pnl(_p_pnl) if _resolved > 0 else ("pending", "")
+        st.markdown(f"""
+        <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px">
+          <div class="info-tile"><div class="lbl">Signals</div><div class="val">{_p_total}</div></div>
+          <div class="info-tile">
+            <div class="lbl">Sim Win Rate</div>
+            <div class="val"><span style="background:{wr_color_p}22;color:{wr_color_p};padding:2px 10px;border-radius:4px;font-weight:700">{"—" if _resolved == 0 else f"{_p_wr:.1f}%"}</span></div>
+          </div>
+          <div class="info-tile">
+            <div class="lbl">Sim P&amp;L</div>
+            <div class="val"><span class="cal-pnl {pnl_cls_p}">{pnl_str_p}</span></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+except Exception as _pe:
+    st.markdown(f"""
+    <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
+                padding:24px;text-align:center;color:#8B949E;font-size:13px">
+      Paper stats unavailable: {_pe}
+    </div>
+    """, unsafe_allow_html=True)

@@ -442,3 +442,94 @@ def get_recent_signal_checks(limit: int = 50) -> list:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def log_paper_trade(data: dict) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO paper_trades
+                (checked_at, symbol, strategy_name, timeframe,
+                 candle_time, signal, entry_price, sl, tp,
+                 simulated_pnl, outcome, params_json)
+            VALUES
+                (:checked_at, :symbol, :strategy_name, :timeframe,
+                 :candle_time, :signal, :entry_price, :sl, :tp,
+                 :simulated_pnl, :outcome, :params_json)
+        """, {
+            "checked_at":    data.get("checked_at", datetime.now(timezone.utc).isoformat()),
+            "symbol":        data["symbol"],
+            "strategy_name": data.get("strategy_name"),
+            "timeframe":     data.get("timeframe"),
+            "candle_time":   data.get("candle_time"),
+            "signal":        data.get("signal"),
+            "entry_price":   data.get("entry_price"),
+            "sl":            data.get("sl"),
+            "tp":            data.get("tp"),
+            "simulated_pnl": data.get("simulated_pnl"),
+            "outcome":       data.get("outcome", "PENDING"),
+            "params_json":   data.get("params_json"),
+        })
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_paper_trades(limit: int = 50) -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_paper_trade_stats() -> dict:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
+                   COALESCE(SUM(simulated_pnl), 0) as total_pnl
+            FROM paper_trades
+        """)
+        row    = dict(cursor.fetchone())
+        total  = row["total"]  or 0
+        wins   = row["wins"]   or 0
+        losses = row["losses"] or 0
+        win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0.0
+        return {
+            "total":     total,
+            "wins":      wins,
+            "losses":    losses,
+            "win_rate":  win_rate,
+            "total_pnl": row["total_pnl"] or 0.0,
+        }
+    finally:
+        conn.close()
+
+
+def get_paper_stats_by_symbol() -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT symbol, strategy_name, timeframe,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
+                   COALESCE(SUM(simulated_pnl), 0) as total_pnl
+            FROM paper_trades
+            GROUP BY symbol, strategy_name, timeframe
+            ORDER BY symbol ASC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()

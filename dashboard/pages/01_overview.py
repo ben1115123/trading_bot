@@ -109,13 +109,51 @@ def fetch_data():
             for r in cur.fetchall()
         }
 
+        try:
+            cur.execute("""
+                SELECT * FROM signal_log
+                WHERE symbol='US100' AND timeframe='HOUR'
+                ORDER BY id DESC LIMIT 1
+            """)
+            _r = cur.fetchone()
+            us100_hour = dict(_r) if _r else None
+        except Exception:
+            us100_hour = None
+
+        try:
+            cur.execute("""
+                SELECT * FROM signal_log WHERE symbol='DAX'
+                ORDER BY id DESC LIMIT 1
+            """)
+            _r = cur.fetchone()
+            dax_signal = dict(_r) if _r else None
+        except Exception:
+            dax_signal = None
+
+        try:
+            cur.execute("""
+                SELECT symbol, strategy_name, timeframe,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN simulated_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN simulated_pnl < 0 THEN 1 ELSE 0 END) as losses,
+                       COALESCE(SUM(simulated_pnl), 0) as total_pnl
+                FROM paper_trades
+                GROUP BY symbol, strategy_name, timeframe
+            """)
+            paper_stats = {
+                f"{r['symbol']}_{r['timeframe']}": dict(r)
+                for r in cur.fetchall()
+            }
+        except Exception:
+            paper_stats = {}
+
     finally:
         conn.close()
 
-    return strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses, strategy_stats
+    return strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses, strategy_stats, us100_hour, dax_signal, paper_stats
 
 
-strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses, strategy_stats = fetch_data()
+strategy_rows, signal_rows, last_bot_trade_by_symbol, last_swift_trade_by_symbol, today_pnl, today_count, pnl_rows, us100_5min, today_bot_trades, today_bot_losses, strategy_stats, us100_hour, dax_signal, paper_stats = fetch_data()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -195,6 +233,30 @@ def _live_stats_html(stats_key, strategy_stats):
     )
 
 
+def _paper_stats_html(stats_key: str, paper_stats: dict) -> str:
+    data = paper_stats.get(stats_key)
+    if not data or data.get("total", 0) == 0:
+        return '<div style="font-size:11px;color:#8B949E;margin-top:2px;margin-bottom:8px">No paper signals yet</div>'
+    total     = data["total"]
+    wins      = data.get("wins") or 0
+    losses    = data.get("losses") or 0
+    total_pnl = data.get("total_pnl") or 0.0
+    if wins > 0 or losses > 0:
+        win_rate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0.0
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        return (
+            f'<div style="font-size:11px;margin-bottom:8px">'
+            f'<span style="color:#3B82F6;background:#3B82F622;'
+            f'padding:2px 8px;border-radius:4px;font-weight:700">{win_rate:.0f}% sim</span>'
+            f'<span style="color:#8B949E;font-size:10px;margin-left:6px">'
+            f'{wins}W/{losses}L · {pnl_sign}${total_pnl:.2f} sim</span></div>'
+        )
+    return (
+        f'<div style="font-size:11px;color:#8B949E;margin-bottom:8px">'
+        f'{total} signal{"s" if total != 1 else ""} fired · P&amp;L pending</div>'
+    )
+
+
 def _parse_daily_log(log_path):
     """Return dict with ts/backtests/strategies/errors from last run block."""
     try:
@@ -221,7 +283,15 @@ def _parse_daily_log(log_path):
         return None
 
 
-_SIG_COLOR = {"BUY": "#22C55E", "SELL": "#EF4444", "NONE": "#8B949E", "ERROR": "#F97316"}
+_SIG_COLOR = {
+    "BUY":        "#22C55E",
+    "SELL":       "#EF4444",
+    "NONE":       "#8B949E",
+    "ERROR":      "#F97316",
+    "BLOCKED":    "#F59E0B",
+    "PAPER_BUY":  "#3B82F6",
+    "PAPER_SELL": "#8B5CF6",
+}
 LOG_PATH   = "/app/logs/daily_run.log"
 
 strategy_by_symbol = {r["symbol"]: r for r in strategy_rows}
@@ -269,16 +339,19 @@ if cron_info and cron_info["ts"]:
 
 # ── Section 2 — Signal Monitor ────────────────────────────────────────────────
 
-st.markdown('<div class="section-hd">Signal Monitor</div>', unsafe_allow_html=True)
+# ● LIVE
+st.markdown(
+    '<div class="section-hd"><span style="color:#22C55E">● LIVE</span></div>',
+    unsafe_allow_html=True,
+)
 
-_CARDS = [
-    ("US500", "US500",        signal_by_symbol.get("US500"), None),
-    ("US100", "US100",        signal_by_symbol.get("US100"), None),
-    ("US100", "US100 · 5MIN", us100_5min,                   "US session only 14:30–21:00 UTC"),
-    ("BTC",   "BTC",          signal_by_symbol.get("BTC"),  None),
+_LIVE_CARDS = [
+    ("US500", "US500", signal_by_symbol.get("US500"), None),
+    ("US100", "US100", us100_hour,                   None),
+    ("BTC",   "BTC",   signal_by_symbol.get("BTC"),  None),
 ]
-sig_cols = st.columns(4)
-for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
+live_cols = st.columns(3)
+for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
     with col:
         strat_row   = strategy_by_symbol.get(symbol)
         bot_trade   = last_bot_trade_by_symbol.get(symbol)
@@ -343,6 +416,81 @@ for col, (symbol, label, r, subtitle) in zip(sig_cols, _CARDS):
               <div class="info-tile"><div class="lbl">Signal</div>
                 <div class="val" style="color:#8B949E">No data yet</div></div>
               {trade_html}
+            </div>
+            """, unsafe_allow_html=True)
+
+
+st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+# 📄 PAPER
+st.markdown(
+    '<div class="section-hd"><span style="color:#3B82F6">📄 PAPER</span></div>',
+    unsafe_allow_html=True,
+)
+
+_PAPER_CARDS = [
+    ("DAX",   "DAX",          "HOUR", dax_signal, None),
+    ("US100", "US100 · 5MIN", "5MIN", us100_5min, "US session only 14:30–21:00 UTC"),
+]
+paper_cols = st.columns(2)
+for col, (symbol, label, tf_key, r, subtitle) in zip(paper_cols, _PAPER_CARDS):
+    with col:
+        strat_row     = strategy_by_symbol.get(symbol)
+        paper_key     = f"{symbol}_{tf_key}"
+        paper_html    = _paper_stats_html(paper_key, paper_stats)
+        subtitle_html = (
+            f'<div style="font-size:11px;color:#8B949E;margin-top:2px">{subtitle}</div>'
+            if subtitle else ""
+        )
+        not_exec_badge = (
+            '<span style="font-size:10px;color:#3B82F6;background:#3B82F622;'
+            'padding:2px 8px;border-radius:4px;margin-left:8px">Not executed</span>'
+        )
+
+        if r:
+            sig        = (r.get("signal") or "NONE").upper()
+            color      = _SIG_COLOR.get(sig, "#8B949E")
+            strat_name = r.get("strategy_name") or (strat_row["strategy_name"] if strat_row else "—")
+            tf         = r.get("timeframe") or tf_key
+            chk        = _fmt_ts(r["checked_at"])
+            cndl       = r["candle_time"][:16] if r.get("candle_time") else "—"
+            nxt        = _next_check(r["checked_at"])
+            err_html   = (
+                f'<div class="info-tile"><div class="lbl">Error</div>'
+                f'<div class="val" style="color:#F97316">{r["error"]}</div></div>'
+                if r.get("error") else ""
+            )
+            st.markdown(f"""
+            <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <div>
+                  <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}</div>{subtitle_html}
+                </div>
+                <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
+                            padding:2px 10px;border-radius:4px">{sig}</div>
+              </div>
+              <div style="height:8px"></div>
+              <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
+              {paper_html}
+              <div class="info-tile"><div class="lbl">Candle</div><div class="val">{cndl}</div></div>
+              <div class="info-tile"><div class="lbl">Checked</div><div class="val">{chk}</div></div>
+              <div class="info-tile"><div class="lbl">Next check</div><div class="val">{nxt}</div></div>
+              {err_html}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            strat_name = strat_row["strategy_name"] if strat_row else "—"
+            tf         = strat_row["timeframe"] if strat_row else tf_key
+            st.markdown(f"""
+            <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px;font-size:13px">
+              <div style="margin-bottom:4px">
+                <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}</div>{subtitle_html}
+              </div>
+              <div style="height:8px"></div>
+              <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
+              {paper_html}
+              <div class="info-tile"><div class="lbl">Signal</div>
+                <div class="val" style="color:#8B949E">No data yet</div></div>
             </div>
             """, unsafe_allow_html=True)
 

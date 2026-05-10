@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
-from database.models import get_active_strategies, log_signal_check
+from database.models import get_active_strategies, log_signal_check, log_paper_trade
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC"]
 
@@ -20,6 +21,9 @@ MARKET_CLOSE_UTC = {
 }
 
 TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "HOUR": 3600, "DAY": 86400}
+
+_raw_paper    = os.getenv("PAPER_TRADE_SYMBOLS", "")
+PAPER_SYMBOLS: set[str] = {s.strip() for s in _raw_paper.split(",") if s.strip()}
 
 MAX_DAILY_LOSS_USD    = 75.0   # primary guardrail — hard stop
 MAX_TRADES_PER_DAY    = 20     # bug catcher only
@@ -158,6 +162,10 @@ def _risk_check(symbol: str, stats: dict) -> str | None:
     return None
 
 
+def _is_paper_trade(symbol: str, timeframe: str) -> bool:
+    return symbol in PAPER_SYMBOLS or f"{symbol}_{timeframe}" in PAPER_SYMBOLS
+
+
 def _check_symbol(symbol: str, active: dict) -> None:
     strategy_name = active["strategy_name"]
     timeframe     = active.get("timeframe", "HOUR")
@@ -250,6 +258,25 @@ def _check_symbol(symbol: str, active: dict) -> None:
         tp     = round(entry - sl_dist * 2, 4)
 
     print(f"[signal_loop] [{symbol}] {signal} — sl={sl} tp={tp}")
+
+    if _is_paper_trade(symbol, timeframe):
+        log_data["signal"] = f"PAPER_{signal}"
+        log_paper_trade({
+            "checked_at":    datetime.now(timezone.utc).isoformat(),
+            "symbol":        symbol,
+            "strategy_name": strategy_name,
+            "timeframe":     timeframe,
+            "candle_time":   candle_time,
+            "signal":        f"PAPER_{signal}",
+            "entry_price":   entry,
+            "sl":            sl,
+            "tp":            tp,
+            "outcome":       "PENDING",
+            "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
+        })
+        log_signal_check(log_data)
+        print(f"[signal_loop] [{symbol}/{timeframe}] PAPER {signal} logged — not executed")
+        return
 
     from bot.execute_trade import place_trade
     try:
