@@ -21,6 +21,7 @@ INSTRUMENT_TO_SYMBOL = {
     "US Tech 100 Cash ($1)": "US100",
     "Bitcoin ($0.1)":        "BTC",
     "Spot Gold ($1)":        "XAUUSD",
+    "Germany 40 Cash (£1)":  "DAX",
 }
 
 

@@ -77,7 +77,8 @@ recreate_session()
 EPIC_CONFIG = {
     "US500": {"epic": "IX.D.SPTRD.IFMM.IP", "value_per_point": 1},
     "US100": {"epic": "IX.D.NASDAQ.IFMM.IP", "value_per_point": 1},
-    "BTC": {"epic": "CS.D.BITCOIN.CFBMU.IP", "value_per_point": 0.1}
+    "BTC":   {"epic": "CS.D.BITCOIN.CFBMU.IP", "value_per_point": 0.1},
+    "DAX":   {"epic": "IX.D.DAX.IFMS.IP",      "value_per_point": 1},
 }
 
 # -------------------------
