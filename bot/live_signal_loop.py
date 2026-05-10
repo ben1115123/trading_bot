@@ -10,11 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
 from database.models import get_active_strategies, log_signal_check
 
-SYMBOLS = ["US500", "US100", "BTC"]
+SYMBOLS = ["US500", "US100", "DAX", "BTC"]
 
 MARKET_CLOSE_UTC = {
     "US500": 20,
     "US100": 20,
+    "DAX":   16,
     "BTC":   None,
 }
 
@@ -81,7 +82,7 @@ def _weekend_close_positions() -> None:
             return
         for _, pos in positions.iterrows():
             epic = pos.get("epic", "")
-            if any(k in epic for k in ["SPTRD", "NASDAQ"]):
+            if any(k in epic for k in ["SPTRD", "NASDAQ", "DAX"]):
                 deal_id   = pos.get("dealId")
                 direction = "SELL" if pos.get("direction") == "BUY" else "BUY"
                 size      = pos.get("size")
