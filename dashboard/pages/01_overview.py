@@ -101,11 +101,11 @@ def fetch_data():
                    COALESCE(SUM(pnl), 0) as total_pnl
             FROM trades
             WHERE pnl IS NOT NULL
-            AND status = 'CLOSED'
+            AND UPPER(status) = 'CLOSED'
             GROUP BY symbol, strategy_name, source
         """)
         strategy_stats = {
-            f"{r['symbol']}_{r['strategy_name']}": dict(r)
+            f"{r['symbol']}_{r['strategy_name']}_{r['source']}": dict(r)
             for r in cur.fetchall()
         }
 
@@ -213,7 +213,7 @@ def _trade_line(trade, icon, label, color):
 def _live_stats_html(stats_key, strategy_stats):
     st_data = strategy_stats.get(stats_key)
     if not st_data or st_data.get("total", 0) == 0:
-        return '<div style="font-size:11px;color:#8B949E;margin-top:2px">No live data yet</div>'
+        return '<div style="font-size:11px;color:#8B949E;margin-top:2px;margin-bottom:8px">No live data yet</div>'
     total     = st_data["total"]
     wins      = st_data["wins"]
     losses    = st_data["losses"]
@@ -222,7 +222,7 @@ def _live_stats_html(stats_key, strategy_stats):
     win_color = "#22C55E" if win_rate >= 50 else "#EF4444"
     sign      = "+" if total_pnl >= 0 else ""
     return (
-        f'<div style="font-size:11px;margin-bottom:8px">'
+        f'<div style="font-size:11px;margin-bottom:4px">'
         f'<span style="color:{win_color};background:{win_color}22;'
         f'padding:2px 8px;border-radius:4px;font-weight:700">'
         f'{win_rate:.0f}%</span>'
@@ -230,6 +230,8 @@ def _live_stats_html(stats_key, strategy_stats):
         f'{wins}W/{losses}L · '
         f'{sign}${total_pnl:.2f}</span>'
         f'</div>'
+        f'<div style="font-size:10px;color:#8B949E;margin-bottom:8px">'
+        f'{total} closed trade{"s" if total != 1 else ""} tracked</div>'
     )
 
 
@@ -381,7 +383,7 @@ for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
                 f'<div class="val" style="color:#F97316">{r["error"]}</div></div>'
                 if r.get("error") else ""
             )
-            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}", strategy_stats)
+            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}_live_signal_loop", strategy_stats)
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
@@ -404,7 +406,7 @@ for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
         else:
             strat_name      = strat_row["strategy_name"] if strat_row else "—"
             tf              = strat_row["timeframe"] if strat_row else "—"
-            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}", strategy_stats)
+            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}_live_signal_loop", strategy_stats)
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px;font-size:13px">
               <div style="margin-bottom:4px">
@@ -419,6 +421,17 @@ for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
             </div>
             """, unsafe_allow_html=True)
 
+
+_live_trade_total  = sum(v["total"] for v in strategy_stats.values()
+                         if v.get("source") in ("live_signal_loop", "signal_loop"))
+_paper_trade_total = sum(v.get("total", 0) for v in paper_stats.values())
+st.markdown(
+    f'<div style="font-size:11px;color:#8B949E;text-align:right;margin-top:4px">'
+    f'Tracking {_live_trade_total} live trade{"s" if _live_trade_total != 1 else ""}'
+    f' &nbsp;·&nbsp; {_paper_trade_total} paper signal{"s" if _paper_trade_total != 1 else ""}'
+    f'</div>',
+    unsafe_allow_html=True,
+)
 
 st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
 

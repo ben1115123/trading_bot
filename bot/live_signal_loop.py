@@ -13,10 +13,10 @@ from database.models import get_active_strategies, log_signal_check, log_paper_t
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC"]
 
-MARKET_CLOSE_UTC = {
-    "US500": 20,
-    "US100": 20,
-    "DAX":   16,
+MARKET_CLOSE = {
+    "US500": {"hour": 20, "minute": 0},
+    "US100": {"hour": 20, "minute": 0},
+    "DAX":   {"hour": 16, "minute": 30},
     "BTC":   None,
 }
 
@@ -42,31 +42,27 @@ def _is_due(symbol: str, timeframe: str) -> bool:
 
 
 def _is_blocked(symbol: str) -> bool:
-    close_hour = MARKET_CLOSE_UTC.get(symbol)
-    if close_hour is None:
+    close = MARKET_CLOSE.get(symbol)
+    if close is None:
         return False
     now = datetime.now(timezone.utc)
     weekday = now.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
 
-    # Saturday — always blocked for US symbols
     if weekday == 5:
         return True
 
-    # Sunday — only allow after 22:00 UTC (pre-market open)
     if weekday == 6:
         return now.hour < 22
 
-    # Friday — block after 19:45 UTC (pre-weekend buffer)
     if weekday == 4:
         if now.hour > 19 or (now.hour == 19 and now.minute >= 45):
             return True
 
-    # Weekdays Mon-Thu and Sunday 22:00+
-    # Block last hour before close (after 20:00 UTC)
-    if now.hour >= close_hour:
-        return True
+    close_mins = close["hour"] * 60 + close["minute"]
+    now_mins   = now.hour * 60 + now.minute
 
-    return False
+    # Block 1 hour before close
+    return now_mins >= (close_mins - 60)
 
 
 def _should_weekend_close() -> bool:
