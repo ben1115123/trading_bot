@@ -9,7 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
-from database.models import get_active_strategies, log_signal_check, log_paper_trade
+from database.models import get_active_strategies, log_signal_check, log_paper_trade, \
+    get_pending_paper_trades, resolve_paper_trade
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC"]
 
@@ -293,11 +294,73 @@ def _check_symbol(symbol: str, active: dict) -> None:
     log_signal_check(log_data)
 
 
+def _candle_dt(candle: dict):
+    try:
+        dt = datetime.fromisoformat(str(candle.get("time", "")).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _resolve_pending_paper_trades() -> None:
+    trades = get_pending_paper_trades()
+    if not trades:
+        return
+    print(f"[resolver] {len(trades)} pending paper trade(s) to check")
+    for trade in trades:
+        symbol    = trade["symbol"]
+        timeframe = trade.get("timeframe", "HOUR")
+        signal    = (trade.get("signal") or "").upper().replace("PAPER_", "")
+        entry     = trade["entry_price"]
+        sl        = trade["sl"]
+        tp        = trade["tp"]
+        if signal not in ("BUY", "SELL"):
+            continue
+        try:
+            signal_dt = datetime.fromisoformat(
+                str(trade.get("candle_time", "")).replace("Z", "+00:00")
+            )
+            if signal_dt.tzinfo is None:
+                signal_dt = signal_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        try:
+            candles = _fetch_yfinance_candles(symbol, timeframe, 100)
+        except Exception as e:
+            print(f"[resolver] [{symbol}] candle fetch failed: {e}")
+            continue
+        later   = [c for c in candles if _candle_dt(c) > signal_dt]
+        outcome = None
+        pnl     = None
+        for candle in later:
+            if signal == "BUY":
+                if candle["low"] <= sl:
+                    outcome, pnl = "LOSS", sl - entry
+                    break
+                if candle["high"] >= tp:
+                    outcome, pnl = "WIN", tp - entry
+                    break
+            else:
+                if candle["high"] >= sl:
+                    outcome, pnl = "LOSS", entry - sl
+                    break
+                if candle["low"] <= tp:
+                    outcome, pnl = "WIN", entry - tp
+                    break
+        if outcome:
+            resolve_paper_trade(trade["id"], outcome, round(pnl, 4))
+            print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} pnl={pnl:.4f}")
+        else:
+            print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} still PENDING")
+
+
 def _loop() -> None:
     print("[signal_loop] Starting signal loop (5-min wake, timeframe-aware)")
     while True:
         now = datetime.now(timezone.utc)
         print(f"\n[signal_loop] === Cycle at {now.strftime('%Y-%m-%d %H:%M:%S UTC')} ===")
+
+        _resolve_pending_paper_trades()
 
         if _should_weekend_close():
             _weekend_close_positions()

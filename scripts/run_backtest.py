@@ -99,6 +99,7 @@ from backend.strategies.keltner import KeltnerChannelStrategy
 from backend.strategies.stoch_rsi import StochRSIStrategy
 from backend.strategies.ema_cross_volume import EMACrossVolumeStrategy
 from backend.strategies.vwap_mean_reversion import VWAPMeanReversionStrategy
+from backend.strategies.connors_rsi2 import ConnorsRSI2Strategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
@@ -114,6 +115,7 @@ STRATEGIES = {
     "stoch_rsi":        StochRSIStrategy,
     "ema_cross_volume":     EMACrossVolumeStrategy,
     "vwap_mean_reversion":  VWAPMeanReversionStrategy,
+    "connors_rsi2":         ConnorsRSI2Strategy,
 }
 
 PARAM_GRIDS = {
@@ -178,6 +180,12 @@ PARAM_GRIDS = {
         "std_dev_entry": [1.0, 1.5, 2.0],
         "std_dev_exit":  [0.2],
         "lookback":      [10, 20, 30],
+    },
+    "connors_rsi2": {
+        "oversold":   [5, 10, 15],
+        "overbought": [85, 90, 95],
+        "sma_long":   [100, 200],
+        "sma_exit":   [3, 5, 10],
     },
 }
 

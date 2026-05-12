@@ -533,3 +533,32 @@ def get_paper_stats_by_symbol() -> list:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def get_pending_paper_trades() -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM paper_trades
+            WHERE outcome = 'PENDING'
+            AND entry_price IS NOT NULL
+            AND sl IS NOT NULL
+            AND tp IS NOT NULL
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def resolve_paper_trade(trade_id: int, outcome: str, pnl: float) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE paper_trades SET outcome = ?, simulated_pnl = ?
+            WHERE id = ?
+        """, (outcome, pnl, trade_id))
+        conn.commit()
+    finally:
+        conn.close()
