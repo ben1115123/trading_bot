@@ -302,6 +302,11 @@ def _candle_dt(candle: dict):
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
+_EPIC_VALUE_PER_POINT = {
+    "US500": 1.0, "US100": 1.0, "DAX": 1.0, "BTC": 0.1,
+}
+
+
 def _resolve_pending_paper_trades() -> None:
     trades = get_pending_paper_trades()
     if not trades:
@@ -329,27 +334,38 @@ def _resolve_pending_paper_trades() -> None:
         except Exception as e:
             print(f"[resolver] [{symbol}] candle fetch failed: {e}")
             continue
-        later   = [c for c in candles if _candle_dt(c) > signal_dt]
-        outcome = None
-        pnl     = None
+        later      = [c for c in candles if _candle_dt(c) > signal_dt]
+        outcome    = None
+        raw_pnl    = None
         for candle in later:
             if signal == "BUY":
                 if candle["low"] <= sl:
-                    outcome, pnl = "LOSS", sl - entry
+                    outcome, raw_pnl = "LOSS", sl - entry
                     break
                 if candle["high"] >= tp:
-                    outcome, pnl = "WIN", tp - entry
+                    outcome, raw_pnl = "WIN", tp - entry
                     break
             else:
                 if candle["high"] >= sl:
-                    outcome, pnl = "LOSS", entry - sl
+                    outcome, raw_pnl = "LOSS", entry - sl
                     break
                 if candle["low"] <= tp:
-                    outcome, pnl = "WIN", entry - tp
+                    outcome, raw_pnl = "WIN", entry - tp
                     break
         if outcome:
-            resolve_paper_trade(trade["id"], outcome, round(pnl, 4))
-            print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} pnl={pnl:.4f}")
+            value_per_point = _EPIC_VALUE_PER_POINT.get(symbol, 1.0)
+            sl_distance = abs(entry - sl)
+            if sl_distance > 0:
+                lot_size = 15.0 / (sl_distance * value_per_point)
+                lot_size = max(0.1, min(10.0, lot_size))
+            else:
+                lot_size = 0.1
+            simulated_pnl = raw_pnl * lot_size * value_per_point
+            resolve_paper_trade(trade["id"], outcome, round(simulated_pnl, 4))
+            print(
+                f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} "
+                f"raw={raw_pnl:.4f} lot={lot_size:.4f} pnl=${simulated_pnl:.2f}"
+            )
         else:
             print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} still PENDING")
 
