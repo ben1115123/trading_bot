@@ -1,6 +1,7 @@
 import sys
 import json as _json
 import subprocess
+import datetime as _dt
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -28,6 +29,17 @@ def fetch_all_trades():
         conn.close()
 
 
+def fetch_earliest_date():
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT MIN(DATE(timestamp)) FROM trades")
+        result = cur.fetchone()[0]
+        return result or "2026-01-01"
+    finally:
+        conn.close()
+
+
 # ── Header ────────────────────────────────────────────────────────────────────
 
 st.markdown("""
@@ -36,6 +48,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 trades = fetch_all_trades()
+
+_today    = _dt.date.today()
+_earliest = pd.to_datetime(fetch_earliest_date()).date()
+
+if "date_filter" not in st.session_state:
+    st.session_state["date_filter"] = (_earliest, _today)
 
 
 # ── Sync from IG ──────────────────────────────────────────────────────────────
@@ -72,13 +90,15 @@ with st.expander("↻ Sync from IG", expanded=False):
                     except Exception:
                         pass
                     break
-            st.success(_summary or "Sync complete")
-            st.code(proc.stdout or "(no output)")
+            if apply_sync:
+                st.session_state["sync_banner"] = ("success", _summary or "Sync complete")
+                st.rerun()
+            else:
+                st.success(_summary or "Sync complete")
+                st.code(proc.stdout or "(no output)")
         else:
             st.error("Sync failed")
             st.code(proc.stderr or proc.stdout or "(no output)")
-        if apply_sync and proc.returncode == 0:
-            st.rerun()
 
 
 # ── Add manual trade ──────────────────────────────────────────────────────────
@@ -143,7 +163,25 @@ df_raw["timestamp"] = pd.to_datetime(
 df_raw = df_raw.dropna(subset=["timestamp"])
 
 
+# ── Sync banner (shown above table, persists across rerun) ────────────────────
+
+if "sync_banner" in st.session_state and st.session_state["sync_banner"]:
+    _btype, _bmsg = st.session_state.pop("sync_banner")
+    if _btype == "success":
+        st.success(_bmsg)
+    else:
+        st.error(_bmsg)
+
+
 # ── Sidebar filters ───────────────────────────────────────────────────────────
+
+SOURCE_OPTIONS = {
+    "All":                             None,
+    "Bot (live_signal_loop)":          "live_signal_loop",
+    "SwiftAlgo (tradingview_webhook)": "tradingview_webhook",
+    "IG Import (ig_import)":           "ig_import",
+    "Manual":                          "manual",
+}
 
 with st.sidebar:
     st.markdown('<div class="section-hd" style="margin-top:0">Filters</div>', unsafe_allow_html=True)
@@ -153,17 +191,22 @@ with st.sidebar:
     strategies  = ["All"] + sorted(df_raw["strategy_name"].dropna().unique().tolist())
     statuses    = ["All"] + sorted(df_raw["status"].dropna().unique().tolist())
 
-    sel_symbol    = st.selectbox("Symbol",    symbols)
-    sel_direction = st.selectbox("Direction", directions)
-    sel_strategy  = st.selectbox("Strategy",  strategies)
-    sel_status    = st.selectbox("Status",    statuses)
+    sel_symbol       = st.selectbox("Symbol",    symbols)
+    sel_direction    = st.selectbox("Direction", directions)
+    sel_strategy     = st.selectbox("Strategy",  strategies)
+    sel_status       = st.selectbox("Status",    statuses)
+    sel_source_label = st.selectbox("Source",    list(SOURCE_OPTIONS.keys()), key="source_filter")
+    sel_source       = SOURCE_OPTIONS[sel_source_label]
 
-    min_date = df_raw["timestamp"].min().date() if not df_raw["timestamp"].isna().all() else None
-    max_date = df_raw["timestamp"].max().date() if not df_raw["timestamp"].isna().all() else None
-    if min_date and max_date:
-        date_range = st.date_input("Date Range", value=(min_date, max_date))
-    else:
-        date_range = None
+    st.markdown("---")
+    col_dr, col_sa = st.columns([3, 1])
+    with col_dr:
+        date_range = st.date_input("Date Range", key="date_filter")
+    with col_sa:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("All", key="show_all_btn", help="Reset to full history"):
+            st.session_state["date_filter"] = (_earliest, _today)
+            st.rerun()
 
 
 # ── Apply filters ─────────────────────────────────────────────────────────────
@@ -174,6 +217,7 @@ if sel_symbol    != "All": df = df[df["symbol"]        == sel_symbol]
 if sel_direction != "All": df = df[df["direction"]     == sel_direction]
 if sel_strategy  != "All": df = df[df["strategy_name"] == sel_strategy]
 if sel_status    != "All": df = df[df["status"]        == sel_status]
+if sel_source    is not None: df = df[df["source"]     == sel_source]
 
 if date_range and len(date_range) == 2:
     start, end = date_range
