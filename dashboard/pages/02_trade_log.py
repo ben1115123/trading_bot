@@ -52,9 +52,6 @@ trades = fetch_all_trades()
 _today    = _dt.date.today()
 _earliest = pd.to_datetime(fetch_earliest_date()).date()
 
-if "date_filter" not in st.session_state:
-    st.session_state["date_filter"] = (_earliest, _today)
-
 
 # ── Sync from IG ──────────────────────────────────────────────────────────────
 
@@ -199,14 +196,24 @@ with st.sidebar:
     sel_source       = SOURCE_OPTIONS[sel_source_label]
 
     st.markdown("---")
-    col_dr, col_sa = st.columns([3, 1])
-    with col_dr:
-        date_range = st.date_input("Date Range", key="date_filter")
-    with col_sa:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("All", key="show_all_btn", help="Reset to full history"):
-            st.session_state["date_filter"] = (_earliest, _today)
-            st.rerun()
+    if st.button("Show all dates", key="show_all_btn", use_container_width=True):
+        st.session_state["date_start"] = _earliest
+        st.session_state["date_end"]   = _today
+        st.rerun()
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        date_start = st.date_input(
+            "From",
+            value=st.session_state.get("date_start", _earliest),
+            key="date_start",
+        )
+    with col_d2:
+        date_end = st.date_input(
+            "To",
+            value=st.session_state.get("date_end", _today),
+            key="date_end",
+        )
 
 
 # ── Apply filters ─────────────────────────────────────────────────────────────
@@ -219,9 +226,7 @@ if sel_strategy  != "All": df = df[df["strategy_name"] == sel_strategy]
 if sel_status    != "All": df = df[df["status"]        == sel_status]
 if sel_source    is not None: df = df[df["source"]     == sel_source]
 
-if date_range and len(date_range) == 2:
-    start, end = date_range
-    df = df[(df["timestamp"].dt.date >= start) & (df["timestamp"].dt.date <= end)]
+df = df[(df["timestamp"].dt.date >= date_start) & (df["timestamp"].dt.date <= date_end)]
 
 
 # ── Summary row ───────────────────────────────────────────────────────────────
