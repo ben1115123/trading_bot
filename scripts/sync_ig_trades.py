@@ -88,6 +88,32 @@ def _fill_pnl(trade_id: int, close_price, close_time, pnl) -> None:
         conn.close()
 
 
+def _get_trade_by_open(symbol: str, direction: str,
+                       open_level: float, open_date: str) -> dict | None:
+    """
+    Fallback lookup when IG transaction reference (8-char) doesn't match
+    stored deal_reference (16-char). Matches by symbol + direction + entry
+    price + date. No status filter — poller may have CLOSED the trade already
+    while pnl remains NULL.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT * FROM trades
+            WHERE symbol = ?
+            AND direction = ?
+            AND ABS(entry_price - ?) < 1.0
+            AND DATE(timestamp) = DATE(?)
+            AND pnl IS NULL
+            LIMIT 1
+        """, (symbol, direction, open_level, open_date))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def _is_already_logged(ref: str, symbol: str, direction: str,
                         entry_price: float | None, open_time: str) -> bool:
     conn = get_connection()
@@ -171,7 +197,18 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
             open_time  = str(tx.get("openDateUtc") or close_time)
             entry_price = _to_float(tx.get("openLevel"))
             if _is_already_logged(ref, symbol, direction, entry_price, open_time):
-                print(f"  SKIP  ref={ref} {symbol} {direction} @ {entry_price} — already logged by bot")
+                open_direction = "SELL" if direction == "BUY" else "BUY"
+                fill_trade = _get_trade_by_open(
+                    symbol, open_direction, entry_price, open_time
+                )
+                if fill_trade and fill_trade["pnl"] is None:
+                    print(f"  FILL  fallback id={fill_trade['id']} "
+                          f"{symbol} {open_direction} @ {entry_price} pnl={pnl}")
+                    if confirm:
+                        _fill_pnl(fill_trade["id"], close_price, close_time, pnl)
+                    filled += 1
+                    continue
+                print(f"  SKIP  ref={ref} {symbol} {direction} @ {entry_price} — already logged")
                 skipped += 1
                 continue
             print(f"  INSERT ref={ref} {symbol} {direction} size={size} entry={entry_price} pnl={pnl}")
