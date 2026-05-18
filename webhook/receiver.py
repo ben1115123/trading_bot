@@ -8,6 +8,23 @@ router = APIRouter()
 
 WEBHOOK_DAILY_LOSS_LIMIT = 75.0
 
+SYMBOL_ALIASES = {
+    "SPX500": "US500",
+    "NAS100": "US100",
+    "SP500":  "US500",
+    "NDX100": "US100",
+    "US30":   "US500",
+}
+
+
+def parse_float(val):
+    try:
+        if val is None or str(val).lower() == "null":
+            return None
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
 
 def _get_webhook_losses_today() -> float:
     conn = get_connection()
@@ -55,6 +72,12 @@ async def webhook_endpoint(request: Request):
 
     try:
         symbol = data.get("symbol", "")
+        symbol = SYMBOL_ALIASES.get(symbol, symbol)
+        data["symbol"] = symbol
+
+        for key in ("long_sl", "long_tp", "short_sl", "short_tp"):
+            data[key] = parse_float(data.get(key))
+
         from bot.live_signal_loop import _is_blocked
         if _is_blocked(symbol):
             print(f"[webhook] {symbol} blocked — near market close")
