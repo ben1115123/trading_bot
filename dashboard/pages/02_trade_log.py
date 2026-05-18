@@ -226,7 +226,8 @@ if sel_strategy  != "All": df = df[df["strategy_name"] == sel_strategy]
 if sel_status    != "All": df = df[df["status"]        == sel_status]
 if sel_source    is not None: df = df[df["source"]     == sel_source]
 
-df = df[(df["timestamp"].dt.date >= date_start) & (df["timestamp"].dt.date <= date_end)]
+if not (date_start <= _earliest and date_end >= _today):
+    df = df[(df["timestamp"].dt.date >= date_start) & (df["timestamp"].dt.date <= date_end)]
 
 
 # ── Summary row ───────────────────────────────────────────────────────────────
