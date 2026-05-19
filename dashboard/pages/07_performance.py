@@ -144,7 +144,7 @@ def fetch_performance(period: str) -> dict:
         # By strategy
         cur.execute(
             f"""
-            SELECT strategy_name, source,
+            SELECT strategy_name, symbol, source,
                    COUNT(*) as total,
                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                    COALESCE(SUM(pnl), 0) as total_pnl,
@@ -152,12 +152,21 @@ def fetch_performance(period: str) -> dict:
             FROM trades
             WHERE {base_cond}
             AND status = 'CLOSED'
-            GROUP BY strategy_name, source
+            AND source != 'ig_import'
+            AND (strategy_name IS NULL OR strategy_name != 'manual')
+            GROUP BY strategy_name, symbol, source
             ORDER BY total_pnl DESC
             """,
             base_params,
         )
         strategy_stats = [dict(r) for r in cur.fetchall()]
+
+        cur.execute("""
+            SELECT strategy_name, symbol
+            FROM active_strategy
+            WHERE status = 'active'
+        """)
+        active_set = {(r['strategy_name'], r['symbol']) for r in cur.fetchall()}
 
         # Best / worst 5
         cur.execute(
@@ -194,6 +203,7 @@ def fetch_performance(period: str) -> dict:
         "symbol_stats":   symbol_stats,
         "source_stats":   source_stats,
         "strategy_stats": strategy_stats,
+        "active_set":     active_set,
         "top_winners":    top_winners,
         "top_losers":     top_losers,
     }
@@ -473,6 +483,12 @@ for col, src in zip(st.columns(2), ["tradingview_webhook", "signal_loop"]):
 # ── Row 5 — By strategy ───────────────────────────────────────────────────────
 
 st.markdown('<div class="section-hd">By Strategy</div>', unsafe_allow_html=True)
+st.markdown(
+    '<p style="color:#8B949E;font-size:12px;margin-top:-8px;margin-bottom:12px">'
+    'All strategies with live trades shown. '
+    '<span style="color:#22C55E">● Active</span> = currently selected by daily cron.</p>',
+    unsafe_allow_html=True,
+)
 
 _SRC_LABEL = {
     "live_signal_loop":    "Bot",
@@ -482,23 +498,42 @@ _SRC_LABEL = {
 }
 
 if d["strategy_stats"]:
+    _active_set    = d.get("active_set", set())
+    _active_rows   = [r for r in d["strategy_stats"]
+                      if (r["strategy_name"], r["symbol"]) in _active_set]
+    _inactive_rows = sorted(
+        [r for r in d["strategy_stats"]
+         if (r["strategy_name"], r["symbol"]) not in _active_set],
+        key=lambda r: r["total"] or 0,
+        reverse=True,
+    )
+
     _rows_html = ""
-    for _sr in d["strategy_stats"]:
-        _n        = _sr["total"] or 0
-        _w        = _sr["wins"] or 0
-        _wr       = (_w / _n * 100) if _n > 0 else 0.0
-        _pnl      = _sr["total_pnl"] or 0.0
-        _avg      = _sr["avg_pnl"] or 0.0
-        _wr_color = "#22C55E" if _wr >= 50 else "#EF4444"
+    for _sr in _active_rows + _inactive_rows:
+        _is_active = ((_sr["strategy_name"], _sr["symbol"]) in _active_set)
+        _status_html = (
+            '<span style="color:#22C55E;font-weight:600">&#9679; Active</span>'
+            if _is_active else
+            '<span style="color:#8B949E">&#9675; Inactive</span>'
+        )
+        _n         = _sr["total"] or 0
+        _w         = _sr["wins"] or 0
+        _wr        = (_w / _n * 100) if _n > 0 else 0.0
+        _pnl       = _sr["total_pnl"] or 0.0
+        _avg       = _sr["avg_pnl"] or 0.0
+        _wr_color  = "#22C55E" if _wr >= 50 else "#EF4444"
         _pnl_color = "#22C55E" if _pnl >= 0 else "#EF4444"
         _avg_color = "#22C55E" if _avg >= 0 else "#EF4444"
-        _pnl_str  = f"+${_pnl:,.2f}" if _pnl >= 0 else f"-${abs(_pnl):,.2f}"
-        _avg_str  = f"+${_avg:,.2f}" if _avg >= 0 else f"-${abs(_avg):,.2f}"
-        _src_lbl  = _SRC_LABEL.get(_sr["source"] or "", _sr["source"] or "—")
-        _strat    = _sr["strategy_name"] or "—"
+        _pnl_str   = f"+${_pnl:,.2f}" if _pnl >= 0 else f"-${abs(_pnl):,.2f}"
+        _avg_str   = f"+${_avg:,.2f}" if _avg >= 0 else f"-${abs(_avg):,.2f}"
+        _src_lbl   = _SRC_LABEL.get(_sr["source"] or "", _sr["source"] or "—")
+        _strat     = _sr["strategy_name"] or "—"
+        _sym       = _sr["symbol"] or "—"
         _rows_html += f"""<tr style="border-bottom:1px solid #21262D">
           <td style="padding:10px 16px;color:#E6EDF3">{_strat}</td>
+          <td style="padding:10px 16px;color:#58A6FF;font-weight:600">{_sym}</td>
           <td style="padding:10px 16px;color:#8B949E">{_src_lbl}</td>
+          <td style="padding:10px 16px">{_status_html}</td>
           <td style="padding:10px 16px;color:#E6EDF3">{_n}</td>
           <td style="padding:10px 16px"><span style="background:{_wr_color}22;color:{_wr_color};padding:2px 10px;border-radius:4px;font-weight:700">{_wr:.1f}%</span></td>
           <td style="padding:10px 16px;color:{_pnl_color}">{_pnl_str}</td>
@@ -510,7 +545,9 @@ if d["strategy_stats"]:
         <thead>
           <tr style="border-bottom:1px solid #30363D">
             <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Strategy</th>
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Symbol</th>
             <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Source</th>
+            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Status</th>
             <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Trades</th>
             <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Win Rate</th>
             <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Total P&amp;L</th>
