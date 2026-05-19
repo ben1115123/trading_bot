@@ -154,6 +154,8 @@ def fetch_performance(period: str) -> dict:
             AND status = 'CLOSED'
             AND source != 'ig_import'
             AND (strategy_name IS NULL OR strategy_name != 'manual')
+            AND strategy_name != 'youtube'
+            AND symbol != 'BTC'
             GROUP BY strategy_name, symbol, source
             ORDER BY total_pnl DESC
             """,
@@ -485,8 +487,9 @@ for col, src in zip(st.columns(2), ["tradingview_webhook", "signal_loop"]):
 st.markdown('<div class="section-hd">By Strategy</div>', unsafe_allow_html=True)
 st.markdown(
     '<p style="color:#8B949E;font-size:12px;margin-top:-8px;margin-bottom:12px">'
-    'All strategies with live trades shown. '
-    '<span style="color:#22C55E">● Active</span> = currently selected by daily cron.</p>',
+    'US500 &amp; US100 only. '
+    '<span style="color:#22C55E">● Active</span> = currently selected by daily cron. '
+    'Dimmed rows = never traded live.</p>',
     unsafe_allow_html=True,
 )
 
@@ -497,28 +500,58 @@ _SRC_LABEL = {
     "manual":              "Manual",
 }
 
-if d["strategy_stats"]:
-    _active_set    = d.get("active_set", set())
-    _active_rows   = [r for r in d["strategy_stats"]
-                      if (r["strategy_name"], r["symbol"]) in _active_set]
-    _inactive_rows = sorted(
-        [r for r in d["strategy_stats"]
-         if (r["strategy_name"], r["symbol"]) not in _active_set],
-        key=lambda r: r["total"] or 0,
-        reverse=True,
-    )
+_ALL_STRATEGIES = [
+    'rsi', 'stoch_rsi', 'supertrend', 'vwap_ema',
+    'ema_ribbon', 'bb_squeeze', 'rsi_divergence',
+    'orb', 'ichimoku', 'keltner', 'ema_cross_volume',
+    'vwap_mean_reversion', 'connors_rsi2',
+]
+_LIVE_SYMBOLS = ['US500', 'US100']
 
-    _rows_html = ""
-    for _sr in _active_rows + _inactive_rows:
-        _is_active = ((_sr["strategy_name"], _sr["symbol"]) in _active_set)
-        _status_html = (
-            '<span style="color:#22C55E;font-weight:600">&#9679; Active</span>'
-            if _is_active else
-            '<span style="color:#8B949E">&#9675; Inactive</span>'
-        )
-        _n         = _sr["total"] or 0
+_active_set = d.get("active_set", set())
+
+# Merge real rows with placeholder rows for untested strategy+symbol combos
+_seen   = {(r["strategy_name"], r["symbol"]) for r in d["strategy_stats"]}
+_all_rows = list(d["strategy_stats"])
+for _sn in _ALL_STRATEGIES:
+    for _sym_name in _LIVE_SYMBOLS:
+        if (_sn, _sym_name) not in _seen:
+            _all_rows.append({
+                "strategy_name": _sn,
+                "symbol":        _sym_name,
+                "source":        None,
+                "total":         0,
+                "wins":          0,
+                "total_pnl":     0.0,
+                "avg_pnl":       0.0,
+                "_placeholder":  True,
+            })
+
+def _strat_sort_key(r):
+    _act      = (r["strategy_name"], r["symbol"]) in _active_set
+    _has      = (r.get("total") or 0) > 0
+    # groups: 0=active+trades, 1=active+no trades, 2=inactive+trades, 3=no trades
+    group = 0 if (_act and _has) else 1 if _act else 2 if _has else 3
+    return (group, -(r.get("total") or 0))
+
+_all_rows.sort(key=_strat_sort_key)
+
+_rows_html = ""
+for _sr in _all_rows:
+    _is_active      = (_sr["strategy_name"], _sr["symbol"]) in _active_set
+    _is_placeholder = _sr.get("_placeholder", False)
+    _n              = _sr["total"] or 0
+
+    if _is_active:
+        _status_html = '<span style="color:#22C55E;font-weight:600">&#9679; Active</span>'
+    elif _is_placeholder:
+        _status_html = '<span style="color:#484F58">&#9675; No live trades</span>'
+    else:
+        _status_html = '<span style="color:#8B949E">&#9675; Inactive</span>'
+
+    if _n > 0:
         _w         = _sr["wins"] or 0
-        _wr        = (_w / _n * 100) if _n > 0 else 0.0
+        _wr        = _w / _n * 100
         _pnl       = _sr["total_pnl"] or 0.0
         _avg       = _sr["avg_pnl"] or 0.0
         _wr_color  = "#22C55E" if _wr >= 50 else "#EF4444"
@@ -526,45 +559,49 @@ if d["strategy_stats"]:
         _avg_color = "#22C55E" if _avg >= 0 else "#EF4444"
         _pnl_str   = f"+${_pnl:,.2f}" if _pnl >= 0 else f"-${abs(_pnl):,.2f}"
         _avg_str   = f"+${_avg:,.2f}" if _avg >= 0 else f"-${abs(_avg):,.2f}"
-        _src_lbl   = _SRC_LABEL.get(_sr["source"] or "", _sr["source"] or "—")
-        _strat     = _sr["strategy_name"] or "—"
-        _sym       = _sr["symbol"] or "—"
-        _rows_html += f"""<tr style="border-bottom:1px solid #21262D">
-          <td style="padding:10px 16px;color:#E6EDF3">{_strat}</td>
-          <td style="padding:10px 16px;color:#58A6FF;font-weight:600">{_sym}</td>
-          <td style="padding:10px 16px;color:#8B949E">{_src_lbl}</td>
-          <td style="padding:10px 16px">{_status_html}</td>
-          <td style="padding:10px 16px;color:#E6EDF3">{_n}</td>
-          <td style="padding:10px 16px"><span style="background:{_wr_color}22;color:{_wr_color};padding:2px 10px;border-radius:4px;font-weight:700">{_wr:.1f}%</span></td>
-          <td style="padding:10px 16px;color:{_pnl_color}">{_pnl_str}</td>
-          <td style="padding:10px 16px;color:{_avg_color}">{_avg_str}</td>
-        </tr>"""
-    st.markdown(f"""
-    <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;overflow:hidden">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead>
-          <tr style="border-bottom:1px solid #30363D">
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Strategy</th>
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Symbol</th>
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Source</th>
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Status</th>
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Trades</th>
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Win Rate</th>
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Total P&amp;L</th>
-            <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Avg P&amp;L</th>
-          </tr>
-        </thead>
-        <tbody>{_rows_html}</tbody>
-      </table>
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    st.markdown("""
-    <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;
-                padding:24px;text-align:center;color:#8B949E;font-size:13px">
-      No strategy data for selected period.
-    </div>
-    """, unsafe_allow_html=True)
+        _n_td   = f'<td style="padding:10px 16px;color:#E6EDF3">{_n}</td>'
+        _wr_td  = f'<td style="padding:10px 16px"><span style="background:{_wr_color}22;color:{_wr_color};padding:2px 10px;border-radius:4px;font-weight:700">{_wr:.1f}%</span></td>'
+        _pnl_td = f'<td style="padding:10px 16px;color:{_pnl_color}">{_pnl_str}</td>'
+        _avg_td = f'<td style="padding:10px 16px;color:{_avg_color}">{_avg_str}</td>'
+    else:
+        _n_td   = '<td style="padding:10px 16px;color:#484F58">0</td>'
+        _wr_td  = '<td style="padding:10px 16px;color:#484F58">—</td>'
+        _pnl_td = '<td style="padding:10px 16px;color:#484F58">—</td>'
+        _avg_td = '<td style="padding:10px 16px;color:#484F58">—</td>'
+
+    _src_lbl    = _SRC_LABEL.get(_sr["source"] or "", "—") if _sr["source"] else "—"
+    _strat      = _sr["strategy_name"] or "—"
+    _sym        = _sr["symbol"] or "—"
+    _dim        = _is_placeholder and not _is_active
+    _name_color = "#6E7681" if _dim else "#E6EDF3"
+    _sym_color  = "#3D6B8E" if _dim else "#58A6FF"
+    _rows_html += f"""<tr style="border-bottom:1px solid #21262D{';opacity:0.6' if _dim else ''}">
+      <td style="padding:10px 16px;color:{_name_color}">{_strat}</td>
+      <td style="padding:10px 16px;color:{_sym_color};font-weight:600">{_sym}</td>
+      <td style="padding:10px 16px;color:#8B949E">{_src_lbl}</td>
+      <td style="padding:10px 16px">{_status_html}</td>
+      {_n_td}{_wr_td}{_pnl_td}{_avg_td}
+    </tr>"""
+
+st.markdown(f"""
+<div style="background:#161B22;border:1px solid #30363D;border-radius:10px;overflow:hidden">
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead>
+      <tr style="border-bottom:1px solid #30363D">
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Strategy</th>
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Symbol</th>
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Source</th>
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Status</th>
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Trades</th>
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Win Rate</th>
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Total P&amp;L</th>
+        <th style="text-align:left;padding:10px 16px;color:#8B949E;font-weight:500">Avg P&amp;L</th>
+      </tr>
+    </thead>
+    <tbody>{_rows_html}</tbody>
+  </table>
+</div>
+""", unsafe_allow_html=True)
 
 
 # ── Row 6 — Best and worst trades ─────────────────────────────────────────────
