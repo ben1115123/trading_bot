@@ -15,8 +15,8 @@ from database.models import get_active_strategies, log_signal_check, log_paper_t
 SYMBOLS = ["US500", "US100", "DAX", "BTC"]
 
 MARKET_CLOSE = {
-    "US500": {"hour": 20, "minute": 0},
-    "US100": {"hour": 20, "minute": 0},
+    "US500": {"hour": 20, "minute": 45},
+    "US100": {"hour": 20, "minute": 45},
     "DAX":   {"hour": 16, "minute": 30},
     "BTC":   None,
 }
@@ -47,23 +47,25 @@ def _is_blocked(symbol: str) -> bool:
     if close is None:
         return False
     now = datetime.now(timezone.utc)
-    weekday = now.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+    weekday = now.weekday()
 
+    # Saturday — always blocked
     if weekday == 5:
         return True
 
+    # Sunday — blocked until 23:00 UTC (IG reopens)
     if weekday == 6:
-        return now.hour < 22
+        return now.hour < 23
 
+    now_mins = now.hour * 60 + now.minute
+
+    # Friday — block from 20:45 UTC
     if weekday == 4:
-        if now.hour > 19 or (now.hour == 19 and now.minute >= 45):
-            return True
+        return now_mins >= (20 * 60 + 45)
 
+    # Mon-Thu — block 20:45-23:00 UTC overnight gap
     close_mins = close["hour"] * 60 + close["minute"]
-    now_mins   = now.hour * 60 + now.minute
-
-    # Block 1 hour before close
-    return now_mins >= (close_mins - 60)
+    return close_mins <= now_mins < (23 * 60)
 
 
 def _should_weekend_close() -> bool:
