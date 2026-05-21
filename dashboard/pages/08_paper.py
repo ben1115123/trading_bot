@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from database.db import get_connection
 
-st.set_page_config(page_title="Paper Trading · Trading Bot", layout="wide")
+st.set_page_config(page_title="Strategy Pipeline · Trading Bot", layout="wide")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from styles import inject_css
@@ -78,29 +78,61 @@ def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All") -> dict
 
 
 def fetch_active_paper_strategies() -> list:
-    """All active_strategy rows with status='paper', LEFT JOINed to paper_trades
-    and backtest_results. Returns rows with 0-signal entries for new strategies."""
+    """All active + paper strategies. Stats from trades (active) or paper_trades (paper)."""
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
+            WITH trade_stats AS (
+                SELECT symbol, strategy_name,
+                       COUNT(*)                                          AS total,
+                       SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END)         AS wins,
+                       SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END)         AS losses,
+                       COALESCE(SUM(pnl), 0)                            AS total_pnl
+                FROM trades
+                GROUP BY symbol, strategy_name
+            ),
+            paper_stats AS (
+                SELECT symbol, timeframe, strategy_name,
+                       COUNT(*)                                          AS total,
+                       SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END)  AS wins,
+                       SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END)  AS losses,
+                       COALESCE(SUM(simulated_pnl), 0)                  AS total_pnl
+                FROM paper_trades
+                GROUP BY symbol, timeframe, strategy_name
+            )
             SELECT
-                a.symbol, a.timeframe, a.strategy_name, a.score,
-                COUNT(p.id)                                              AS total,
-                SUM(CASE WHEN p.outcome='WIN'  THEN 1 ELSE 0 END)       AS wins,
-                SUM(CASE WHEN p.outcome='LOSS' THEN 1 ELSE 0 END)       AS losses,
-                COALESCE(SUM(p.simulated_pnl), 0)                       AS total_pnl,
-                b.win_rate                                               AS bt_win_rate,
-                b.total_profit                                           AS bt_pnl
+                a.symbol, a.timeframe, a.strategy_name, a.score, a.status,
+                COALESCE(
+                    CASE a.status WHEN 'active' THEN ts.total   ELSE ps.total   END, 0
+                ) AS total,
+                COALESCE(
+                    CASE a.status WHEN 'active' THEN ts.wins    ELSE ps.wins    END, 0
+                ) AS wins,
+                COALESCE(
+                    CASE a.status WHEN 'active' THEN ts.losses  ELSE ps.losses  END, 0
+                ) AS losses,
+                COALESCE(
+                    CASE a.status WHEN 'active' THEN ts.total_pnl ELSE ps.total_pnl END, 0
+                ) AS total_pnl,
+                b.win_rate     AS bt_win_rate,
+                b.total_profit AS bt_pnl
             FROM active_strategy a
-            LEFT JOIN paper_trades p
-                   ON p.symbol        = a.symbol
-                  AND p.timeframe     = a.timeframe
-                  AND p.strategy_name = a.strategy_name
+            LEFT JOIN trade_stats ts
+                   ON a.status = 'active'
+                  AND ts.symbol        = a.symbol
+                  AND ts.strategy_name = a.strategy_name
+            LEFT JOIN paper_stats ps
+                   ON a.status = 'paper'
+                  AND ps.symbol        = a.symbol
+                  AND ps.timeframe     = a.timeframe
+                  AND ps.strategy_name = a.strategy_name
             LEFT JOIN backtest_results b ON b.id = a.backtest_id
-            WHERE a.status = 'paper'
-            GROUP BY a.symbol, a.timeframe, a.strategy_name
-            ORDER BY total DESC, a.symbol ASC
+            WHERE a.status IN ('active', 'paper')
+            ORDER BY
+                CASE a.status WHEN 'active' THEN 0 ELSE 1 END,
+                total DESC,
+                a.symbol ASC
         """)
         return [dict(r) for r in cur.fetchall()]
     finally:
@@ -110,8 +142,8 @@ def fetch_active_paper_strategies() -> list:
 # ── Header ────────────────────────────────────────────────────────────────────
 
 st.markdown("""
-<h1 style="margin-bottom:4px">Paper Trading Log</h1>
-<p style="color:#8B949E;font-size:13px;margin-top:0">Simulated signals — not executed on live account</p>
+<h1 style="margin-bottom:4px">Strategy Pipeline</h1>
+<p style="color:#8B949E;font-size:13px;margin-top:0">All active and paper strategies — live pipeline view</p>
 """, unsafe_allow_html=True)
 
 d = fetch_paper_data()
@@ -128,7 +160,7 @@ win_rate = (wins / resolved * 100) if resolved > 0 else 0.0
 
 # ── KPI Cards ─────────────────────────────────────────────────────────────────
 
-st.markdown('<div class="section-hd">Summary</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-hd">Paper Summary</div>', unsafe_allow_html=True)
 
 pnl_cls  = "pos" if tot_pnl >= 0 else "neg"
 pnl_sign = "+" if tot_pnl >= 0 else ""
@@ -161,7 +193,7 @@ st.markdown(f"""
 
 # ── Strategy Cards ────────────────────────────────────────────────────────────
 
-st.markdown('<div class="section-hd">Paper Strategies</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-hd">Strategy Pipeline</div>', unsafe_allow_html=True)
 
 paper_strats = fetch_active_paper_strategies()
 if paper_strats:
@@ -171,18 +203,32 @@ if paper_strats:
         cols  = st.columns(COLS)
         for col, row in zip(cols, batch):
             with col:
-                n   = row["total"]     or 0
-                w   = row["wins"]      or 0
-                l_  = row["losses"]    or 0
-                pnl = row["total_pnl"] or 0.0
-                res = w + l_
-                wr  = (w / res * 100) if res > 0 else None
+                n      = row["total"]     or 0
+                w      = row["wins"]      or 0
+                l_     = row["losses"]    or 0
+                pnl    = row["total_pnl"] or 0.0
+                res    = w + l_
+                wr     = (w / res * 100) if res > 0 else None
+                status = row.get("status", "paper")
 
-                firing   = n > 0
-                badge    = "🟢 Firing"  if firing else "⏳ Awaiting signals"
-                badge_bg = "#22C55E22" if firing else "#8B949E22"
-                badge_c  = "#22C55E"   if firing else "#8B949E"
-                border_c = "#22C55E"   if firing else "#30363D"
+                if status == "active":
+                    badge    = "🔵 Live"
+                    badge_bg = "#1D4ED822"
+                    badge_c  = "#3B82F6"
+                    border_c = "#1D4ED8"
+                elif n > 0:
+                    badge    = "🟢 Firing"
+                    badge_bg = "#22C55E22"
+                    badge_c  = "#22C55E"
+                    border_c = "#22C55E"
+                else:
+                    badge    = "⏳ Awaiting"
+                    badge_bg = "#8B949E22"
+                    badge_c  = "#8B949E"
+                    border_c = "#30363D"
+
+                wr_lbl  = "Win Rate"     if status == "active" else "Sim Win Rate"
+                pnl_lbl = "P&amp;L"     if status == "active" else "Sim P&amp;L"
 
                 wr_str = f"{wr:.1f}%" if wr is not None else "—"
                 wr_c   = "#3B82F6"    if (wr or 0) >= 50 else "#8B5CF6"
@@ -215,9 +261,9 @@ if paper_strats:
                     <div class="val">{row['strategy_name']}</div></div>
                   <div class="info-tile"><div class="lbl">Signals</div>
                     <div class="val">{n}</div></div>
-                  <div class="info-tile"><div class="lbl">Sim Win Rate</div>
+                  <div class="info-tile"><div class="lbl">{wr_lbl}</div>
                     <div class="val">{wr_badge}</div></div>
-                  <div class="info-tile"><div class="lbl">Sim P&amp;L</div>
+                  <div class="info-tile"><div class="lbl">{pnl_lbl}</div>
                     <div class="val" style="color:{pnl_c}">{pnl_str}</div></div>
                   <div class="info-tile" style="border-top:1px solid #21262D;
                     margin-top:8px;padding-top:8px">
@@ -228,7 +274,7 @@ if paper_strats:
                 </div>
                 """, unsafe_allow_html=True)
 else:
-    st.info("No paper strategies configured.")
+    st.info("No strategies configured.")
 
 
 # ── Simulated Equity Curve ────────────────────────────────────────────────────
