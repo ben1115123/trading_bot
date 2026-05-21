@@ -197,7 +197,7 @@ if paper_strats:
 
                 bt_wr  = row.get("bt_win_rate")
                 bt_pnl = row.get("bt_pnl")
-                bt_wr_str  = f"{bt_wr:.1f}%"  if bt_wr  is not None else "—"
+                bt_wr_str  = f"{bt_wr * 100:.1f}%"  if bt_wr  is not None else "—"
                 bt_pnl_str = (f"+${bt_pnl:,.2f}" if bt_pnl >= 0 else f"-${abs(bt_pnl):,.2f}") if bt_pnl is not None else "—"
                 bt_pnl_c   = ("#22C55E" if bt_pnl >= 0 else "#EF4444") if bt_pnl is not None else "#8B949E"
 
