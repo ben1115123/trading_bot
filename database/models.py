@@ -301,7 +301,7 @@ def insert_active_strategy(data: dict) -> int:
             VALUES
                 (:strategy_name, :symbol, :timeframe, :strategy_type, :backtest_id,
                  :score, :activated_at, :params_json, :status, :updated_at)
-            ON CONFLICT(symbol, timeframe) DO UPDATE SET
+            ON CONFLICT(symbol, timeframe, strategy_name) DO UPDATE SET
                 strategy_name = excluded.strategy_name,
                 timeframe = excluded.timeframe,
                 strategy_type = excluded.strategy_type,
@@ -376,13 +376,13 @@ def get_active_strategy(symbol: str = None, timeframe: str = None) -> dict | lis
 
 
 def get_active_strategies(symbol: str) -> list:
-    """All active rows for a symbol — one per timeframe."""
+    """All runnable rows for a symbol — live (active) and paper."""
     conn = get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT * FROM active_strategy
-            WHERE symbol = ? AND status = 'active'
+            WHERE symbol = ? AND status IN ('active', 'paper')
             ORDER BY timeframe ASC
         """, (symbol,))
         return [dict(r) for r in cursor.fetchall()]

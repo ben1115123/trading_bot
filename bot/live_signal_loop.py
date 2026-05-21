@@ -237,12 +237,12 @@ def _check_symbol(symbol: str, active: dict) -> None:
         log_signal_check(log_data)
         return
 
-    if _last_signal.get((symbol, timeframe)) == dedup_key:
-        print(f"[signal_loop] [{symbol}/{timeframe}] duplicate {signal} for {candle_time} — skipping")
+    if _last_signal.get((symbol, timeframe, strategy_name)) == dedup_key:
+        print(f"[signal_loop] [{symbol}/{timeframe}/{strategy_name}] duplicate {signal} for {candle_time} — skipping")
         log_signal_check(log_data)
         return
 
-    _last_signal[(symbol, timeframe)] = dedup_key
+    _last_signal[(symbol, timeframe, strategy_name)] = dedup_key
 
     # SL/TP from candle range — matches backtesting engine's sl_dist = high - low
     sl_dist = candle["high"] - candle["low"]
@@ -258,7 +258,7 @@ def _check_symbol(symbol: str, active: dict) -> None:
 
     print(f"[signal_loop] [{symbol}] {signal} — sl={sl} tp={tp}")
 
-    if _is_paper_trade(symbol, timeframe):
+    if _is_paper_trade(symbol, timeframe) or active.get("status") == "paper":
         log_data["signal"] = f"PAPER_{signal}"
         log_paper_trade({
             "checked_at":    datetime.now(timezone.utc).isoformat(),

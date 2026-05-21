@@ -100,6 +100,8 @@ from backend.strategies.stoch_rsi import StochRSIStrategy
 from backend.strategies.ema_cross_volume import EMACrossVolumeStrategy
 from backend.strategies.vwap_mean_reversion import VWAPMeanReversionStrategy
 from backend.strategies.connors_rsi2 import ConnorsRSI2Strategy
+from backend.strategies.williams_r import WilliamsRStrategy
+from backend.strategies.macd_rsi import MACDRSIStrategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
@@ -116,6 +118,8 @@ STRATEGIES = {
     "ema_cross_volume":     EMACrossVolumeStrategy,
     "vwap_mean_reversion":  VWAPMeanReversionStrategy,
     "connors_rsi2":         ConnorsRSI2Strategy,
+    "williams_r":           WilliamsRStrategy,
+    "macd_rsi":             MACDRSIStrategy,
 }
 
 PARAM_GRIDS = {
@@ -186,6 +190,18 @@ PARAM_GRIDS = {
         "overbought": [85, 90, 95],
         "sma_long":   [100, 200],
         "sma_exit":   [3, 5, 10],
+    },
+    "williams_r": {
+        "period":     [10, 14, 21],
+        "oversold":   [-80, -85, -90],
+        "overbought": [-10, -15, -20],
+    },
+    "macd_rsi": {
+        "fast":       [8, 12],
+        "slow":       [21, 26],
+        "signal":     [7, 9],
+        "rsi_period": [14],
+        "ema_period": [50, 100],
     },
 }
 

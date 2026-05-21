@@ -16,7 +16,9 @@ bot/execute_trade.py        Trade logic, session, execution
 bot/live_signal_loop.py     ✅ Unified signal loop (HOUR + 5MIN)
                             Wakes every 5min, timeframe-aware
                             Paper trade mode via PAPER_TRADE_SYMBOLS
+                            OR active_strategy.status='paper'
                             ATR-based SL/TP, candles[-2] dedup
+                            Dedup key: (symbol, timeframe, strategy_name)
                             Weekend auto-close (Fri 20:40 UTC)
                             Market hours block per symbol
                             Daily loss limit $75 (signal_loop)
@@ -45,12 +47,12 @@ dashboard/pages/            ✅ Pages 01-08 complete
   07_performance.py         Analytics: by symbol, source, strategy
                             Paper vs Live comparison section
   08_paper.py               Paper trading log + simulated equity curve
-backend/strategies/         ✅ 11 strategies built
+backend/strategies/         ✅ 13 strategies built
   base.py, rsi.py, supertrend.py, vwap_ema.py,
   ema_ribbon.py, bb_squeeze.py, rsi_divergence.py,
   orb.py, ichimoku.py, keltner.py, stoch_rsi.py,
   ema_cross_volume.py, vwap_mean_reversion.py,
-  connors_rsi2.py
+  connors_rsi2.py, williams_r.py, macd_rsi.py
 backend/backtesting/        ✅ engine.py, metrics.py
 scripts/run_backtest.py     ✅ CLI backtest runner
 scripts/run_daily.py        ✅ Morning orchestrator (6am UTC cron)
@@ -118,13 +120,16 @@ PAPER_TRADE_SYMBOLS=DAX,US100_5MIN,BTC
 - BTC HOUR — vwap_ema, deactivated from live due to margin
 
 ## Active Strategies
-| Symbol | TF   | Strategy  | Mode  | Score |
-|--------|------|-----------|-------|-------|
-| US500  | HOUR | stoch_rsi | Live  | 0.867 |
-| US100  | HOUR | stoch_rsi | Live  | 0.835 |
-| DAX    | HOUR | rsi       | Paper | 0.663 |
-| US100  | 5MIN | stoch_rsi | Paper | 0.926 |
-| BTC    | HOUR | vwap_ema  | Paper | 0.654 |
+| Symbol | TF   | Strategy   | Mode  | Score |
+|--------|------|------------|-------|-------|
+| US500  | HOUR | stoch_rsi  | Live  | 0.867 |
+| US100  | HOUR | stoch_rsi  | Live  | 0.835 |
+| DAX    | HOUR | rsi        | Paper | 0.663 |
+| US100  | 5MIN | stoch_rsi  | Paper | 0.926 |
+| BTC    | HOUR | vwap_ema   | Paper | 0.654 |
+| US500  | HOUR | williams_r | Paper | —     |
+| DAX    | HOUR | williams_r | Paper | —     |
+| DAX    | HOUR | macd_rsi   | Paper | —     |
 
 ## Signal Sources
 | Source              | What it is                        |
@@ -209,6 +214,33 @@ Weekend close: auto-closes US500/US100/DAX at 20:40 UTC Friday
 - Simulated P&L tracked separately from live P&L
 - Dashboard page 08 shows paper trading log
 - Performance page 07 shows Paper vs Live comparison
+- Paper routing: PAPER_TRADE_SYMBOLS env var (symbol-level)
+  OR active_strategy.status='paper' (strategy-level)
+- Multi-strategy: active_strategy UNIQUE(symbol,timeframe,strategy_name)
+  allows multiple strategies on same symbol+TF
+
+### New Paper Strategies (added 2026-05-20)
+| Symbol | TF   | Strategy   | Rationale                              |
+|--------|------|------------|----------------------------------------|
+| US500  | HOUR | williams_r | Mean reversion, uncorrelated to stoch_rsi |
+| DAX    | HOUR | williams_r | Mean reversion forward test            |
+| DAX    | HOUR | macd_rsi   | Trend-momentum with EMA50 confirmation |
+
+williams_r entry rules:
+- Long: %R(14) crosses below -85 (enters oversold)
+- Short: %R(14) crosses above -15 (enters overbought)
+- Exit: SL/TP from backtesting engine (ATR-based)
+
+macd_rsi entry rules:
+- Long: MACD(12,26,9) line crosses above signal AND RSI(14)<60 AND close>EMA(50)
+- Short: MACD line crosses below signal AND RSI(14)>40 AND close<EMA(50)
+- Exit: SL/TP from backtesting engine (ATR-based)
+
+Baseline backtest (default params, 5000 HOUR candles, test window 1000):
+- US500 HOUR williams_r: 47 trades, 74.5% win rate, $857 profit
+- DAX   HOUR williams_r: 47 trades, 59.6% win rate, $419 profit
+- DAX   HOUR macd_rsi:   10 trades, 10.0% win rate, -$865 loss
+  ⚠️  macd_rsi DAX baseline weak — paper trading to observe live behaviour
 
 ## IG Sync (sync_ig_trades.py)
 - Self-contained IG session (does not import execute_trade.py)
@@ -242,8 +274,9 @@ Weekend close: auto-closes US500/US100/DAX at 20:40 UTC Friday
   openDateUtc proximity fallback
 - Deferred P&L checker: runs every 5min, gives up
   after 24 hours, logs warning if failed
-- active_strategy unique constraint on symbol+timeframe
-  (not just symbol) — HOUR and 5MIN both active per symbol
+- active_strategy unique constraint on symbol+timeframe+strategy_name
+  — multiple strategies can co-exist on same symbol+TF
+  — HOUR and 5MIN both active per symbol, and multiple strategies per slot
 - get_active_strategy(symbol, timeframe) → dict | None
 - get_active_strategy() → list of all active rows
 - get_active_strategies(symbol) → list per symbol

@@ -121,6 +121,29 @@ def run_backtest(strategy, candles: list, symbol: str,
         last = i == len(test_signals) - 1
 
         if open_trade is not None:
+            # Dollar stop-loss: check intra-bar low/high against SL price
+            sl_hit = (
+                (open_trade["direction"] == "BUY"  and candle["low"]  <= open_trade["sl_price"]) or
+                (open_trade["direction"] == "SELL" and candle["high"] >= open_trade["sl_price"])
+            )
+            if sl_hit:
+                try:
+                    dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
+                except Exception:
+                    dur = 0
+                trades.append({
+                    "entry_time":    open_trade["entry_time"],
+                    "exit_time":     candle["time"],
+                    "direction":     open_trade["direction"],
+                    "entry_price":   open_trade["entry_price"],
+                    "exit_price":    candle["close"],
+                    "pnl":           -RISK_PER_TRADE,
+                    "duration_mins": max(0, dur),
+                    "exit_reason":   "sl_stop",
+                })
+                open_trade = None
+                continue  # don't re-open on same SL bar
+
             candles_held = i - open_trade["entry_candle_idx"]
             force_close  = max_hold_candles is not None and candles_held >= max_hold_candles
             should_close = (
@@ -155,13 +178,17 @@ def run_backtest(strategy, candles: list, symbol: str,
             continue
 
         if open_trade is None and sig["signal"] in ("BUY", "SELL"):
-            sl_dist = candle["high"] - candle["low"]
+            sl_dist  = candle["high"] - candle["low"]
+            entry    = candle["close"]
+            size     = _lot_size(sl_dist, vpp)
+            sl_price = (entry - sl_dist) if sig["signal"] == "BUY" else (entry + sl_dist)
             open_trade = {
                 "direction":        sig["signal"],
-                "entry_price":      candle["close"],
+                "entry_price":      entry,
                 "entry_time":       candle["time"],
                 "entry_candle_idx": i,
-                "size":             _lot_size(sl_dist, vpp),
+                "size":             size,
+                "sl_price":         sl_price,
             }
 
     return {
