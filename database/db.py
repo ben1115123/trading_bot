@@ -206,7 +206,7 @@ def init_db():
     try:
         cursor.execute("SELECT sql FROM sqlite_master WHERE name='active_strategy'")
         ddl = cursor.fetchone()
-        if ddl and "symbol, timeframe" in ddl[0] and "strategy_name" not in ddl[0]:
+        if ddl and "UNIQUE(symbol, timeframe)" in ddl[0] and "UNIQUE(symbol, timeframe, strategy_name)" not in ddl[0]:
             cursor.execute("ALTER TABLE active_strategy RENAME TO _active_strategy_old")
             cursor.execute("""
                 CREATE TABLE active_strategy (
