@@ -63,9 +63,8 @@ def _is_blocked(symbol: str) -> bool:
     if weekday == 4:
         return now_mins >= (20 * 60 + 45)
 
-    # Mon-Thu — block 20:45-23:00 UTC overnight gap
-    close_mins = close["hour"] * 60 + close["minute"]
-    return close_mins <= now_mins < (23 * 60)
+    # Mon-Thu — 24h trading, no block
+    return False
 
 
 def _should_weekend_close() -> bool:
