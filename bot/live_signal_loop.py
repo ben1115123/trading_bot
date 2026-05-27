@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
 from database.models import get_active_strategies, log_signal_check, log_paper_trade, \
     get_pending_paper_trades, resolve_paper_trade
+from filters.vix_filter import should_block_swing_entry
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC"]
 
@@ -26,7 +27,6 @@ TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "HOUR": 3600, "DAY": 86400}
 _raw_paper    = os.getenv("PAPER_TRADE_SYMBOLS", "")
 PAPER_SYMBOLS: set[str] = {s.strip() for s in _raw_paper.split(",") if s.strip()}
 
-MAX_DAILY_LOSS_USD    = 75.0   # primary guardrail — hard stop
 MAX_TRADES_PER_DAY    = 20     # bug catcher only
 MAX_TRADES_PER_SYMBOL = 6      # bug catcher only
 
@@ -114,8 +114,7 @@ def _get_daily_stats() -> dict:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         cur.execute("""
-            SELECT COUNT(*) as n,
-                   COALESCE(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END), 0) as losses
+            SELECT COUNT(*) as n
             FROM trades
             WHERE source IN ('signal_loop', 'live_signal_loop')
             AND DATE(timestamp) = ?
@@ -133,7 +132,6 @@ def _get_daily_stats() -> dict:
 
         return {
             "total_trades": row["n"],
-            "total_losses": abs(row["losses"]),
             "by_symbol":    by_symbol,
         }
     finally:
@@ -145,10 +143,9 @@ def _risk_check(symbol: str, stats: dict) -> str | None:
     Loss limit is the real guardrail.
     Trade counts are safety nets for runaway signals only.
     """
-    if stats["total_losses"] >= MAX_DAILY_LOSS_USD:
-        return (f"daily loss limit hit "
-                f"(${stats['total_losses']:.2f} >= "
-                f"${MAX_DAILY_LOSS_USD})")
+    from risk.daily_loss import is_daily_loss_limit_breached, DAILY_LOSS_LIMIT_USD
+    if is_daily_loss_limit_breached():
+        return f"daily loss limit hit (all sources combined, limit ${DAILY_LOSS_LIMIT_USD})"
 
     if stats["total_trades"] >= MAX_TRADES_PER_DAY:
         return f"max daily trades reached ({MAX_TRADES_PER_DAY})"
@@ -305,6 +302,7 @@ def _candle_dt(candle: dict):
 
 _EPIC_VALUE_PER_POINT = {
     "US500": 1.0, "US100": 1.0, "DAX": 1.0, "BTC": 0.1,
+    "EURUSD": 10000.0,  # CS.D.EURUSD.MINI.IP: $1/pip, 0.0001 pip, contract=10k
 }
 
 
@@ -354,19 +352,23 @@ def _resolve_pending_paper_trades() -> None:
                     outcome, raw_pnl = "WIN", entry - tp
                     break
         if outcome:
-            value_per_point = _EPIC_VALUE_PER_POINT.get(symbol, 1.0)
-            sl_distance = abs(entry - sl)
-            if sl_distance > 0:
-                lot_size = 15.0 / (sl_distance * value_per_point)
-                lot_size = max(0.1, min(10.0, lot_size))
+            if entry is None:
+                resolve_paper_trade(trade["id"], outcome, 0.0)
+                print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} (no entry_price, pnl=0)")
             else:
-                lot_size = 0.1
-            simulated_pnl = raw_pnl * lot_size * value_per_point
-            resolve_paper_trade(trade["id"], outcome, round(simulated_pnl, 4))
-            print(
-                f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} "
-                f"raw={raw_pnl:.4f} lot={lot_size:.4f} pnl=${simulated_pnl:.2f}"
-            )
+                value_per_point = _EPIC_VALUE_PER_POINT.get(symbol, 1.0)
+                sl_distance = abs(entry - sl)
+                if sl_distance > 0:
+                    lot_size = 15.0 / (sl_distance * value_per_point)
+                    lot_size = max(0.1, min(10.0, lot_size))
+                else:
+                    lot_size = 0.1
+                simulated_pnl = raw_pnl * lot_size * value_per_point
+                resolve_paper_trade(trade["id"], outcome, round(simulated_pnl, 4))
+                print(
+                    f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} "
+                    f"raw={raw_pnl:.4f} lot={lot_size:.4f} pnl=${simulated_pnl:.2f}"
+                )
         else:
             print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} still PENDING")
 
@@ -382,10 +384,18 @@ def _loop() -> None:
         if _should_weekend_close():
             _weekend_close_positions()
 
+        vix_blocked = should_block_swing_entry()
+
         for symbol in SYMBOLS:
             for active in get_active_strategies(symbol=symbol):
-                timeframe = active.get("timeframe", "HOUR")
+                timeframe     = active.get("timeframe", "HOUR")
+                strategy_name = active.get("strategy_name", "")
+                strategy_type = active.get("strategy_type", "swing")
+                is_paper      = _is_paper_trade(symbol, timeframe) or active.get("status") == "paper"
                 if not _is_due(symbol, timeframe):
+                    continue
+                if strategy_type == "swing" and not is_paper and vix_blocked:
+                    print(f"[signal_loop] VIX elevated — skipping {symbol} {strategy_name} entry")
                     continue
                 try:
                     _check_symbol(symbol, active)

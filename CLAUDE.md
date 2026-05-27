@@ -25,6 +25,14 @@ bot/live_signal_loop.py     ✅ Unified signal loop (HOUR + 5MIN)
                             Paper trade resolver runs each cycle
 risk_manager.py             Lot size ($15 USD fixed risk)
 filters/rule_filters.py     Trend filter (disabled)
+filters/vix_filter.py       VIX filter — blocks swing entries >= 18
+                            Fails open (API error → allow)
+                            Called once per signal_loop cycle
+filters/webhook_filters.py  Session / spread / macro filters
+                            should_block_session() — UTC window per symbol
+                            should_block_spread() — 2× normal spread
+                            should_block_macro_event() — MACRO_EVENTS list
+                            Update MACRO_EVENTS every Sunday
 data/positions_poller.py    ✅ Polls IG every 30s, close detect
                             ✅ Column names fixed (dealId not position.dealId)
                             ✅ _verify_closed_on_ig() before any close
@@ -112,24 +120,40 @@ Session: auto-refresh every 10min, full recreate on 401
 | US500  | IX.D.SPTRD.IFMM.IP     | ^GSPC    | 1           |
 | US100  | IX.D.NASDAQ.IFMM.IP    | ^NDX     | 1           |
 | DAX    | IX.D.DAX.IFMS.IP       | ^GDAXI   | 1           |
+| EURUSD | CS.D.EURUSD.MINI.IP | EURUSD=X | 10000 | $1/pip, 10k contract |
 
 ## Paper Trade Symbols (.env)
-PAPER_TRADE_SYMBOLS=DAX,US100_5MIN,BTC
-- DAX HOUR — rsi, forward testing before going live
-- US100 5MIN — stoch_rsi, day trade forward test
-- BTC HOUR — vwap_ema, deactivated from live due to margin
+PAPER_TRADE_SYMBOLS=DAX,BTC
+(US100_5MIN removed — stoch_rsi deactivated)
 
 ## Active Strategies
-| Symbol | TF   | Strategy   | Mode  | Score |
-|--------|------|------------|-------|-------|
-| US500  | HOUR | stoch_rsi  | Live  | 0.867 |
-| US100  | HOUR | stoch_rsi  | Live  | 0.835 |
-| DAX    | HOUR | rsi        | Paper | 0.663 |
-| US100  | 5MIN | stoch_rsi  | Paper | 0.926 |
-| BTC    | HOUR | vwap_ema   | Paper | 0.654 |
-| US500  | HOUR | williams_r | Paper | —     |
-| DAX    | HOUR | williams_r | Paper | —     |
-| DAX    | HOUR | macd_rsi   | Paper | —     |
+| Symbol | TF   | Strategy   | Mode     | Score  | Source   |
+|--------|------|------------|----------|--------|----------|
+| US500  | HOUR | stoch_rsi  | Live     | 0.867  | loop     |
+| US500  | HOUR | williams_r | Paper    | 0.333  | loop     |
+| DAX    | HOUR | williams_r | Paper    | 0.326  | loop     |
+| EURUSD | HOUR | swiftalgo  | Paper    | —      | webhook  |
+
+## Deactivated Strategies (2026-05-27)
+| Symbol | TF   | Strategy        | Reason                                   |
+|--------|------|-----------------|------------------------------------------|
+| US100  | HOUR | stoch_rsi       | 0% live win rate (6 trades)              |
+| US100  | 5MIN | stoch_rsi       | 18.5% paper win rate (27 trades)         |
+| US100  | HOUR | swiftalgo       | 43.5% WR, avg win ≈ avg loss             |
+| DAX    | HOUR | macd_rsi        | 0% backtest win rate                     |
+| DAX    | HOUR | rsi             | 9.1% win rate                            |
+| BTC    | HOUR | rsi_divergence  | 0/5 since activation, noisy in range     |
+| BTC    | HOUR | vwap_ema        | Already inactive (margin issues)         |
+
+BTC note: Two consecutive failed strategies. No BTC strategies until a
+crypto-specific volatility approach is designed and backtested.
+
+## Paper Promotion Criteria
+Minimum before promoting paper → live:
+- 30+ resolved trades
+- >52% win rate
+- Positive simulated P&L
+- Losses not correlated with US500 stoch_rsi losses
 
 ## Signal Sources
 | Source              | What it is                        |
@@ -147,6 +171,38 @@ PAPER_TRADE_SYMBOLS=DAX,US100_5MIN,BTC
 }
 strategy_name hardcoded to "swiftalgo" in receiver.py
 source hardcoded to "tradingview_webhook" in receiver.py
+
+## VIX Filter (swing strategies, live only)
+Threshold: VIX >= 22 → block | VIX >= 18 → caution, also block
+Fails open: API error or fetch failure → allow entry
+Applied once per signal_loop cycle (not per symbol)
+Paper trades always fire regardless of VIX — for filter evaluation
+File: filters/vix_filter.py
+
+## SwiftAlgo Webhook Filters (all symbols)
+Applied in order before any trade execution:
+1. Market close block (_is_blocked)
+2. Daily loss limit
+3. Session filter: symbol-specific UTC windows (webhook_filters.py SESSION_WINDOWS)
+4. Macro event filter: MACRO_EVENTS list — update every Sunday
+5. Spread filter: blocks if current_spread > 2× NORMAL_SPREADS[symbol]
+6. Swiftalgo routing: checks active_strategy status for symbol+swiftalgo
+   status=inactive → blocked | status=paper → logged to paper_trades
+   No active_strategy row → falls through to place_trade_from_alert (live)
+EURUSD paper entry_price: midpoint of SL+TP (approximation, P&L rough)
+
+## Supported Assets (Live)
+| Symbol | Epic                   | yfinance | Value/Point |
+|--------|------------------------|----------|-------------|
+| US500  | IX.D.SPTRD.IFMM.IP     | ^GSPC    | 1           |
+| US100  | IX.D.NASDAQ.IFMM.IP    | ^NDX     | 1           |
+| DAX    | IX.D.DAX.IFMS.IP       | ^GDAXI   | 1           |
+
+## Supported Assets (Paper only)
+| Symbol | Epic                   | yfinance | Value/Point | Notes              |
+|--------|------------------------|----------|-------------|--------------------|
+| EURUSD | CS.D.EURUSD.MINI.IP    | EURUSD=X | 10000       | $1/pip, 10k contract|
+| BTC    | —                      | BTC-USD  | 0.1         | Inactive           |
 
 ## Risk Management
 lot_size = 15 / (sl_distance × value_per_point)

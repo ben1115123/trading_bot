@@ -404,6 +404,22 @@ def get_active_strategy_history(limit: int = 10) -> list:
         conn.close()
 
 
+def get_webhook_strategy(symbol: str, strategy_name: str) -> dict | None:
+    """Return active_strategy row for symbol+strategy_name regardless of status."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM active_strategy
+            WHERE symbol = ? AND strategy_name = ?
+            LIMIT 1
+        """, (symbol, strategy_name))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def log_signal_check(data: dict) -> None:
     conn = get_connection()
     try:
