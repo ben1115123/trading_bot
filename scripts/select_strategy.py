@@ -11,6 +11,13 @@ from scripts.score_strategies import score_strategies
 
 SYMBOLS = ["BTC", "US100", "US500"]
 
+STRATEGY_BLOCKLIST = {
+    ("US100", "HOUR", "stoch_rsi"),      # 0% live win rate
+    ("US100", "5MIN", "stoch_rsi"),      # 18.5% paper win rate (27 trades)
+    ("BTC",   "HOUR", "rsi_divergence"), # 0/5 since activation
+    ("BTC",   "HOUR", "vwap_ema"),       # already dead
+}
+
 SEED_STRATEGIES = {
     "US100": {
         "strategy_name": "stoch_rsi", "timeframe": "HOUR", "strategy_type": "swing",
@@ -33,6 +40,16 @@ SEED_STRATEGIES = {
 def _select_for_symbol(symbol: str, candidates: list, dry_run: bool) -> dict | None:
     # TODO: enable 5MIN when signal loop handles multiple timeframes
     sym_candidates = [c for c in candidates if c["symbol"] == symbol and c.get("timeframe") == "HOUR"]
+
+    allowed = []
+    for c in sym_candidates:
+        key = (symbol, c.get("timeframe", "HOUR"), c["strategy_name"])
+        if key in STRATEGY_BLOCKLIST:
+            print(f"[select] {symbol} {c['strategy_name']} blocklisted — skipping promotion")
+        else:
+            allowed.append(c)
+    sym_candidates = allowed
+
     if not sym_candidates:
         print(f"[{symbol}] No eligible strategies found.")
         return None

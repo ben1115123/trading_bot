@@ -66,6 +66,8 @@ scripts/run_backtest.py     ✅ CLI backtest runner
 scripts/run_daily.py        ✅ Morning orchestrator (6am UTC cron)
 scripts/score_strategies.py ✅ Score all backtest_results
 scripts/select_strategy.py  ✅ Select best per symbol+timeframe
+                            ✅ STRATEGY_BLOCKLIST — cron cannot promote
+                               blocklisted strategies to live/paper
 scripts/sync_ig_trades.py   ✅ IG trade sync, self-contained session
                             ✅ Duplicate prevention via deal_reference
                             ✅ Price+symbol+date secondary check
@@ -147,6 +149,10 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 
 BTC note: Two consecutive failed strategies. No BTC strategies until a
 crypto-specific volatility approach is designed and backtested.
+
+STRATEGY_BLOCKLIST in scripts/select_strategy.py prevents daily cron from
+re-promoting any of the above. To unblock: remove the tuple from the set
+AND manually verify live performance warrants re-testing.
 
 ## Paper Promotion Criteria
 Minimum before promoting paper → live:
