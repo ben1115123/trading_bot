@@ -12,6 +12,7 @@ from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
 from database.models import get_active_strategies, log_signal_check, log_paper_trade, \
     get_pending_paper_trades, resolve_paper_trade
 from filters.vix_filter import should_block_swing_entry
+from risk_manager import get_risk_per_trade
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC"]
 
@@ -359,7 +360,7 @@ def _resolve_pending_paper_trades() -> None:
                 value_per_point = _EPIC_VALUE_PER_POINT.get(symbol, 1.0)
                 sl_distance = abs(entry - sl)
                 if sl_distance > 0:
-                    lot_size = 15.0 / (sl_distance * value_per_point)
+                    lot_size = get_risk_per_trade(symbol) / (sl_distance * value_per_point)
                     lot_size = max(0.1, min(10.0, lot_size))
                 else:
                     lot_size = 0.1

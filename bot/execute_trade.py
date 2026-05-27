@@ -75,10 +75,11 @@ recreate_session()
 # Asset configuration
 # -------------------------
 EPIC_CONFIG = {
-    "US500": {"epic": "IX.D.SPTRD.IFMM.IP", "value_per_point": 1},
-    "US100": {"epic": "IX.D.NASDAQ.IFMM.IP", "value_per_point": 1},
-    "BTC":   {"epic": "CS.D.BITCOIN.CFBMU.IP", "value_per_point": 0.1},
-    "DAX":   {"epic": "IX.D.DAX.IFMS.IP",      "value_per_point": 1},
+    "US500":  {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
+    "US100":  {"epic": "IX.D.NASDAQ.IFMM.IP",    "value_per_point": 1},
+    "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
+    "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
+    "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
 }
 
 # -------------------------
@@ -221,7 +222,7 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
 
         print(f"Entry Price: {entry_price}")
 
-        size = calculate_position_size(entry_price, sl, value_per_point)
+        size = calculate_position_size(entry_price, sl, value_per_point, symbol=symbol)
 
         if size is None:
             print("Position sizing failed — aborting")

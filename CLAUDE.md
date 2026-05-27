@@ -129,12 +129,12 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 (US100_5MIN removed — stoch_rsi deactivated)
 
 ## Active Strategies
-| Symbol | TF   | Strategy   | Mode     | Score  | Source   |
-|--------|------|------------|----------|--------|----------|
-| US500  | HOUR | stoch_rsi  | Live     | 0.867  | loop     |
-| US500  | HOUR | williams_r | Paper    | 0.333  | loop     |
-| DAX    | HOUR | williams_r | Paper    | 0.326  | loop     |
-| EURUSD | HOUR | swiftalgo  | Paper    | —      | webhook  |
+| Symbol | TF   | Strategy   | Mode | Score | Source  | Notes                          |
+|--------|------|------------|------|-------|---------|--------------------------------|
+| US500  | HOUR | stoch_rsi  | Live | 0.867 | loop    |                                |
+| EURUSD | HOUR | swiftalgo  | Live | —     | webhook | Promoted 2026-05-27, $10 risk  |
+| US500  | HOUR | williams_r | Paper| 0.333 | loop    |                                |
+| DAX    | HOUR | williams_r | Paper| 0.326 | loop    |                                |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -211,8 +211,16 @@ EURUSD paper entry_price: midpoint of SL+TP (approximation, P&L rough)
 | BTC    | —                      | BTC-USD  | 0.1         | Inactive           |
 
 ## Risk Management
-lot_size = 15 / (sl_distance × value_per_point)
+lot_size = get_risk_per_trade(symbol) / (sl_distance × value_per_point)
 Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
+
+### Per-Symbol Risk Overrides (risk_manager.py RISK_PER_TRADE_OVERRIDE)
+| Symbol | Risk/Trade | Reason                        |
+|--------|------------|-------------------------------|
+| EURUSD | $10        | Reduced until live edge proven |
+| All    | $15        | Default                       |
+
+Revert EURUSD to paper if 3 consecutive losses occur.
 
 ### Daily Loss Limits
 | Source              | Limit | Behaviour when hit        |

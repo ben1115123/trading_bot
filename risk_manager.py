@@ -1,10 +1,20 @@
 # risk_manager.py
 
-RISK_PER_TRADE = 15  # USD per trade
+RISK_PER_TRADE = 15  # USD per trade default
+
+RISK_PER_TRADE_OVERRIDE = {
+    "EURUSD": 10.0,  # reduced until edge proven
+}
+
+
+def get_risk_per_trade(symbol: str) -> float:
+    return RISK_PER_TRADE_OVERRIDE.get(symbol.upper(), float(RISK_PER_TRADE))
+
+
 MIN_LOT_SIZE = 0.1
 MAX_LOT_SIZE = 10
 
-def calculate_position_size(entry_price, sl_price, value_per_point):
+def calculate_position_size(entry_price, sl_price, value_per_point, symbol: str = ""):
     """
     Calculate lot size based on entry price, stop loss, and value per point
     """
@@ -16,7 +26,7 @@ def calculate_position_size(entry_price, sl_price, value_per_point):
             return None
 
         # Lot size formula
-        size = RISK_PER_TRADE / (sl_distance * value_per_point)
+        size = get_risk_per_trade(symbol) / (sl_distance * value_per_point)
         size = round(size, 2)
 
         # Enforce minimum/maximum lot size
