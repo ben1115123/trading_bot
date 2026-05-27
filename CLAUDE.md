@@ -458,6 +458,17 @@ PHASE 9 — Online Learning / Strategy Auto-Generation
   9B: Strategy generation — test new indicator combinations
       automatically, promote winners to live
 
+## Phase 9 Strategy Candidates
+
+### FVG (Fair Value Gap) — SMC concept
+- Most automatable SMC technique
+- Bullish FVG: gap between candle[i-2].high and candle[i].low
+- Bearish FVG: gap between candle[i-2].low and candle[i].high
+- Entry on retracement back into the gap
+- Genuinely uncorrelated to all existing strategies
+- Target: paper trade on US500 HOUR
+- Build when system stable after 2026-05-27 changes
+
 ---
 
 ## Critical Rules for Claude Code
