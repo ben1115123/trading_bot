@@ -22,6 +22,7 @@ INSTRUMENT_TO_SYMBOL = {
     "Bitcoin ($0.1)":        "BTC",
     "Spot Gold ($1)":        "XAUUSD",
     "Germany 40 Cash (£1)":  "DAX",
+    "EUR/USD Mini":          "EURUSD",  # CS.D.EURUSD.MINI.IP — verify name on first live trade
 }
 
 
