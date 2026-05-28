@@ -12,8 +12,8 @@ NORMAL_SPREADS = {
 
 # Active session windows in UTC (start_hour, end_hour)
 SESSION_WINDOWS = {
-    "EURUSD": (7, 16),   # London + NY overlap
-    "US500":  (13, 21),  # US session
+    "EURUSD": (6, 21),   # London pre-market through NY close
+    "US500":  (7, 21),   # London open through US close
     "DAX":    (7, 16),   # European session
 }
 
@@ -36,7 +36,7 @@ def should_block_session(symbol: str) -> bool:
     hour_utc = datetime.now(timezone.utc).hour
     start, end = window
     if not (start <= hour_utc < end):
-        logger.info(
+        logger.warning(
             f"[WEBHOOK_FILTER] {symbol} outside session ({start}-{end} UTC) — skipping"
         )
         return True

@@ -24,9 +24,9 @@ SYMBOL_ALIASES = {
 }
 
 
-def parse_float(val):
+def safe_float(val):
     try:
-        if val is None or str(val).lower() == "null":
+        if val is None or str(val).strip() in ("null", "None", ""):
             return None
         return float(val)
     except (ValueError, TypeError):
@@ -56,8 +56,15 @@ async def webhook_endpoint(request: Request):
         symbol = SYMBOL_ALIASES.get(symbol, symbol)
         data["symbol"] = symbol
 
+        direction = (
+            "BUY"  if str(data.get("buy_signal",  "0")) == "1" else
+            "SELL" if str(data.get("sell_signal", "0")) == "1" else
+            "NONE"
+        )
+        print(f"[WEBHOOK] {symbol} {direction} at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
         for key in ("long_sl", "long_tp", "short_sl", "short_tp"):
-            data[key] = parse_float(data.get(key))
+            data[key] = safe_float(data.get(key))
 
         # --- market close block ---
         from bot.live_signal_loop import _is_blocked
@@ -73,14 +80,14 @@ async def webhook_endpoint(request: Request):
 
         # --- webhook filters ---
         if should_block_session(symbol):
-            logger.info(f"[webhook] {symbol} filtered: outside_session")
+            logger.warning(f"[webhook] {symbol} filtered: outside_session")
             return {"status": "filtered", "reason": "outside_session", "symbol": symbol}
 
         if should_block_macro_event():
             logger.warning(f"[webhook] {symbol} filtered: macro_event_window")
             return {"status": "filtered", "reason": "macro_event_window", "symbol": symbol}
 
-        current_spread = parse_float(data.get("spread"))
+        current_spread = safe_float(data.get("spread"))
         if should_block_spread(symbol, current_spread):
             logger.warning(f"[webhook] {symbol} filtered: spread_too_wide")
             return {"status": "filtered", "reason": "spread_too_wide", "symbol": symbol}
