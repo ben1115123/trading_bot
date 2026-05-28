@@ -12,11 +12,23 @@ from scripts.score_strategies import score_strategies
 SYMBOLS = ["BTC", "US100", "US500"]
 
 STRATEGY_BLOCKLIST = {
-    ("US100", "HOUR", "stoch_rsi"),      # 0% live win rate
-    ("US100", "5MIN", "stoch_rsi"),      # 18.5% paper win rate (27 trades)
-    ("BTC",   "HOUR", "rsi_divergence"), # 0/5 since activation
-    ("BTC",   "HOUR", "vwap_ema"),       # already dead
+    # US100 — no live edge demonstrated across any strategy
+    ("US100", "HOUR", "stoch_rsi"),
+    ("US100", "HOUR", "rsi"),
+    ("US100", "HOUR", "williams_r"),
+    ("US100", "HOUR", "macd_rsi"),
+    ("US100", "5MIN", "stoch_rsi"),
+    # BTC — two consecutive strategy failures; block all until redesign
+    ("BTC",   "HOUR", "stoch_rsi"),
+    ("BTC",   "HOUR", "rsi_divergence"),
+    ("BTC",   "HOUR", "vwap_ema"),
+    ("BTC",   "HOUR", "rsi"),
+    ("BTC",   "HOUR", "williams_r"),
+    ("BTC",   "HOUR", "macd_rsi"),
 }
+
+# Symbols blocked entirely — cron will not promote any strategy
+SYMBOL_BLOCKLIST = {"BTC"}
 
 SEED_STRATEGIES = {
     "US100": {
@@ -98,6 +110,10 @@ def select_strategy(dry_run: bool = False) -> dict:
     candidates = score_strategies()
     results = {}
     for symbol in SYMBOLS:
+        if symbol in SYMBOL_BLOCKLIST:
+            print(f"[SELECT] {symbol} is symbol-blocklisted — skipping all promotions")
+            results[symbol] = None
+            continue
         results[symbol] = _select_for_symbol(symbol, candidates, dry_run)
     return results
 
