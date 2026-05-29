@@ -23,7 +23,7 @@ MARKET_CLOSE = {
     "BTC":   None,
 }
 
-TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "HOUR": 3600, "DAY": 86400}
+TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "15MIN": 900, "HOUR": 3600, "DAY": 86400}
 
 _raw_paper    = os.getenv("PAPER_TRADE_SYMBOLS", "")
 PAPER_SYMBOLS: set[str] = {s.strip() for s in _raw_paper.split(",") if s.strip()}

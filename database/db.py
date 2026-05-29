@@ -285,6 +285,22 @@ def init_db():
         )
     """)
 
+    # Create webhook_log table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS webhook_log (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp      TEXT NOT NULL,
+            symbol         TEXT NOT NULL,
+            direction      TEXT NOT NULL,
+            strategy_name  TEXT,
+            raw_payload    TEXT,
+            result         TEXT NOT NULL,
+            block_reason   TEXT,
+            deal_reference TEXT,
+            notes          TEXT
+        )
+    """)
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

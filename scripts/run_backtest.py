@@ -20,8 +20,8 @@ CACHE_DIR = Path(__file__).resolve().parent / "candle_cache"
 CACHE_MAX_AGE_SECONDS = 86400  # 24 hours
 
 YF_SYMBOLS   = {"US500": "^GSPC", "US100": "^NDX", "BTC": "BTC-USD", "DAX": "^GDAXI", "EURUSD": "EURUSD=X"}
-YF_INTERVALS = {"5MIN": "5m", "HOUR": "1h", "DAY": "1d"}
-YF_PERIODS   = {"5m": "60d", "1h": "730d", "1d": "5y"}
+YF_INTERVALS = {"5MIN": "5m", "15MIN": "15m", "HOUR": "1h", "DAY": "1d"}
+YF_PERIODS   = {"5m": "60d", "15m": "60d", "1h": "730d", "1d": "5y"}
 
 
 def _fetch_yfinance_candles(symbol: str, timeframe: str, count: int) -> list:
@@ -102,6 +102,7 @@ from backend.strategies.vwap_mean_reversion import VWAPMeanReversionStrategy
 from backend.strategies.connors_rsi2 import ConnorsRSI2Strategy
 from backend.strategies.williams_r import WilliamsRStrategy
 from backend.strategies.macd_rsi import MACDRSIStrategy
+from backend.strategies.fvg import FVGStrategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
@@ -120,6 +121,7 @@ STRATEGIES = {
     "connors_rsi2":         ConnorsRSI2Strategy,
     "williams_r":           WilliamsRStrategy,
     "macd_rsi":             MACDRSIStrategy,
+    "fvg":                  FVGStrategy,
 }
 
 PARAM_GRIDS = {
@@ -202,6 +204,11 @@ PARAM_GRIDS = {
         "signal":     [7, 9],
         "rsi_period": [14],
         "ema_period": [50, 100],
+    },
+    "fvg": {
+        "atr_period":     [10, 14, 21],
+        "min_gap_atr":    [0.2, 0.3, 0.5],
+        "expiry_candles": [5, 10, 15],
     },
 }
 

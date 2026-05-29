@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from database.db import get_connection
 
 
@@ -576,5 +576,68 @@ def resolve_paper_trade(trade_id: int, outcome: str, pnl: float) -> None:
             WHERE id = ?
         """, (outcome, pnl, trade_id))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def log_webhook_alert(data: dict) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO webhook_log
+                (timestamp, symbol, direction, strategy_name, raw_payload,
+                 result, block_reason, deal_reference, notes)
+            VALUES
+                (:timestamp, :symbol, :direction, :strategy_name, :raw_payload,
+                 :result, :block_reason, :deal_reference, :notes)
+        """, {
+            "timestamp":     data.get("timestamp", datetime.now(timezone.utc).isoformat()),
+            "symbol":        data.get("symbol", "unknown"),
+            "direction":     data.get("direction", "unknown"),
+            "strategy_name": data.get("strategy_name"),
+            "raw_payload":   data.get("raw_payload"),
+            "result":        data.get("result", "BLOCKED"),
+            "block_reason":  data.get("block_reason"),
+            "deal_reference": data.get("deal_reference"),
+            "notes":         data.get("notes"),
+        })
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_webhook_log(limit: int = 200) -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM webhook_log ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_webhook_filter_stats(days: int = 7) -> list:
+    """Counts per outcome/block_reason for the last N days. EXECUTED and PAPER appear as their own reasons."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor.execute("""
+            SELECT
+                COALESCE(
+                    CASE WHEN result IN ('EXECUTED', 'PAPER') THEN result ELSE block_reason END,
+                    result
+                ) AS reason,
+                COUNT(*) AS count
+            FROM webhook_log
+            WHERE timestamp >= ?
+            GROUP BY reason
+            ORDER BY count DESC
+        """, (cutoff,))
+        return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
