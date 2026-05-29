@@ -135,6 +135,7 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | EURUSD | HOUR | swiftalgo  | Live | —     | webhook | Promoted 2026-05-27, $10 risk  |
 | US500  | HOUR | williams_r | Paper| 0.333 | loop    |                                |
 | DAX    | HOUR | williams_r | Paper| 0.326 | loop    |                                |
+| US500  | 15MIN| fvg        | Paper| —     | loop    | SMC FVG POC, activated 2026-05-29 |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -311,6 +312,17 @@ Baseline backtest (default params, 5000 HOUR candles, test window 1000):
 - DAX   HOUR williams_r: 47 trades, 59.6% win rate, $419 profit
 - DAX   HOUR macd_rsi:   10 trades, 10.0% win rate, -$865 loss
   ⚠️  macd_rsi DAX baseline weak — paper trading to observe live behaviour
+
+### FVG Strategy (added 2026-05-29)
+| Symbol | TF    | Strategy | Rationale                                         |
+|--------|-------|----------|---------------------------------------------------|
+| US500  | 15MIN | fvg      | SMC Fair Value Gap POC, London/NY sessions only   |
+
+fvg params: atr_period=10, min_gap_atr=0.5, expiry_candles=15
+Entry: close retraces into 3-candle gap zone (confirmation close)
+Session filter: London 07:00-09:59 UTC, NY 13:00-15:59 UTC
+FVG expiry: 15 candles without retracement
+Min gap size: 0.5x ATR10
 
 ## IG Sync (sync_ig_trades.py)
 - Self-contained IG session (does not import execute_trade.py)
