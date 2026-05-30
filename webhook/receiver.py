@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request
 
 from bot.execute_trade import place_trade_from_alert
 from filters.webhook_filters import (
+    should_block_day_of_week,
     should_block_macro_event,
     should_block_session,
     should_block_spread,
@@ -110,6 +111,12 @@ async def webhook_endpoint(request: Request):
             print(f"[webhook] Daily loss limit hit (limit ${DAILY_LOSS_LIMIT_USD}) — blocking")
             _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "daily_loss_limit")
             return {"status": "blocked", "reason": "daily_loss_limit"}
+
+        # --- day-of-week filter ---
+        if should_block_day_of_week(symbol):
+            _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "day_of_week",
+                    notes=f"Monday block — {symbol} historically poor on Mondays (33% WR US500, 8% WR US100)")
+            return {"status": "blocked", "reason": "day_of_week"}
 
         # --- webhook filters ---
         if should_block_session(symbol):

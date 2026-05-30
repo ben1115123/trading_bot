@@ -56,6 +56,24 @@ def should_block_spread(symbol: str, current_spread: float | None) -> bool:
     return False
 
 
+def should_block_day_of_week(symbol: str) -> bool:
+    """Block trades on historically poor performing days per symbol."""
+    DAY_BLOCKS = {
+        "US500": [0, 1],   # Monday=0, Tuesday=1 — Monday confirmed, Tuesday watching
+        # "US100": [0],    # Monday — add when US100 reactivated
+    }
+    blocked_days = DAY_BLOCKS.get(symbol.upper(), [])
+    if not blocked_days:
+        return False
+    day = datetime.now(timezone.utc).weekday()  # Monday=0, Sunday=6
+    if day in blocked_days:
+        logger.warning(
+            f"[WEBHOOK_FILTER] {symbol} blocked on day {day} (Mon=0) — day-of-week filter"
+        )
+        return True
+    return False
+
+
 def should_block_macro_event() -> bool:
     """Block within MACRO_BLOCK_MINUTES of any known event."""
     now = datetime.now(timezone.utc)
