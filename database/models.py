@@ -55,6 +55,11 @@ def log_trade(trade_data: dict) -> int:
     if 'pnl' not in data:
         data['pnl'] = None
 
+    for col in ('spread', 'vix_level', 'ema200_daily', 'price_vs_ema200',
+                'atr_at_entry', 'day_of_week', 'session'):
+        if col not in data:
+            data[col] = None
+
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -62,10 +67,14 @@ def log_trade(trade_data: dict) -> int:
         cursor.execute("""
             INSERT INTO trades
             (timestamp, symbol, direction, size, entry_price, sl, tp,
-             deal_id, deal_reference, pnl, source, strategy_name, status)
+             deal_id, deal_reference, pnl, source, strategy_name, status,
+             spread, vix_level, ema200_daily, price_vs_ema200,
+             atr_at_entry, day_of_week, session)
             VALUES
             (:timestamp, :symbol, :direction, :size, :entry_price, :sl, :tp,
-             :deal_id, :deal_reference, :pnl, :source, :strategy_name, :status)
+             :deal_id, :deal_reference, :pnl, :source, :strategy_name, :status,
+             :spread, :vix_level, :ema200_daily, :price_vs_ema200,
+             :atr_at_entry, :day_of_week, :session)
         """, data)
 
         conn.commit()
@@ -618,6 +627,145 @@ def get_webhook_log(limit: int = 200) -> list:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def update_trade_context(symbol: str, source: str, context: dict) -> None:
+    """Update context columns on the most recently inserted trade for symbol+source."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE trades SET
+                spread          = :spread,
+                vix_level       = :vix_level,
+                ema200_daily    = :ema200_daily,
+                price_vs_ema200 = :price_vs_ema200,
+                atr_at_entry    = :atr_at_entry,
+                day_of_week     = :day_of_week,
+                session         = :session
+            WHERE id = (
+                SELECT id FROM trades
+                WHERE symbol = :symbol AND source = :source AND status = 'OPEN'
+                ORDER BY id DESC LIMIT 1
+            )
+        """, {
+            "symbol":          symbol,
+            "source":          source,
+            "spread":          context.get("spread"),
+            "vix_level":       context.get("vix_level"),
+            "ema200_daily":    context.get("ema200_daily"),
+            "price_vs_ema200": context.get("price_vs_ema200"),
+            "atr_at_entry":    context.get("atr_at_entry"),
+            "day_of_week":     context.get("day_of_week"),
+            "session":         context.get("session"),
+        })
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def get_trade_context_stats(symbol: str = None, source: str = None, days: int = 90) -> dict:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    conds  = ["pnl IS NOT NULL", "status = 'CLOSED'", "timestamp >= ?"]
+    params: list = [cutoff]
+    if symbol:
+        conds.append("symbol = ?")
+        params.append(symbol)
+    if source:
+        if source == "live_signal_loop":
+            conds.append("source IN ('signal_loop', 'live_signal_loop')")
+        else:
+            conds.append("source = ?")
+            params.append(source)
+    where = " AND ".join(conds)
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        cur.execute(f"""
+            SELECT session,
+                   COUNT(*) as trades,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+                   ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
+                   ROUND(SUM(pnl), 2) as total_pnl,
+                   ROUND(AVG(pnl), 2) as avg_pnl
+            FROM trades WHERE {where} AND session IS NOT NULL
+            GROUP BY session
+        """, params)
+        session_stats = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT day_of_week,
+                   COUNT(*) as trades,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+                   ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
+                   ROUND(SUM(pnl), 2) as total_pnl,
+                   ROUND(AVG(pnl), 2) as avg_pnl
+            FROM trades WHERE {where} AND day_of_week IS NOT NULL
+            GROUP BY day_of_week ORDER BY day_of_week
+        """, params)
+        dow_stats = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT price_vs_ema200, direction,
+                   COUNT(*) as trades,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                   ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
+                   ROUND(SUM(pnl), 2) as total_pnl
+            FROM trades WHERE {where} AND price_vs_ema200 IS NOT NULL
+            GROUP BY price_vs_ema200, direction ORDER BY price_vs_ema200, direction
+        """, params)
+        ema200_stats = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT
+                CASE
+                    WHEN vix_level < 15 THEN 'Low (<15)'
+                    WHEN vix_level < 20 THEN 'Normal (15-20)'
+                    WHEN vix_level < 25 THEN 'Elevated (20-25)'
+                    ELSE 'High (>25)'
+                END as vix_bucket,
+                COUNT(*) as trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
+                ROUND(SUM(pnl), 2) as total_pnl,
+                ROUND(MIN(vix_level), 1) as vix_min
+            FROM trades WHERE {where} AND vix_level IS NOT NULL
+            GROUP BY vix_bucket ORDER BY vix_min
+        """, params)
+        vix_stats = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT symbol, ROUND(AVG(spread), 5) as avg_spread, COUNT(*) as n
+            FROM trades WHERE {where} AND spread IS NOT NULL
+            GROUP BY symbol ORDER BY symbol
+        """, params)
+        spread_stats = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT atr_at_entry, pnl
+            FROM trades WHERE {where} AND atr_at_entry IS NOT NULL
+            ORDER BY atr_at_entry
+        """, params)
+        atr_raw = [dict(r) for r in cur.fetchall()]
+
+    finally:
+        conn.close()
+
+    return {
+        "session_stats": session_stats,
+        "dow_stats":     dow_stats,
+        "ema200_stats":  ema200_stats,
+        "vix_stats":     vix_stats,
+        "spread_stats":  spread_stats,
+        "atr_raw":       atr_raw,
+    }
 
 
 def get_webhook_filter_stats(days: int = 7) -> list:

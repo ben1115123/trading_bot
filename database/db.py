@@ -132,6 +132,21 @@ def init_db():
         except Exception:
             pass
 
+    # Migrate trades table: add market context columns
+    for stmt in [
+        "ALTER TABLE trades ADD COLUMN spread REAL",
+        "ALTER TABLE trades ADD COLUMN vix_level REAL",
+        "ALTER TABLE trades ADD COLUMN ema200_daily REAL",
+        "ALTER TABLE trades ADD COLUMN price_vs_ema200 TEXT",
+        "ALTER TABLE trades ADD COLUMN atr_at_entry REAL",
+        "ALTER TABLE trades ADD COLUMN day_of_week INTEGER",
+        "ALTER TABLE trades ADD COLUMN session TEXT",
+    ]:
+        try:
+            cursor.execute(stmt)
+        except Exception:
+            pass
+
     # Migrate backtest_results: add Phase 3 columns for existing DBs
     for col, defn in [
         ("candles_total",    "INTEGER"),

@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
 from database.models import get_active_strategies, log_signal_check, log_paper_trade, \
-    get_pending_paper_trades, resolve_paper_trade
-from filters.vix_filter import should_block_swing_entry
+    get_pending_paper_trades, resolve_paper_trade, update_trade_context
+from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC"]
@@ -33,6 +33,39 @@ MAX_TRADES_PER_SYMBOL = 6      # bug catcher only
 
 _last_signal: dict[str, str] = {}
 _last_checked: dict[str, datetime] = {}
+_ema200_cache: dict = {}  # symbol → (ema200, price_vs_ema200, cached_hour_key)
+
+
+def _get_session(hour: int) -> str:
+    if 7 <= hour <= 8:   return "LONDON_OPEN"
+    if 9 <= hour <= 12:  return "LONDON_MID"
+    if 13 <= hour <= 15: return "NY_OPEN"
+    if 16 <= hour <= 18: return "NY_MID"
+    if 19 <= hour <= 20: return "NY_CLOSE"
+    return "OFF_HOURS"
+
+
+def _get_ema200(symbol: str) -> tuple:
+    """Returns (ema200_daily, price_vs_ema200). Cached per hour per symbol."""
+    hour_key = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+    cached = _ema200_cache.get(symbol)
+    if cached and cached[2] == hour_key:
+        return cached[0], cached[1]
+    try:
+        candles = _fetch_yfinance_candles(symbol, "DAY", 250)
+        if len(candles) < 200:
+            return None, None
+        closes = [c["close"] for c in candles]
+        k = 2 / 201
+        ema = closes[0]
+        for c in closes[1:]:
+            ema = c * k + ema * (1 - k)
+        pve = "ABOVE" if closes[-1] > ema else "BELOW"
+        result = (round(ema, 4), pve)
+        _ema200_cache[symbol] = (result[0], result[1], hour_key)
+        return result
+    except Exception:
+        return None, None
 
 
 def _is_due(symbol: str, timeframe: str) -> bool:
@@ -162,7 +195,7 @@ def _is_paper_trade(symbol: str, timeframe: str) -> bool:
     return symbol in PAPER_SYMBOLS or f"{symbol}_{timeframe}" in PAPER_SYMBOLS
 
 
-def _check_symbol(symbol: str, active: dict) -> None:
+def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> None:
     strategy_name = active["strategy_name"]
     timeframe     = active.get("timeframe", "HOUR")
     params_json   = active.get("params_json") or "{}"
@@ -274,6 +307,23 @@ def _check_symbol(symbol: str, active: dict) -> None:
         print(f"[signal_loop] [{symbol}/{timeframe}] PAPER {signal} logged — not executed")
         return
 
+    # Collect market context at signal time
+    _now_utc = datetime.now(timezone.utc)
+    _ctx: dict = {
+        "vix_level":    vix_level,
+        "atr_at_entry": round(sl_dist, 4),
+        "day_of_week":  _now_utc.weekday(),
+        "session":      _get_session(_now_utc.hour),
+        "spread":       None,
+    }
+    try:
+        _ema, _pve = _get_ema200(symbol)
+        _ctx["ema200_daily"]    = _ema
+        _ctx["price_vs_ema200"] = _pve
+    except Exception:
+        _ctx["ema200_daily"]    = None
+        _ctx["price_vs_ema200"] = None
+
     from bot.execute_trade import place_trade
     try:
         result = place_trade(
@@ -286,6 +336,11 @@ def _check_symbol(symbol: str, active: dict) -> None:
         if not result:
             log_data["error"] = "place_trade returned False"
         print(f"[signal_loop] [{symbol}] trade placed={placed}")
+        if placed:
+            try:
+                update_trade_context(symbol, "live_signal_loop", _ctx)
+            except Exception:
+                pass
     except Exception as e:
         log_data["error"] = f"place_trade error: {e}"
         print(f"[signal_loop] [{symbol}] place_trade error: {e}")
@@ -385,7 +440,14 @@ def _loop() -> None:
         if _should_weekend_close():
             _weekend_close_positions()
 
-        vix_blocked = should_block_swing_entry()
+        _vix_level: float | None = None
+        _vix_blocked = False
+        try:
+            _vix_level = get_current_vix()
+            if _vix_level is not None:
+                _vix_blocked = _vix_level >= VIX_CAUTION_THRESHOLD
+        except Exception:
+            _vix_blocked = False
 
         for symbol in SYMBOLS:
             for active in get_active_strategies(symbol=symbol):
@@ -395,11 +457,11 @@ def _loop() -> None:
                 is_paper      = _is_paper_trade(symbol, timeframe) or active.get("status") == "paper"
                 if not _is_due(symbol, timeframe):
                     continue
-                if strategy_type == "swing" and not is_paper and vix_blocked:
+                if strategy_type == "swing" and not is_paper and _vix_blocked:
                     print(f"[signal_loop] VIX elevated — skipping {symbol} {strategy_name} entry")
                     continue
                 try:
-                    _check_symbol(symbol, active)
+                    _check_symbol(symbol, active, vix_level=_vix_level)
                     _last_checked[(symbol, timeframe)] = datetime.now(timezone.utc)
                 except Exception as e:
                     print(f"[signal_loop] [{symbol}/{timeframe}] unhandled error: {e}")

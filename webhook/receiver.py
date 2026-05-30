@@ -11,10 +11,65 @@ from filters.webhook_filters import (
     should_block_session,
     should_block_spread,
 )
-from database.models import get_webhook_strategy, log_paper_trade, log_webhook_alert
+from database.models import get_webhook_strategy, log_paper_trade, log_webhook_alert, update_trade_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_ema200_wh_cache: dict = {}  # symbol → (ema200, price_vs, hour_key)
+
+
+def _get_session(hour: int) -> str:
+    if 7 <= hour <= 8:   return "LONDON_OPEN"
+    if 9 <= hour <= 12:  return "LONDON_MID"
+    if 13 <= hour <= 15: return "NY_OPEN"
+    if 16 <= hour <= 18: return "NY_MID"
+    if 19 <= hour <= 20: return "NY_CLOSE"
+    return "OFF_HOURS"
+
+
+def _ema200_context(symbol: str) -> tuple:
+    """Returns (ema200_daily, price_vs_ema200). Cached per symbol per UTC hour."""
+    hour_key = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+    cached = _ema200_wh_cache.get(symbol)
+    if cached and cached[2] == hour_key:
+        return cached[0], cached[1]
+    try:
+        from scripts.run_backtest import _fetch_yfinance_candles
+        candles = _fetch_yfinance_candles(symbol, "DAY", 250)
+        if len(candles) < 200:
+            return None, None
+        closes = [c["close"] for c in candles]
+        k = 2 / 201
+        ema = closes[0]
+        for c in closes[1:]:
+            ema = c * k + ema * (1 - k)
+        pve = "ABOVE" if closes[-1] > ema else "BELOW"
+        _ema200_wh_cache[symbol] = (round(ema, 4), pve, hour_key)
+        # Evict stale entries
+        for old_sym in [s for s, v in _ema200_wh_cache.items() if v[2] != hour_key]:
+            del _ema200_wh_cache[old_sym]
+        return round(ema, 4), pve
+    except Exception:
+        return None, None
+
+
+def _atr14(symbol: str) -> float | None:
+    """ATR14 from last 60 hourly candles via yfinance."""
+    try:
+        from scripts.run_backtest import _fetch_yfinance_candles
+        candles = _fetch_yfinance_candles(symbol, "HOUR", 60)
+        if len(candles) < 15:
+            return None
+        trs = []
+        for i in range(1, len(candles)):
+            h  = candles[i]["high"]
+            l  = candles[i]["low"]
+            pc = candles[i - 1]["close"]
+            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        return round(sum(trs[-14:]) / 14, 4)
+    except Exception:
+        return None
 
 SYMBOL_ALIASES = {
     "SPX500": "US500",
@@ -181,6 +236,28 @@ async def webhook_endpoint(request: Request):
         deal_ref = result.get("deal_reference") if isinstance(result, dict) else None
         _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "EXECUTED",
                 deal_reference=deal_ref)
+
+        # Persist market context — failures are silent, never block trade
+        try:
+            _now = datetime.now(timezone.utc)
+            _ema, _pve = _ema200_context(symbol)
+            _wh_ctx = {
+                "spread":          current_spread,
+                "vix_level":       None,
+                "ema200_daily":    _ema,
+                "price_vs_ema200": _pve,
+                "atr_at_entry":    _atr14(symbol),
+                "day_of_week":     _now.weekday(),
+                "session":         _get_session(_now.hour),
+            }
+            try:
+                from filters.vix_filter import get_current_vix
+                _wh_ctx["vix_level"] = get_current_vix()
+            except Exception:
+                pass
+            update_trade_context(symbol, "tradingview_webhook", _wh_ctx)
+        except Exception:
+            pass
 
     except Exception as e:
         print("❌ Trade execution error:", e)
