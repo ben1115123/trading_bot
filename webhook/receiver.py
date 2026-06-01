@@ -148,6 +148,7 @@ async def webhook_endpoint(request: Request):
             "SELL" if str(data.get("sell_signal", "0")) == "1" else
             "NONE"
         )
+        strategy_name = data.get("strategy", "swiftalgo")
         print(f"[WEBHOOK] {symbol} {direction} at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
         for key in ("long_sl", "long_tp", "short_sl", "short_tp"):
@@ -157,84 +158,89 @@ async def webhook_endpoint(request: Request):
         from bot.live_signal_loop import _is_blocked
         if _is_blocked(symbol):
             print(f"[webhook] {symbol} blocked — near market close")
-            _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "friday_block")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "friday_block")
             return {"status": "blocked", "reason": "near_market_close"}
 
         # --- daily loss limit ---
         from risk.daily_loss import is_daily_loss_limit_breached, DAILY_LOSS_LIMIT_USD
         if is_daily_loss_limit_breached():
             print(f"[webhook] Daily loss limit hit (limit ${DAILY_LOSS_LIMIT_USD}) — blocking")
-            _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "daily_loss_limit")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "daily_loss_limit")
             return {"status": "blocked", "reason": "daily_loss_limit"}
 
         # --- day-of-week filter ---
         if should_block_day_of_week(symbol):
-            _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "day_of_week",
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "day_of_week",
                     notes=f"Monday block — {symbol} historically poor on Mondays (33% WR US500, 8% WR US100)")
             return {"status": "blocked", "reason": "day_of_week"}
 
         # --- webhook filters ---
         if should_block_session(symbol):
             logger.warning(f"[webhook] {symbol} filtered: outside_session")
-            _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "session_filter")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "session_filter")
             return {"status": "filtered", "reason": "outside_session", "symbol": symbol}
 
         if should_block_macro_event():
             logger.warning(f"[webhook] {symbol} filtered: macro_event_window")
-            _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "macro_event")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "macro_event")
             return {"status": "filtered", "reason": "macro_event_window", "symbol": symbol}
 
         current_spread = safe_float(data.get("spread"))
         if should_block_spread(symbol, current_spread):
             logger.warning(f"[webhook] {symbol} filtered: spread_too_wide")
-            _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "spread_filter")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "spread_filter")
             return {"status": "filtered", "reason": "spread_too_wide", "symbol": symbol}
 
-        # --- swiftalgo routing via active_strategy status ---
-        strategy_row = get_webhook_strategy(symbol, "swiftalgo")
-        if strategy_row:
-            status = strategy_row.get("status", "active")
-            if status == "inactive":
-                print(f"[webhook] {symbol} swiftalgo inactive — blocking")
-                _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED", "strategy_inactive")
-                return {"status": "blocked", "reason": "strategy_inactive", "symbol": symbol}
-            if status == "paper":
-                buy_signal  = str(data.get("buy_signal",  "0")) == "1"
-                sell_signal = str(data.get("sell_signal", "0")) == "1"
-                if buy_signal:
-                    sl          = data.get("long_sl")
-                    tp          = data.get("long_tp")
-                    signal      = "PAPER_BUY"
-                    entry_price = round((sl + tp) / 2, 5) if sl and tp else None
-                elif sell_signal:
-                    sl          = data.get("short_sl")
-                    tp          = data.get("short_tp")
-                    signal      = "PAPER_SELL"
-                    entry_price = round((sl + tp) / 2, 5) if sl and tp else None
-                else:
-                    return {"status": "ok", "note": "no_signal", "symbol": symbol}
-                log_paper_trade({
-                    "checked_at":    datetime.now(timezone.utc).isoformat(),
-                    "symbol":        symbol,
-                    "strategy_name": "swiftalgo",
-                    "timeframe":     "HOUR",
-                    "candle_time":   datetime.now(timezone.utc).isoformat(),
-                    "signal":        signal,
-                    "entry_price":   entry_price,
-                    "sl":            sl,
-                    "tp":            tp,
-                    "outcome":       "PENDING",
-                    "params_json":   "{}",
-                })
-                print(f"[webhook] {symbol} swiftalgo PAPER {signal} logged (entry≈{entry_price})")
-                _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "PAPER",
-                        notes="routed to paper_trades")
-                return {"status": "paper", "symbol": symbol, "signal": signal}
+        # --- strategy routing via active_strategy status ---
+        strategy_row = get_webhook_strategy(symbol, strategy_name)
+        if not strategy_row:
+            print(f"[webhook] {symbol} {strategy_name} — no active_strategy row, blocking")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "no_active_strategy")
+            return {"status": "blocked", "reason": "no_active_strategy", "symbol": symbol}
+
+        status = strategy_row.get("status", "active")
+        if status == "inactive":
+            print(f"[webhook] {symbol} {strategy_name} inactive — blocking")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "strategy_inactive")
+            return {"status": "blocked", "reason": "strategy_inactive", "symbol": symbol}
+
+        if status == "paper":
+            buy_signal  = str(data.get("buy_signal",  "0")) == "1"
+            sell_signal = str(data.get("sell_signal", "0")) == "1"
+            if buy_signal:
+                sl          = data.get("long_sl")
+                tp          = data.get("long_tp")
+                signal      = "PAPER_BUY"
+                entry_price = round((sl + tp) / 2, 5) if sl and tp else None
+            elif sell_signal:
+                sl          = data.get("short_sl")
+                tp          = data.get("short_tp")
+                signal      = "PAPER_SELL"
+                entry_price = round((sl + tp) / 2, 5) if sl and tp else None
+            else:
+                return {"status": "ok", "note": "no_signal", "symbol": symbol}
+            log_paper_trade({
+                "checked_at":    datetime.now(timezone.utc).isoformat(),
+                "symbol":        symbol,
+                "strategy_name": strategy_name,
+                "timeframe":     "HOUR",
+                "candle_time":   datetime.now(timezone.utc).isoformat(),
+                "signal":        signal,
+                "entry_price":   entry_price,
+                "sl":            sl,
+                "tp":            tp,
+                "outcome":       "PENDING",
+                "params_json":   "{}",
+            })
+            print(f"[webhook] {symbol} {strategy_name} PAPER {signal} logged (entry≈{entry_price})")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "PAPER",
+                    notes="routed to paper_trades")
+            return {"status": "paper", "symbol": symbol, "signal": signal}
 
         result = place_trade_from_alert(data)
         print("✅ Trade function returned:", result)
         deal_ref = result.get("deal_reference") if isinstance(result, dict) else None
-        _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "EXECUTED",
+        _log_wh(ts, symbol, direction, strategy_name, raw_payload, "EXECUTED",
                 deal_reference=deal_ref)
 
         # Persist market context — failures are silent, never block trade
@@ -261,7 +267,7 @@ async def webhook_endpoint(request: Request):
 
     except Exception as e:
         print("❌ Trade execution error:", e)
-        _log_wh(ts, symbol, direction, "swiftalgo", raw_payload, "BLOCKED",
+        _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED",
                 "execution_error", notes=str(e)[:500])
         return {"status": "error", "message": "Trade execution failed"}
 
