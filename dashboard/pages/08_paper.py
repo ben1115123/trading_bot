@@ -16,7 +16,8 @@ from styles import inject_css
 inject_css()
 
 
-def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All") -> dict:
+def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All",
+                     strategy_filter: str = "All", source_filter: str = "All") -> dict:
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -51,6 +52,13 @@ def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All") -> dict
         if tf_filter != "All":
             conditions.append("timeframe = ?")
             params.append(tf_filter)
+        if strategy_filter != "All":
+            conditions.append("strategy_name = ?")
+            params.append(strategy_filter)
+        if source_filter == "tradingview_webhook":
+            conditions.append("strategy_name IN ('smc')")
+        elif source_filter == "live_signal_loop":
+            conditions.append("strategy_name NOT IN ('smc')")
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
         cur.execute(f"""
@@ -103,6 +111,7 @@ def fetch_active_paper_strategies() -> list:
             )
             SELECT
                 a.symbol, a.timeframe, a.strategy_name, a.score, a.status,
+                CASE a.strategy_name WHEN 'smc' THEN 'webhook' ELSE 'loop' END AS src,
                 COALESCE(
                     CASE a.status WHEN 'active' THEN ts.total   ELSE ps.total   END, 0
                 ) AS total,
@@ -210,6 +219,7 @@ if paper_strats:
                 res    = w + l_
                 wr     = (w / res * 100) if res > 0 else None
                 status = row.get("status", "paper")
+                src    = row.get("src", "loop")
 
                 if status == "active":
                     badge    = "🔵 Live"
@@ -226,6 +236,14 @@ if paper_strats:
                     badge_bg = "#8B949E22"
                     badge_c  = "#8B949E"
                     border_c = "#30363D"
+
+                src_badge = (
+                    '<span style="font-size:10px;color:#F59E0B;background:#F59E0B22;'
+                    'padding:2px 6px;border-radius:4px;margin-left:6px">📡 webhook</span>'
+                    if src == "webhook" else
+                    '<span style="font-size:10px;color:#22C55E;background:#22C55E22;'
+                    'padding:2px 6px;border-radius:4px;margin-left:6px">🔄 loop</span>'
+                )
 
                 wr_lbl  = "Win Rate"     if status == "active" else "Sim Win Rate"
                 pnl_lbl = "P&amp;L"     if status == "active" else "Sim P&amp;L"
@@ -253,7 +271,7 @@ if paper_strats:
                   <div style="display:flex;justify-content:space-between;
                               align-items:center;margin-bottom:12px">
                     <div style="font-size:12px;font-weight:600;color:#3B82F6">
-                      {row['symbol']} · {row['timeframe'] or '—'} · {row['strategy_name']}
+                      {row['symbol']} · {row['timeframe'] or '—'} · {row['strategy_name']}{src_badge}
                     </div>
                     <span style="background:{badge_bg};color:{badge_c};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">{badge}</span>
                   </div>
@@ -326,16 +344,23 @@ else:
 
 st.markdown('<div class="section-hd">Signal Log</div>', unsafe_allow_html=True)
 
-_all_syms = ["All"] + sorted({r["symbol"] for r in d["by_symbol"]})
-_all_tfs  = ["All"] + sorted({r["timeframe"] for r in d["by_symbol"] if r["timeframe"]})
+_all_syms    = ["All"] + sorted({r["symbol"] for r in d["by_symbol"]})
+_all_tfs     = ["All"] + sorted({r["timeframe"] for r in d["by_symbol"] if r["timeframe"]})
+_all_strats  = ["All", "stoch_rsi", "williams_r", "fvg", "smc"]
+_all_sources = ["All", "live_signal_loop", "tradingview_webhook"]
 
-f_col1, f_col2 = st.columns([1, 1])
+f_col1, f_col2, f_col3, f_col4 = st.columns([1, 1, 1, 1])
 with f_col1:
-    sym_sel = st.selectbox("Symbol", _all_syms, label_visibility="collapsed")
+    sym_sel    = st.selectbox("Symbol",   _all_syms,    label_visibility="collapsed")
 with f_col2:
-    tf_sel  = st.selectbox("Timeframe", _all_tfs, label_visibility="collapsed")
+    tf_sel     = st.selectbox("TF",       _all_tfs,     label_visibility="collapsed")
+with f_col3:
+    strat_sel  = st.selectbox("Strategy", _all_strats,  label_visibility="collapsed")
+with f_col4:
+    source_sel = st.selectbox("Source",   _all_sources, label_visibility="collapsed")
 
-d_filtered = fetch_paper_data(symbol_filter=sym_sel, tf_filter=tf_sel)
+d_filtered = fetch_paper_data(symbol_filter=sym_sel, tf_filter=tf_sel,
+                               strategy_filter=strat_sel, source_filter=source_sel)
 
 if d_filtered["trades"]:
     df_t = pd.DataFrame(d_filtered["trades"])

@@ -54,22 +54,30 @@ def _fetch_filter_status() -> list:
                 session_label = "always"
 
             cur.execute("""
-                SELECT status FROM active_strategy
-                WHERE symbol = ? AND strategy_name = 'swiftalgo'
-                LIMIT 1
+                SELECT strategy_name, status FROM active_strategy
+                WHERE symbol = ?
+                ORDER BY strategy_name
             """, (sym,))
-            sr           = cur.fetchone()
-            strat_status = sr["status"] if sr else "no_row"
+            _sr_rows = [dict(r) for r in cur.fetchall()]
+            if _sr_rows:
+                _icons = {"active": "✅", "paper": "⚠️", "inactive": "❌"}
+                _parts = [
+                    f"{_icons.get(r['status'], '⚠️')} {r['strategy_name']}: {r['status']}"
+                    for r in _sr_rows
+                ]
+                strat_md = " · ".join(_parts)
+            else:
+                strat_md = "⚠️ no_row"
 
             rows.append({
-                "symbol":        sym,
-                "in_session":    in_session,
-                "session_label": session_label,
+                "symbol":         sym,
+                "in_session":     in_session,
+                "session_label":  session_label,
                 "friday_blocked": friday_blocked,
-                "loss_ok":       loss_ok,
-                "loss_today":    loss_today,
-                "remaining":     remaining,
-                "strat_status":  strat_status,
+                "loss_ok":        loss_ok,
+                "loss_today":     loss_today,
+                "remaining":      remaining,
+                "strat_md":       strat_md,
             })
         return rows
     finally:
@@ -142,14 +150,14 @@ try:
         with cols[i]:
             st.markdown(f"**{row['symbol']}**")
             st.markdown(
-                f"| Filter | Status | Detail |\n"
-                f"|--------|--------|--------|\n"
-                f"| Session | {_ok(row['in_session'])} | {row['session_label']} |\n"
-                f"| Friday block | {_ok(not row['friday_blocked'])} | "
+                f"| Filter | Status |\n"
+                f"|--------|--------|\n"
+                f"| Session | {_ok(row['in_session'])} {row['session_label']} |\n"
+                f"| Friday block | {_ok(not row['friday_blocked'])} "
                 f"{'🔒 active' if row['friday_blocked'] else 'not active'} |\n"
-                f"| Daily loss | {_ok(row['loss_ok'])} | "
+                f"| Daily loss | {_ok(row['loss_ok'])} "
                 f"${row['loss_today']:.2f} lost · ${row['remaining']:.2f} left |\n"
-                f"| Strategy | {_strat_badge(row['strat_status'])} | swiftalgo |"
+                f"| Strategy | {row['strat_md']} |"
             )
 except Exception as e:
     st.warning(f"Could not load filter status: {e}")
@@ -160,12 +168,14 @@ st.divider()
 
 st.subheader("Alert Decision Log")
 
-fc1, fc2, fc3 = st.columns([2, 2, 2])
+fc1, fc2, fc3, fc4 = st.columns([2, 2, 1, 2])
 with fc1:
     sym_filter = st.selectbox("Symbol", ["All"] + WEBHOOK_SYMBOLS + ["US100", "DAX"])
 with fc2:
     result_filter = st.selectbox("Result", ["All", "EXECUTED", "BLOCKED", "PAPER"])
 with fc3:
+    strat_filter = st.selectbox("Strategy", ["All", "swiftalgo", "smc"])
+with fc4:
     days_back = st.selectbox(
         "Time window", [1, 3, 7, 14, 30], index=2,
         format_func=lambda x: f"Last {x} day{'s' if x > 1 else ''}"
@@ -179,6 +189,8 @@ if sym_filter != "All":
     filtered = [r for r in filtered if r.get("symbol") == sym_filter]
 if result_filter != "All":
     filtered = [r for r in filtered if r.get("result") == result_filter]
+if strat_filter != "All":
+    filtered = [r for r in filtered if r.get("strategy_name") == strat_filter]
 
 if not filtered:
     st.info("No webhook alerts in this window.")
@@ -199,6 +211,7 @@ else:
         display.append({
             "Time (UTC)":   t_str,
             "Symbol":       r.get("symbol", ""),
+            "Strategy":     r.get("strategy_name") or "—",
             "Dir":          r.get("direction", ""),
             "Result":       f"{icon} {res}",
             "Block Reason": r.get("block_reason") or "—",

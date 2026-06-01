@@ -442,11 +442,12 @@ st.markdown(
 )
 
 _PAPER_CARDS = [
-    ("DAX",   "DAX",          "HOUR", dax_signal, None),
-    ("US100", "US100 · 5MIN", "5MIN", us100_5min, "US session only 14:30–21:00 UTC"),
+    ("DAX",   "DAX",           "HOUR", dax_signal, None,                               "loop"),
+    ("US100", "US100 · 5MIN",  "5MIN", us100_5min, "US session only 14:30–21:00 UTC",  "loop"),
+    ("US500", "US500 · 15MIN", "15MIN", None,       "London/NY sessions · SMC webhook", "webhook"),
 ]
-paper_cols = st.columns(2)
-for col, (symbol, label, tf_key, r, subtitle) in zip(paper_cols, _PAPER_CARDS):
+paper_cols = st.columns(3)
+for col, (symbol, label, tf_key, r, subtitle, src) in zip(paper_cols, _PAPER_CARDS):
     with col:
         strat_row     = strategy_by_symbol.get(symbol)
         paper_key     = f"{symbol}_{tf_key}"
@@ -458,6 +459,13 @@ for col, (symbol, label, tf_key, r, subtitle) in zip(paper_cols, _PAPER_CARDS):
         not_exec_badge = (
             '<span style="font-size:10px;color:#3B82F6;background:#3B82F622;'
             'padding:2px 8px;border-radius:4px;margin-left:8px">Not executed</span>'
+        )
+        src_badge = (
+            '<span style="font-size:10px;color:#22C55E;background:#22C55E22;'
+            'padding:2px 6px;border-radius:4px;margin-left:6px">🔄 loop</span>'
+            if src == "loop" else
+            '<span style="font-size:10px;color:#F59E0B;background:#F59E0B22;'
+            'padding:2px 6px;border-radius:4px;margin-left:6px">📡 webhook</span>'
         )
 
         if r:
@@ -477,7 +485,7 @@ for col, (symbol, label, tf_key, r, subtitle) in zip(paper_cols, _PAPER_CARDS):
             <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                 <div>
-                  <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}</div>{subtitle_html}
+                  <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}{src_badge}</div>{subtitle_html}
                 </div>
                 <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
                             padding:2px 10px;border-radius:4px">{sig}</div>
@@ -497,7 +505,7 @@ for col, (symbol, label, tf_key, r, subtitle) in zip(paper_cols, _PAPER_CARDS):
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px;font-size:13px">
               <div style="margin-bottom:4px">
-                <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}</div>{subtitle_html}
+                <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}{src_badge}</div>{subtitle_html}
               </div>
               <div style="height:8px"></div>
               <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>

@@ -671,6 +671,19 @@ try:
             FROM paper_trades
         """)
         _pr       = dict(_pcur.fetchone())
+
+        _pcur.execute("""
+            SELECT strategy_name,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
+                   COALESCE(SUM(simulated_pnl), 0) as total_pnl
+            FROM paper_trades
+            WHERE outcome IN ('WIN', 'LOSS')
+            GROUP BY strategy_name
+            ORDER BY total DESC
+        """)
+        _p_by_strat = [dict(r) for r in _pcur.fetchall()]
         _p_total  = _pr["total"]     or 0
         _p_wins   = _pr["wins"]      or 0
         _p_losses = _pr["losses"]    or 0
@@ -714,6 +727,26 @@ try:
         _resolved = _p_wins + _p_losses
         wr_color_p  = "#3B82F6" if _p_wr >= 50 else "#8B5CF6"
         pnl_str_p, pnl_cls_p = _fmt_pnl(_p_pnl) if _resolved > 0 else ("pending", "")
+
+        _strat_breakdown_html = ""
+        for _bs in _p_by_strat:
+            _bs_res = (_bs["wins"] or 0) + (_bs["losses"] or 0)
+            _bs_wr  = (_bs["wins"] / _bs_res * 100) if _bs_res > 0 else 0.0
+            _bs_pnl = _bs["total_pnl"] or 0.0
+            _bs_src = "📡 webhook" if _bs["strategy_name"] == "smc" else "🔄 loop"
+            _bs_wr_c = "#3B82F6" if _bs_wr >= 50 else "#8B5CF6"
+            _bs_pnl_s, _bs_pnl_c = _fmt_pnl(_bs_pnl)
+            _strat_breakdown_html += (
+                f'<div class="info-tile">'
+                f'<div class="lbl">{_bs["strategy_name"]} <span style="font-size:10px;color:#8B949E">{_bs_src}</span></div>'
+                f'<div class="val"><span style="background:{_bs_wr_c}22;color:{_bs_wr_c};'
+                f'padding:1px 6px;border-radius:3px;font-size:11px;font-weight:700">'
+                f'{_bs_wr:.0f}%</span>'
+                f'<span style="color:#8B949E;font-size:10px;margin-left:6px">'
+                f'{_bs["wins"]}W/{_bs["losses"]}L · <span class="cal-pnl {_bs_pnl_c}">{_bs_pnl_s}</span></span>'
+                f'</div></div>'
+            )
+
         st.markdown(f"""
         <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px">
           <div class="info-tile"><div class="lbl">Signals</div><div class="val">{_p_total}</div></div>
@@ -725,6 +758,7 @@ try:
             <div class="lbl">Sim P&amp;L</div>
             <div class="val"><span class="cal-pnl {pnl_cls_p}">{pnl_str_p}</span></div>
           </div>
+          {('<div style="border-top:1px solid #21262D;margin-top:8px;padding-top:8px">' + _strat_breakdown_html + '</div>') if _strat_breakdown_html else ''}
         </div>
         """, unsafe_allow_html=True)
 
