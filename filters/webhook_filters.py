@@ -59,7 +59,7 @@ def should_block_spread(symbol: str, current_spread: float | None) -> bool:
 def should_block_day_of_week(symbol: str) -> bool:
     """Block trades on historically poor performing days per symbol."""
     DAY_BLOCKS = {
-        "US500": [0, 1],   # Monday=0, Tuesday=1 — Monday confirmed, Tuesday watching
+        "US500": [0],      # Monday only — Tuesday removed pending more data
         # "US100": [0],    # Monday — add when US100 reactivated
     }
     blocked_days = DAY_BLOCKS.get(symbol.upper(), [])
