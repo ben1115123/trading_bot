@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
@@ -105,6 +106,33 @@ def _log_wh(ts: str, symbol: str, direction: str, strategy_name: str | None,
             "deal_reference": deal_reference,
             "notes":         notes,
         })
+    except Exception:
+        pass
+
+
+def _collect_context_bg(symbol: str, strategy_name: str, current_spread: float | None = None) -> None:
+    """Collect and persist market context after response is returned. Runs in daemon thread."""
+    try:
+        _now = datetime.now(timezone.utc)
+        ctx: dict = {
+            "spread":          current_spread,
+            "vix_level":       None,
+            "ema200_daily":    None,
+            "price_vs_ema200": None,
+            "atr_at_entry":    None,
+            "day_of_week":     _now.weekday(),
+            "session":         _get_session(_now.hour),
+        }
+        _ema, _pve = _ema200_context(symbol)
+        ctx["ema200_daily"]    = _ema
+        ctx["price_vs_ema200"] = _pve
+        ctx["atr_at_entry"]    = _atr14(symbol)
+        try:
+            from filters.vix_filter import get_current_vix
+            ctx["vix_level"] = get_current_vix()
+        except Exception:
+            pass
+        update_trade_context(symbol, strategy_name, ctx)
     except Exception:
         pass
 
@@ -242,28 +270,11 @@ async def webhook_endpoint(request: Request):
         deal_ref = result.get("deal_reference") if isinstance(result, dict) else None
         _log_wh(ts, symbol, direction, strategy_name, raw_payload, "EXECUTED",
                 deal_reference=deal_ref)
-
-        # Persist market context — failures are silent, never block trade
-        try:
-            _now = datetime.now(timezone.utc)
-            _ema, _pve = _ema200_context(symbol)
-            _wh_ctx = {
-                "spread":          current_spread,
-                "vix_level":       None,
-                "ema200_daily":    _ema,
-                "price_vs_ema200": _pve,
-                "atr_at_entry":    _atr14(symbol),
-                "day_of_week":     _now.weekday(),
-                "session":         _get_session(_now.hour),
-            }
-            try:
-                from filters.vix_filter import get_current_vix
-                _wh_ctx["vix_level"] = get_current_vix()
-            except Exception:
-                pass
-            update_trade_context(symbol, "tradingview_webhook", _wh_ctx)
-        except Exception:
-            pass
+        threading.Thread(
+            target=_collect_context_bg,
+            args=(symbol, "tradingview_webhook", current_spread),
+            daemon=True,
+        ).start()
 
     except Exception as e:
         print("❌ Trade execution error:", e)
