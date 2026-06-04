@@ -133,7 +133,8 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 |--------|------|------------|------|-------|---------|--------------------------------|
 | US500  | HOUR | stoch_rsi  | Live | 0.867 | loop    |                                |
 | EURUSD | HOUR | swiftalgo  | Live | —     | webhook | Promoted 2026-05-27, $10 risk  |
-| US500  | HOUR | williams_r | Paper| 0.333 | loop    |                                |
+| US500  | HOUR | swiftalgo  | Live | —     | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
+| US500  | HOUR | williams_r | Paper| 0.333 | loop    | ⚠️ not firing — _is_due key collision with stoch_rsi US500 HOUR |
 | DAX    | HOUR | williams_r | Paper| 0.326 | loop    |                                |
 | US500  | 15MIN| fvg        | Paper| —     | loop    | SMC FVG POC, activated 2026-05-29 |
 | EURUSD | 15MIN| london_breakout | Paper| — | loop    | London session breakout 06:00-07:00 UTC range, activated 2026-06-04 |
@@ -148,6 +149,8 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | DAX    | HOUR | rsi             | 9.1% win rate                            |
 | BTC    | HOUR | rsi_divergence  | 0/5 since activation, noisy in range     |
 | BTC    | HOUR | vwap_ema        | Already inactive (margin issues)         |
+| US100  | HOUR | rsi             | Firing live trades incorrectly — deactivated 2026-06-04 |
+| BTC    | HOUR | stoch_rsi       | BTC margin concerns — deactivated 2026-06-04             |
 
 BTC note: Two consecutive failed strategies. No BTC strategies until a
 crypto-specific volatility approach is designed and backtested.
