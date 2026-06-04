@@ -14,7 +14,7 @@ from database.models import get_active_strategies, log_signal_check, log_paper_t
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 
-SYMBOLS = ["US500", "US100", "DAX", "BTC"]
+SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD"]
 
 MARKET_CLOSE = {
     "US500": {"hour": 20, "minute": 45},
@@ -274,17 +274,31 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
 
     _last_signal[(symbol, timeframe, strategy_name)] = dedup_key
 
-    # SL/TP from candle range — matches backtesting engine's sl_dist = high - low
-    sl_dist = candle["high"] - candle["low"]
-    entry   = candle["close"]
-    if signal == "BUY":
-        action = "buy"
-        sl     = round(entry - sl_dist, 4)
-        tp     = round(entry + sl_dist * 2, 4)
+    entry        = candle["close"]
+    _sig_sl      = sig.get("sl_price")
+    _sig_tp      = sig.get("tp_price")
+    if _sig_sl is not None and _sig_tp is not None:
+        # Strategy provides range-based SL/TP (e.g. london_breakout)
+        sl_dist = abs(entry - _sig_sl) or (candle["high"] - candle["low"])
+        if signal == "BUY":
+            action = "buy"
+            sl     = round(float(_sig_sl), 5)
+            tp     = round(float(_sig_tp), 5)
+        else:
+            action = "sell"
+            sl     = round(float(_sig_sl), 5)
+            tp     = round(float(_sig_tp), 5)
     else:
-        action = "sell"
-        sl     = round(entry + sl_dist, 4)
-        tp     = round(entry - sl_dist * 2, 4)
+        # Default: SL/TP from candle range
+        sl_dist = candle["high"] - candle["low"]
+        if signal == "BUY":
+            action = "buy"
+            sl     = round(entry - sl_dist, 4)
+            tp     = round(entry + sl_dist * 2, 4)
+        else:
+            action = "sell"
+            sl     = round(entry + sl_dist, 4)
+            tp     = round(entry - sl_dist * 2, 4)
 
     print(f"[signal_loop] [{symbol}] {signal} — sl={sl} tp={tp}")
 

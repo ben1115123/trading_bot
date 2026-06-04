@@ -7,10 +7,11 @@ from backend.backtesting.metrics import (
 )
 
 EPIC_CONFIG = {
-    "US500": {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
-    "US100": {"epic": "IX.D.NASDAQ.IFMM.IP",    "value_per_point": 1},
-    "BTC":   {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
-    "DAX":   {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
+    "US500":  {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
+    "US100":  {"epic": "IX.D.NASDAQ.IFMM.IP",    "value_per_point": 1},
+    "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
+    "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
+    "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
 }
 
 RISK_PER_TRADE = 15.0  # USD, matches live bot
@@ -121,6 +122,37 @@ def run_backtest(strategy, candles: list, symbol: str,
         last = i == len(test_signals) - 1
 
         if open_trade is not None:
+            # TP check — takes priority over SL on same candle
+            _tp = open_trade.get("tp_price")
+            if _tp is not None:
+                tp_hit = (
+                    (open_trade["direction"] == "BUY"  and candle["high"] >= _tp) or
+                    (open_trade["direction"] == "SELL" and candle["low"]  <= _tp)
+                )
+                if tp_hit:
+                    ep  = open_trade["entry_price"]
+                    d   = open_trade["direction"]
+                    pnl = (((_tp - ep) if d == "BUY" else (ep - _tp))
+                           * open_trade["size"] * vpp)
+                    try:
+                        dur = int((datetime.fromisoformat(candle["time"]) -
+                                   datetime.fromisoformat(open_trade["entry_time"])
+                                   ).total_seconds() / 60)
+                    except Exception:
+                        dur = 0
+                    trades.append({
+                        "entry_time":    open_trade["entry_time"],
+                        "exit_time":     candle["time"],
+                        "direction":     d,
+                        "entry_price":   ep,
+                        "exit_price":    _tp,
+                        "pnl":           round(pnl, 2),
+                        "duration_mins": max(0, dur),
+                        "exit_reason":   "tp_hit",
+                    })
+                    open_trade = None
+                    continue
+
             # Dollar stop-loss: check intra-bar low/high against SL price
             sl_hit = (
                 (open_trade["direction"] == "BUY"  and candle["low"]  <= open_trade["sl_price"]) or
@@ -178,10 +210,15 @@ def run_backtest(strategy, candles: list, symbol: str,
             continue
 
         if open_trade is None and sig["signal"] in ("BUY", "SELL"):
-            sl_dist  = candle["high"] - candle["low"]
-            entry    = candle["close"]
-            size     = _lot_size(sl_dist, vpp)
-            sl_price = (entry - sl_dist) if sig["signal"] == "BUY" else (entry + sl_dist)
+            entry     = candle["close"]
+            custom_sl = sig.get("sl_price")
+            if custom_sl is not None:
+                sl_price = custom_sl
+                sl_dist  = abs(entry - sl_price) or (candle["high"] - candle["low"])
+            else:
+                sl_dist  = candle["high"] - candle["low"]
+                sl_price = (entry - sl_dist) if sig["signal"] == "BUY" else (entry + sl_dist)
+            size = _lot_size(sl_dist, vpp)
             open_trade = {
                 "direction":        sig["signal"],
                 "entry_price":      entry,
@@ -189,6 +226,7 @@ def run_backtest(strategy, candles: list, symbol: str,
                 "entry_candle_idx": i,
                 "size":             size,
                 "sl_price":         sl_price,
+                "tp_price":         sig.get("tp_price"),
             }
 
     return {

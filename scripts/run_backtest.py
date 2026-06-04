@@ -103,6 +103,8 @@ from backend.strategies.connors_rsi2 import ConnorsRSI2Strategy
 from backend.strategies.williams_r import WilliamsRStrategy
 from backend.strategies.macd_rsi import MACDRSIStrategy
 from backend.strategies.fvg import FVGStrategy
+from backend.strategies.london_breakout import LondonBreakoutStrategy
+from backend.strategies.smc import SMCStrategy
 from database.models import insert_backtest_result, insert_backtest_trade
 
 STRATEGIES = {
@@ -122,6 +124,8 @@ STRATEGIES = {
     "williams_r":           WilliamsRStrategy,
     "macd_rsi":             MACDRSIStrategy,
     "fvg":                  FVGStrategy,
+    "london_breakout":      LondonBreakoutStrategy,
+    "smc":                  SMCStrategy,
 }
 
 PARAM_GRIDS = {
@@ -209,6 +213,22 @@ PARAM_GRIDS = {
         "atr_period":     [10, 14, 21],
         "min_gap_atr":    [0.2, 0.3, 0.5],
         "expiry_candles": [5, 10, 15],
+    },
+    "smc": {
+        "swing_lookback":     [3, 5, 8, 10],
+        "min_gap_atr":        [0.3, 0.5, 0.7],
+        "fvg_expiry":         [10, 15],
+        "atr_period":         [10, 14],
+        "use_session_filter": [False],
+    },
+    "london_breakout": {
+        "min_range_pips":   [3, 5, 8, 10],
+        "breakout_buffer":  [0.0, 0.3, 0.5],
+        "tp_multiplier":    [1.0, 1.5, 2.0, 2.5],
+        "use_ema_filter":   [False, True],
+        "range_start_hour": [6],
+        "range_end_hour":   [7],
+        "entry_window_end": [9],
     },
 }
 

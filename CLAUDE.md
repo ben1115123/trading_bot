@@ -136,6 +136,7 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | HOUR | williams_r | Paper| 0.333 | loop    |                                |
 | DAX    | HOUR | williams_r | Paper| 0.326 | loop    |                                |
 | US500  | 15MIN| fvg        | Paper| —     | loop    | SMC FVG POC, activated 2026-05-29 |
+| EURUSD | 15MIN| london_breakout | Paper| — | loop    | London session breakout 06:00-07:00 UTC range, activated 2026-06-04 |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -312,6 +313,21 @@ Baseline backtest (default params, 5000 HOUR candles, test window 1000):
 - DAX   HOUR williams_r: 47 trades, 59.6% win rate, $419 profit
 - DAX   HOUR macd_rsi:   10 trades, 10.0% win rate, -$865 loss
   ⚠️  macd_rsi DAX baseline weak — paper trading to observe live behaviour
+
+### London Breakout (added 2026-06-04)
+| Symbol | TF    | Strategy        | Source | Rationale                     |
+|--------|-------|-----------------|--------|-------------------------------|
+| EURUSD | 15MIN | london_breakout | loop   | London session range breakout |
+
+Params: min_range_pips=8, breakout_buffer=0.3, tp_multiplier=2.0, use_ema_filter=false
+Range window: 06:00-07:00 UTC
+Entry window: 07:00-09:00 UTC
+SL: range low - buffer (BUY) / range high + buffer (SELL) — range-based, not ATR
+TP: entry ± (range_size × 2.0)
+Max one trade per day
+Backtest note: inconclusive — yfinance 15MIN limited to 60 days, test window only
+8-10 trades. Best sweep params: min_pips=8, buffer=0.3, tp=2.0, ema=false.
+Review after 30 resolved paper trades.
 
 ### FVG Strategy (added 2026-05-29)
 | Symbol | TF    | Strategy | Rationale                                         |

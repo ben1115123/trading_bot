@@ -1,1 +1,3 @@
 from backend.strategies.fvg import FVGStrategy
+from backend.strategies.london_breakout import LondonBreakoutStrategy
+from backend.strategies.smc import SMCStrategy
