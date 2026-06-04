@@ -68,9 +68,9 @@ def _get_ema200(symbol: str) -> tuple:
         return None, None
 
 
-def _is_due(symbol: str, timeframe: str) -> bool:
+def _is_due(symbol: str, timeframe: str, strategy_name: str = "") -> bool:
     interval = TIMEFRAME_SECONDS.get(timeframe, 3600)
-    last = _last_checked.get((symbol, timeframe))
+    last = _last_checked.get((symbol, timeframe, strategy_name))
     if last is None:
         return True
     return (datetime.now(timezone.utc) - last).total_seconds() >= interval * 0.9
@@ -469,14 +469,14 @@ def _loop() -> None:
                 strategy_name = active.get("strategy_name", "")
                 strategy_type = active.get("strategy_type", "swing")
                 is_paper      = _is_paper_trade(symbol, timeframe) or active.get("status") == "paper"
-                if not _is_due(symbol, timeframe):
+                if not _is_due(symbol, timeframe, strategy_name):
                     continue
                 if strategy_type == "swing" and not is_paper and _vix_blocked:
                     print(f"[signal_loop] VIX elevated — skipping {symbol} {strategy_name} entry")
                     continue
                 try:
                     _check_symbol(symbol, active, vix_level=_vix_level)
-                    _last_checked[(symbol, timeframe)] = datetime.now(timezone.utc)
+                    _last_checked[(symbol, timeframe, strategy_name)] = datetime.now(timezone.utc)
                 except Exception as e:
                     print(f"[signal_loop] [{symbol}/{timeframe}] unhandled error: {e}")
 
