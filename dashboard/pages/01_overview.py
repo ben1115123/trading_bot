@@ -49,7 +49,7 @@ def fetch_data():
 
         last_bot_trade_by_symbol   = {}
         last_swift_trade_by_symbol = {}
-        for sym in ["US500", "US100", "BTC"]:
+        for sym in ["US500", "US100", "BTC", "EURUSD"]:
             cur.execute("""
                 SELECT direction, entry_price, pnl, status
                 FROM trades WHERE symbol = ? AND source IN ('signal_loop', 'live_signal_loop')
@@ -141,7 +141,7 @@ def fetch_data():
                 GROUP BY symbol, strategy_name, timeframe
             """)
             paper_stats = {
-                f"{r['symbol']}_{r['timeframe']}": dict(r)
+                f"{r['symbol']}_{r['timeframe']}_{r['strategy_name']}": dict(r)
                 for r in cur.fetchall()
             }
         except Exception:
@@ -348,23 +348,36 @@ st.markdown(
 )
 
 _LIVE_CARDS = [
-    ("US500", "US500", signal_by_symbol.get("US500"), None),
-    ("US100", "US100", us100_hour,                   None),
-    ("BTC",   "BTC",   signal_by_symbol.get("BTC"),  None),
+    ("US500",  "US500 · stoch_rsi",  "stoch_rsi", "HOUR", signal_by_symbol.get("US500"), None,           "loop"),
+    ("EURUSD", "EURUSD · swiftalgo", "swiftalgo",  "HOUR", None,                         "Webhook only", "webhook"),
+    ("US500",  "US500 · swiftalgo",  "swiftalgo",  "HOUR", None,                         "Webhook only", "webhook"),
 ]
 live_cols = st.columns(3)
-for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
+for col, (symbol, label, strat_card, tf_card, r, subtitle, src_live) in zip(live_cols, _LIVE_CARDS):
     with col:
-        strat_row   = strategy_by_symbol.get(symbol)
-        bot_trade   = last_bot_trade_by_symbol.get(symbol)
-        swift_trade = last_swift_trade_by_symbol.get(symbol)
-        trade_html  = (
-            '<div class="info-tile"><div class="lbl">Last trades</div><div class="val">'
-            + _trade_line(bot_trade,   "🤖", "Bot",   "#58A6FF")
-            + _trade_line(swift_trade, "⚡", "Swift", "#A78BFA")
-            + '</div></div>'
+        bot_trade    = last_bot_trade_by_symbol.get(symbol)
+        swift_trade  = last_swift_trade_by_symbol.get(symbol)
+        if src_live == "loop":
+            trade_html = (
+                '<div class="info-tile"><div class="lbl">Last trades</div><div class="val">'
+                + _trade_line(bot_trade,   "🤖", "Bot",   "#58A6FF")
+                + _trade_line(swift_trade, "⚡", "Swift", "#A78BFA")
+                + '</div></div>'
+            )
+        else:
+            trade_html = (
+                '<div class="info-tile"><div class="lbl">Last trades</div><div class="val">'
+                + _trade_line(swift_trade, "⚡", "Swift", "#A78BFA")
+                + '</div></div>'
+            )
+        src_badge = (
+            '<span style="font-size:10px;color:#22C55E;background:#22C55E22;'
+            'padding:2px 6px;border-radius:4px;margin-left:6px">🔄 loop</span>'
+            if src_live == "loop" else
+            '<span style="font-size:10px;color:#F59E0B;background:#F59E0B22;'
+            'padding:2px 6px;border-radius:4px;margin-left:6px">📡 webhook</span>'
         )
-
+        stats_source  = "live_signal_loop" if src_live == "loop" else "tradingview_webhook"
         subtitle_html = (
             f'<div style="font-size:11px;color:#8B949E;margin-top:2px">{subtitle}</div>'
             if subtitle else ""
@@ -373,8 +386,8 @@ for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
         if r:
             sig        = (r.get("signal") or "NONE").upper()
             color      = _SIG_COLOR.get(sig, "#8B949E")
-            strat_name = r.get("strategy_name") or (strat_row["strategy_name"] if strat_row else "—")
-            tf         = r.get("timeframe") or (strat_row["timeframe"] if strat_row else "—")
+            strat_name = r.get("strategy_name") or strat_card
+            tf         = r.get("timeframe") or tf_card
             chk        = _fmt_ts(r["checked_at"])
             cndl       = r["candle_time"][:16] if r.get("candle_time") else "—"
             nxt        = _next_check(r["checked_at"])
@@ -383,12 +396,12 @@ for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
                 f'<div class="val" style="color:#F97316">{r["error"]}</div></div>'
                 if r.get("error") else ""
             )
-            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}_live_signal_loop", strategy_stats)
+            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}_{stats_source}", strategy_stats)
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                 <div>
-                  <div style="font-size:13px;font-weight:600;color:#58A6FF">{label}</div>{subtitle_html}
+                  <div style="font-size:13px;font-weight:600;color:#58A6FF">{label}{src_badge}</div>{subtitle_html}
                 </div>
                 <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
                             padding:2px 10px;border-radius:4px">{sig}</div>
@@ -404,16 +417,14 @@ for col, (symbol, label, r, subtitle) in zip(live_cols, _LIVE_CARDS):
             </div>
             """, unsafe_allow_html=True)
         else:
-            strat_name      = strat_row["strategy_name"] if strat_row else "—"
-            tf              = strat_row["timeframe"] if strat_row else "—"
-            live_stats_html = _live_stats_html(f"{symbol}_{strat_name}_live_signal_loop", strategy_stats)
+            live_stats_html = _live_stats_html(f"{symbol}_{strat_card}_{stats_source}", strategy_stats)
             st.markdown(f"""
             <div style="background:#161B22;border:1px solid #30363D;border-radius:10px;padding:16px 20px;font-size:13px">
               <div style="margin-bottom:4px">
-                <div style="font-weight:600;color:#58A6FF">{label}</div>{subtitle_html}
+                <div style="font-weight:600;color:#58A6FF">{label}{src_badge}</div>{subtitle_html}
               </div>
               <div style="height:8px"></div>
-              <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
+              <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_card} · {tf_card}</div></div>
               {live_stats_html}
               <div class="info-tile"><div class="lbl">Signal</div>
                 <div class="val" style="color:#8B949E">No data yet</div></div>
@@ -442,78 +453,79 @@ st.markdown(
 )
 
 _PAPER_CARDS = [
-    ("DAX",   "DAX",           "HOUR", dax_signal, None,                               "loop"),
-    ("US100", "US100 · 5MIN",  "5MIN", us100_5min, "US session only 14:30–21:00 UTC",  "loop"),
-    ("US500", "US500 · 15MIN", "15MIN", None,       "London/NY sessions · SMC webhook", "webhook"),
+    ("US500",  "US500 · williams_r",      "williams_r",      "HOUR",  None,       None,                 "loop"),
+    ("DAX",    "DAX · williams_r",        "williams_r",      "HOUR",  dax_signal, None,                 "loop"),
+    ("US500",  "US500 · fvg",             "fvg",             "15MIN", None,       "London/NY sessions", "loop"),
+    ("US500",  "US500 · smc",             "smc",             "15MIN", None,       "SMC webhook",        "webhook"),
+    ("EURUSD", "EURUSD · london_breakout","london_breakout",  "15MIN", None,       "06:00–09:00 UTC",    "loop"),
 ]
-paper_cols = st.columns(3)
-for col, (symbol, label, tf_key, r, subtitle, src) in zip(paper_cols, _PAPER_CARDS):
-    with col:
-        strat_row     = strategy_by_symbol.get(symbol)
-        paper_key     = f"{symbol}_{tf_key}"
-        paper_html    = _paper_stats_html(paper_key, paper_stats)
-        subtitle_html = (
-            f'<div style="font-size:11px;color:#8B949E;margin-top:2px">{subtitle}</div>'
-            if subtitle else ""
-        )
-        not_exec_badge = (
-            '<span style="font-size:10px;color:#3B82F6;background:#3B82F622;'
-            'padding:2px 8px;border-radius:4px;margin-left:8px">Not executed</span>'
-        )
-        src_badge = (
-            '<span style="font-size:10px;color:#22C55E;background:#22C55E22;'
-            'padding:2px 6px;border-radius:4px;margin-left:6px">🔄 loop</span>'
-            if src == "loop" else
-            '<span style="font-size:10px;color:#F59E0B;background:#F59E0B22;'
-            'padding:2px 6px;border-radius:4px;margin-left:6px">📡 webhook</span>'
-        )
-
-        if r:
-            sig        = (r.get("signal") or "NONE").upper()
-            color      = _SIG_COLOR.get(sig, "#8B949E")
-            strat_name = r.get("strategy_name") or (strat_row["strategy_name"] if strat_row else "—")
-            tf         = r.get("timeframe") or tf_key
-            chk        = _fmt_ts(r["checked_at"])
-            cndl       = r["candle_time"][:16] if r.get("candle_time") else "—"
-            nxt        = _next_check(r["checked_at"])
-            err_html   = (
-                f'<div class="info-tile"><div class="lbl">Error</div>'
-                f'<div class="val" style="color:#F97316">{r["error"]}</div></div>'
-                if r.get("error") else ""
+for _batch_start in range(0, len(_PAPER_CARDS), 3):
+    _batch     = _PAPER_CARDS[_batch_start:_batch_start + 3]
+    paper_cols = st.columns(3)
+    for col, (symbol, label, strat_card, tf_key, r, subtitle, src) in zip(paper_cols, _batch):
+        with col:
+            paper_key     = f"{symbol}_{tf_key}_{strat_card}"
+            paper_html    = _paper_stats_html(paper_key, paper_stats)
+            subtitle_html = (
+                f'<div style="font-size:11px;color:#8B949E;margin-top:2px">{subtitle}</div>'
+                if subtitle else ""
             )
-            st.markdown(f"""
-            <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-                <div>
-                  <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}{src_badge}</div>{subtitle_html}
+            not_exec_badge = (
+                '<span style="font-size:10px;color:#3B82F6;background:#3B82F622;'
+                'padding:2px 8px;border-radius:4px;margin-left:8px">Not executed</span>'
+            )
+            src_badge = (
+                '<span style="font-size:10px;color:#22C55E;background:#22C55E22;'
+                'padding:2px 6px;border-radius:4px;margin-left:6px">🔄 loop</span>'
+                if src == "loop" else
+                '<span style="font-size:10px;color:#F59E0B;background:#F59E0B22;'
+                'padding:2px 6px;border-radius:4px;margin-left:6px">📡 webhook</span>'
+            )
+
+            if r:
+                sig        = (r.get("signal") or "NONE").upper()
+                color      = _SIG_COLOR.get(sig, "#8B949E")
+                strat_name = r.get("strategy_name") or strat_card
+                tf         = r.get("timeframe") or tf_key
+                chk        = _fmt_ts(r["checked_at"])
+                cndl       = r["candle_time"][:16] if r.get("candle_time") else "—"
+                nxt        = _next_check(r["checked_at"])
+                err_html   = (
+                    f'<div class="info-tile"><div class="lbl">Error</div>'
+                    f'<div class="val" style="color:#F97316">{r["error"]}</div></div>'
+                    if r.get("error") else ""
+                )
+                st.markdown(f"""
+                <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                    <div>
+                      <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}{src_badge}</div>{subtitle_html}
+                    </div>
+                    <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
+                                padding:2px 10px;border-radius:4px">{sig}</div>
+                  </div>
+                  <div style="height:8px"></div>
+                  <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
+                  {paper_html}
+                  <div class="info-tile"><div class="lbl">Candle</div><div class="val">{cndl}</div></div>
+                  <div class="info-tile"><div class="lbl">Checked</div><div class="val">{chk}</div></div>
+                  <div class="info-tile"><div class="lbl">Next check</div><div class="val">{nxt}</div></div>
+                  {err_html}
                 </div>
-                <div style="font-size:12px;font-weight:700;color:{color};background:{color}22;
-                            padding:2px 10px;border-radius:4px">{sig}</div>
-              </div>
-              <div style="height:8px"></div>
-              <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
-              {paper_html}
-              <div class="info-tile"><div class="lbl">Candle</div><div class="val">{cndl}</div></div>
-              <div class="info-tile"><div class="lbl">Checked</div><div class="val">{chk}</div></div>
-              <div class="info-tile"><div class="lbl">Next check</div><div class="val">{nxt}</div></div>
-              {err_html}
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            strat_name = strat_row["strategy_name"] if strat_row else "—"
-            tf         = strat_row["timeframe"] if strat_row else tf_key
-            st.markdown(f"""
-            <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px;font-size:13px">
-              <div style="margin-bottom:4px">
-                <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}{src_badge}</div>{subtitle_html}
-              </div>
-              <div style="height:8px"></div>
-              <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_name} · {tf}</div></div>
-              {paper_html}
-              <div class="info-tile"><div class="lbl">Signal</div>
-                <div class="val" style="color:#8B949E">No data yet</div></div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="background:#161B22;border:1px solid #1D4ED8;border-radius:10px;padding:16px 20px;font-size:13px">
+                  <div style="margin-bottom:4px">
+                    <div style="font-size:13px;font-weight:600;color:#3B82F6">{label}{not_exec_badge}{src_badge}</div>{subtitle_html}
+                  </div>
+                  <div style="height:8px"></div>
+                  <div class="info-tile"><div class="lbl">Strategy</div><div class="val">{strat_card} · {tf_key}</div></div>
+                  {paper_html}
+                  <div class="info-tile"><div class="lbl">Signal</div>
+                    <div class="val" style="color:#8B949E">No data yet</div></div>
+                </div>
+                """, unsafe_allow_html=True)
 
 
 # ── Section 3 — Cron Status Bar ───────────────────────────────────────────────

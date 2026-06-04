@@ -346,7 +346,7 @@ st.markdown('<div class="section-hd">Signal Log</div>', unsafe_allow_html=True)
 
 _all_syms    = ["All"] + sorted({r["symbol"] for r in d["by_symbol"]})
 _all_tfs     = ["All"] + sorted({r["timeframe"] for r in d["by_symbol"] if r["timeframe"]})
-_all_strats  = ["All", "stoch_rsi", "williams_r", "fvg", "smc"]
+_all_strats  = ["All", "stoch_rsi", "williams_r", "fvg", "smc", "london_breakout"]
 _all_sources = ["All", "live_signal_loop", "tradingview_webhook"]
 
 f_col1, f_col2, f_col3, f_col4 = st.columns([1, 1, 1, 1])
