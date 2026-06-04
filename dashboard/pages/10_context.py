@@ -1,4 +1,5 @@
 import sys
+import math
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -171,6 +172,16 @@ def _wr_color(wr) -> str:
     return "#da3633"
 
 
+def _wr_bg(val) -> str:
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return ""
+    if val >= 55:
+        return "background-color: #1a4a1a; color: #7ee787"
+    if val >= 45:
+        return "background-color: #3a2a00; color: #e3b341"
+    return "background-color: #4a1a1a; color: #f85149"
+
+
 def _no_data_msg(msg="No context data yet."):
     st.markdown(
         f'<div style="color:#8B949E;font-size:13px;padding:12px 0">{msg}</div>',
@@ -198,7 +209,7 @@ else:
         worst_wr = df_sess["WR%"].min()
         st.dataframe(
             df_sess.style
-                .background_gradient(subset=["WR%"], cmap="RdYlGn", vmin=30, vmax=70)
+                .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
                 .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}", "Avg P&L": "${:+.2f}"}),
             use_container_width=True, hide_index=True,
         )
@@ -243,7 +254,7 @@ else:
         })[["Day", "Trades", "Wins", "Losses", "WR%", "P&L", "Avg P&L"]]
         st.dataframe(
             df_dow.style
-                .background_gradient(subset=["WR%"], cmap="RdYlGn", vmin=30, vmax=70)
+                .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
                 .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}", "Avg P&L": "${:+.2f}"}),
             use_container_width=True, hide_index=True,
         )
@@ -281,7 +292,7 @@ with mc1:
         })[["Context", "Trades", "Wins", "WR%", "P&L"]]
         st.dataframe(
             df_ema.style
-                .background_gradient(subset=["WR%"], cmap="RdYlGn", vmin=30, vmax=70)
+                .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
                 .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}"}),
             use_container_width=True, hide_index=True,
         )
@@ -301,7 +312,7 @@ with mc2:
         })
         st.dataframe(
             df_vix.style
-                .background_gradient(subset=["WR%"], cmap="RdYlGn", vmin=30, vmax=70)
+                .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
                 .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}"}),
             use_container_width=True, hide_index=True,
         )
@@ -352,7 +363,7 @@ else:
             df_bins = pd.DataFrame(bin_rows)
             st.dataframe(
                 df_bins.style
-                    .background_gradient(subset=["WR%"], cmap="RdYlGn", vmin=30, vmax=70)
+                    .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
                     .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}"}),
                 use_container_width=True, hide_index=True,
             )
@@ -402,7 +413,7 @@ else:
             df_atr = pd.DataFrame(atr_df_rows)
             st.dataframe(
                 df_atr.style
-                    .background_gradient(subset=["WR%"], cmap="RdYlGn", vmin=30, vmax=70)
+                    .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
                     .format({"WR%": "{:.1f}%", "Total P&L": "${:+.2f}", "Avg P&L": "${:+.2f}"}),
                 use_container_width=True, hide_index=True,
             )
