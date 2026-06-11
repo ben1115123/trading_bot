@@ -170,6 +170,10 @@ STRATEGY_BLOCKLIST in scripts/select_strategy.py prevents daily cron from
 re-promoting any of the above. To unblock: remove the tuple from the set
 AND manually verify live performance warrants re-testing.
 
+US100 all strategies blocklisted 2026-06-12 — rsi_divergence was
+auto-promoted live by cron without review. All US100 strategies blocked
+until a specific US100 strategy is deliberately designed and validated.
+
 ## Paper Promotion Criteria
 
 Standard promotion (WR-based, for 1.67 R:R strategies):
@@ -378,6 +382,11 @@ Min gap size: 0.5x ATR10
     "Germany 40 Cash (£1)"  → DAX
 
 ## Key Gotchas
+- VPS backtest_results table diverges from local —
+  backtest sweeps run locally are NOT synced to VPS.
+  active_strategy.backtest_id on VPS only valid for
+  backtests run via run_daily.py cron on VPS itself.
+  Local sweep results exist in local trades.db only.
 - Session recreated on execute_trade.py import
 - Cooldown is PER-SYMBOL (not global) — last_trade_time dict
 - place_trade auto-retries once on 401 — retry preserves

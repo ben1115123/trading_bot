@@ -17,6 +17,8 @@ STRATEGY_BLOCKLIST = {
     ("US100", "HOUR", "rsi"),
     ("US100", "HOUR", "williams_r"),
     ("US100", "HOUR", "macd_rsi"),
+    ("US100", "HOUR", "rsi_divergence"),
+    ("US100", "HOUR", "swiftalgo"),
     ("US100", "5MIN", "stoch_rsi"),
     # BTC — two consecutive strategy failures; block all until redesign
     ("BTC",   "HOUR", "stoch_rsi"),
