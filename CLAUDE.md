@@ -138,6 +138,8 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | DAX    | HOUR | williams_r | Paper| 0.326 | loop    |                                |
 | US500  | 15MIN| fvg        | Paper| —     | loop    | SMC FVG POC, activated 2026-05-29 |
 | EURUSD | 15MIN| london_breakout | Paper| — | loop    | London session breakout 06:00-07:00 UTC range, activated 2026-06-04 |
+| EURUSD | 15MIN| williams_r | Paper| — | loop    | R:R strategy, 44.6% WR, +$947 est net, 435 trades, activated 2026-06-12 |
+| EURUSD | 15MIN| stoch_rsi  | Paper| — | loop    | R:R strategy, 30% WR, +$805 est net, 297 trades, activated 2026-06-12 |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -165,6 +167,13 @@ Minimum before promoting paper → live:
 - >52% win rate
 - Positive simulated P&L
 - Losses not correlated with US500 stoch_rsi losses
+
+R:R-adjusted promotion criteria (for strategies with PF > 1.3):
+- Profit Factor >= 1.3 after estimated spread
+- Expectancy per trade > $2.00 after spread
+- Sharpe >= 0.08
+- 50+ backtest trades
+- 30+ forward paper trades
 
 ## Signal Sources
 | Source              | What it is                        |

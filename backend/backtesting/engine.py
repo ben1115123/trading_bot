@@ -16,6 +16,14 @@ EPIC_CONFIG = {
 
 RISK_PER_TRADE = 15.0  # USD, matches live bot
 
+SPREAD_COSTS = {
+    "EURUSD": 1.05,   # ~1 pip x $10/pip per round trip
+    "US500":  0.75,   # ~0.6pt spread x $1/pt per round trip
+    "DAX":    1.50,   # ~1pt spread x $1/pt per round trip
+    "US100":  1.00,   # estimate
+    "BTC":    0.00,   # not trading
+}
+
 
 _TIMEFRAME_MAP = {
     "MINUTE": "1Min", "MINUTE_2": "2Min", "MINUTE_3": "3Min",
@@ -114,6 +122,7 @@ def run_backtest(strategy, candles: list, symbol: str,
     test_signals = all_signals[split:]
 
     vpp = EPIC_CONFIG[symbol.upper()]["value_per_point"]
+    spread_cost = SPREAD_COSTS.get(symbol.upper(), 0.75)
     trades = []
     open_trade = None
 
@@ -133,7 +142,7 @@ def run_backtest(strategy, candles: list, symbol: str,
                     ep  = open_trade["entry_price"]
                     d   = open_trade["direction"]
                     pnl = (((_tp - ep) if d == "BUY" else (ep - _tp))
-                           * open_trade["size"] * vpp)
+                           * open_trade["size"] * vpp) - spread_cost
                     try:
                         dur = int((datetime.fromisoformat(candle["time"]) -
                                    datetime.fromisoformat(open_trade["entry_time"])
@@ -169,7 +178,7 @@ def run_backtest(strategy, candles: list, symbol: str,
                     "direction":     open_trade["direction"],
                     "entry_price":   open_trade["entry_price"],
                     "exit_price":    candle["close"],
-                    "pnl":           -RISK_PER_TRADE,
+                    "pnl":           -RISK_PER_TRADE - spread_cost,
                     "duration_mins": max(0, dur),
                     "exit_reason":   "sl_stop",
                 })
@@ -188,7 +197,7 @@ def run_backtest(strategy, candles: list, symbol: str,
                 ep  = open_trade["entry_price"]
                 xp  = candle["close"]
                 d   = open_trade["direction"]
-                pnl = ((xp - ep) if d == "BUY" else (ep - xp)) * open_trade["size"] * vpp
+                pnl = ((xp - ep) if d == "BUY" else (ep - xp)) * open_trade["size"] * vpp - spread_cost
                 try:
                     dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
                 except Exception:
