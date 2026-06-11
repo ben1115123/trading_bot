@@ -497,11 +497,11 @@ def log_paper_trade(data: dict) -> None:
             INSERT INTO paper_trades
                 (checked_at, symbol, strategy_name, timeframe,
                  candle_time, signal, entry_price, sl, tp,
-                 simulated_pnl, outcome, params_json)
+                 simulated_pnl, outcome, params_json, notes)
             VALUES
                 (:checked_at, :symbol, :strategy_name, :timeframe,
                  :candle_time, :signal, :entry_price, :sl, :tp,
-                 :simulated_pnl, :outcome, :params_json)
+                 :simulated_pnl, :outcome, :params_json, :notes)
         """, {
             "checked_at":    data.get("checked_at", datetime.now(timezone.utc).isoformat()),
             "symbol":        data["symbol"],
@@ -515,6 +515,7 @@ def log_paper_trade(data: dict) -> None:
             "simulated_pnl": data.get("simulated_pnl"),
             "outcome":       data.get("outcome", "PENDING"),
             "params_json":   data.get("params_json"),
+            "notes":         data.get("notes"),
         })
         conn.commit()
     finally:

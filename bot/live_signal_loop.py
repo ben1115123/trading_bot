@@ -32,6 +32,7 @@ MAX_TRADES_PER_DAY    = 20     # bug catcher only
 MAX_TRADES_PER_SYMBOL = 6      # bug catcher only
 
 _last_signal: dict[str, str] = {}
+_last_shadow_signal: dict[str, str] = {}
 _last_checked: dict[str, datetime] = {}
 _ema200_cache: dict = {}  # symbol → (ema200, price_vs_ema200, cached_hour_key)
 
@@ -262,6 +263,38 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
     log_data["signal"]      = signal
     log_data["candle_time"] = candle_time
 
+    # Shadow logging — confluence filters blocked a signal that would
+    # otherwise have fired. Log it to paper_trades for A/B comparison.
+    if sig.get("shadow_blocked") and (_is_paper_trade(symbol, timeframe) or active.get("status") == "paper"):
+        shadow_dir    = sig.get("shadow_direction")
+        shadow_signal = "BUY" if shadow_dir == 1 else "SELL" if shadow_dir == -1 else None
+        if shadow_signal:
+            shadow_dedup_key = f"{symbol}_SHADOW_{shadow_signal}_{candle_time}"
+            if _last_shadow_signal.get((symbol, timeframe, strategy_name)) != shadow_dedup_key:
+                _last_shadow_signal[(symbol, timeframe, strategy_name)] = shadow_dedup_key
+                _entry   = candle["close"]
+                _sl_dist = candle["high"] - candle["low"]
+                if shadow_signal == "BUY":
+                    _sl, _tp = round(_entry - _sl_dist, 5), round(_entry + _sl_dist * 2, 5)
+                else:
+                    _sl, _tp = round(_entry + _sl_dist, 5), round(_entry - _sl_dist * 2, 5)
+                log_paper_trade({
+                    "checked_at":    datetime.now(timezone.utc).isoformat(),
+                    "symbol":        symbol,
+                    "strategy_name": strategy_name,
+                    "timeframe":     timeframe,
+                    "candle_time":   candle_time,
+                    "signal":        f"SHADOW_{shadow_signal}",
+                    "entry_price":   _entry,
+                    "sl":            _sl,
+                    "tp":            _tp,
+                    "outcome":       "PENDING",
+                    "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
+                    "notes":         f"SHADOW: filtered by {sig.get('shadow_reason')}",
+                })
+                print(f"[signal_loop] [{symbol}/{timeframe}/{strategy_name}] SHADOW {shadow_signal} "
+                      f"logged (filtered by {sig.get('shadow_reason')})")
+
     if signal not in ("BUY", "SELL"):
         print(f"[signal_loop] [{symbol}] signal={signal} — no trade")
         log_signal_check(log_data)
@@ -384,7 +417,7 @@ def _resolve_pending_paper_trades() -> None:
     for trade in trades:
         symbol    = trade["symbol"]
         timeframe = trade.get("timeframe", "HOUR")
-        signal    = (trade.get("signal") or "").upper().replace("PAPER_", "")
+        signal    = (trade.get("signal") or "").upper().replace("PAPER_", "").replace("SHADOW_", "")
         entry     = trade["entry_price"]
         sl        = trade["sl"]
         tp        = trade["tp"]

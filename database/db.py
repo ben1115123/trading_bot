@@ -296,9 +296,16 @@ def init_db():
             tp            REAL,
             simulated_pnl REAL,
             outcome       TEXT DEFAULT 'PENDING',
-            params_json   TEXT
+            params_json   TEXT,
+            notes         TEXT
         )
     """)
+
+    # Migrate paper_trades: add notes column for shadow-logging (existing DBs)
+    try:
+        cursor.execute("ALTER TABLE paper_trades ADD COLUMN notes TEXT")
+    except Exception:
+        pass
 
     # Create webhook_log table
     cursor.execute("""

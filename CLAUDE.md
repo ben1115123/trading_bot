@@ -145,6 +145,7 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | EURUSD | 15MIN | stoch_rsi  | Paper | loop   | 297 bt trades, PF 1.36          |
 | EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18           |
 | EURUSD | 15MIN | supertrend | Paper | loop   | 111 bt trades, PF 1.35          |
+| US500  | HOUR  | stoch_rsi_confluence | Paper | loop | session filter only, shadow logging — see below |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -354,6 +355,20 @@ Max one trade per day
 Backtest note: inconclusive — yfinance 15MIN limited to 60 days, test window only
 8-10 trades. Best sweep params: min_pips=8, buffer=0.3, tp=2.0, ema=false.
 Review after 30 resolved paper trades.
+
+### stoch_rsi_confluence (added 2026-06-12)
+| Symbol | TF   | Strategy             | Source | Rationale                          |
+|--------|------|----------------------|--------|-------------------------------------|
+| US500  | HOUR | stoch_rsi_confluence | loop   | stoch_rsi + session/ATR confluence  |
+
+Base: stoch_rsi US500 HOUR (same signal generation as live stoch_rsi)
+ATR filter disabled — hurts in backtest.
+Session filter only. Shadow logging active.
+Filters: session (London 07:00-08:59 UTC + NY 13:00-15:59 UTC)
+Blocked signals logged as SHADOW_BUY/SHADOW_SELL with
+notes="SHADOW: filtered by session" for A/B comparison.
+Review after 30 paper trades + 30 shadow trades.
+Promote if confluence WR > shadow WR by 10%+
 
 ### FVG Strategy (added 2026-05-29)
 | Symbol | TF    | Strategy | Rationale                                         |

@@ -119,6 +119,7 @@ from backend.strategies.orb import ORBStrategy
 from backend.strategies.ichimoku import IchimokuStrategy
 from backend.strategies.keltner import KeltnerChannelStrategy
 from backend.strategies.stoch_rsi import StochRSIStrategy
+from backend.strategies.stoch_rsi_confluence import StochRSIConfluenceStrategy
 from backend.strategies.ema_cross_volume import EMACrossVolumeStrategy
 from backend.strategies.vwap_mean_reversion import VWAPMeanReversionStrategy
 from backend.strategies.connors_rsi2 import ConnorsRSI2Strategy
@@ -140,6 +141,7 @@ STRATEGIES = {
     "ichimoku":       IchimokuStrategy,
     "keltner":        KeltnerChannelStrategy,
     "stoch_rsi":        StochRSIStrategy,
+    "stoch_rsi_confluence": StochRSIConfluenceStrategy,
     "ema_cross_volume":     EMACrossVolumeStrategy,
     "vwap_mean_reversion":  VWAPMeanReversionStrategy,
     "connors_rsi2":         ConnorsRSI2Strategy,
@@ -202,6 +204,18 @@ PARAM_GRIDS = {
         "d_smooth":     [3],
         "oversold":     [15, 20, 25],
         "overbought":   [75, 80, 85],
+    },
+    "stoch_rsi_confluence": {
+        "rsi_period":     [14],
+        "stoch_period":   [14],
+        "k_smooth":       [3],
+        "d_smooth":       [3],
+        "oversold":       [20],
+        "overbought":     [80],
+        "session_filter": [True, False],
+        "atr_filter":     [True, False],
+        "atr_period":     [14],
+        "atr_lookback":   [50],
     },
     "ema_cross_volume": {
         "fast":       [5, 8, 13],
