@@ -3,3 +3,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Daily run at 6am UTC — log() in run_daily.py writes to /app/logs/daily_run.log
 0 6 * * * root cd /app && /usr/local/bin/python3 scripts/run_daily.py > /dev/null 2>&1
+
+# Candle collector every 15min — appends to scripts/candle_cache/{SYMBOL}_15MIN_IG.json
+*/15 * * * * root cd /app && /usr/local/bin/python3 scripts/collect_candles.py >> /app/logs/candles.log 2>&1
