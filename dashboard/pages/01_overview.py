@@ -453,11 +453,12 @@ st.markdown(
 )
 
 _PAPER_CARDS = [
-    ("US500",  "US500 · williams_r",      "williams_r",      "HOUR",  None,       None,                 "loop"),
-    ("DAX",    "DAX · williams_r",        "williams_r",      "HOUR",  dax_signal, None,                 "loop"),
-    ("US500",  "US500 · fvg",             "fvg",             "15MIN", None,       "London/NY sessions", "loop"),
-    ("US500",  "US500 · smc",             "smc",             "15MIN", None,       "SMC webhook",        "webhook"),
-    ("EURUSD", "EURUSD · london_breakout","london_breakout",  "15MIN", None,       "06:00–09:00 UTC",    "loop"),
+    ("US500",  "US500 · williams_r",       "williams_r",      "HOUR",  None, None,                          "loop"),
+    ("EURUSD", "EURUSD · williams_r",      "williams_r",      "15MIN", None, None,                          "loop"),
+    ("EURUSD", "EURUSD · stoch_rsi",       "stoch_rsi",       "15MIN", None, None,                          "loop"),
+    ("EURUSD", "EURUSD · bb_squeeze",      "bb_squeeze",      "15MIN", None, None,                          "loop"),
+    ("EURUSD", "EURUSD · supertrend",      "supertrend",      "15MIN", None, None,                          "loop"),
+    ("EURUSD", "EURUSD · london_breakout", "london_breakout", "15MIN", None, "06:00–09:00 UTC (inactive)",  "loop"),
 ]
 for _batch_start in range(0, len(_PAPER_CARDS), 3):
     _batch     = _PAPER_CARDS[_batch_start:_batch_start + 3]

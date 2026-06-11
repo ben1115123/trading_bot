@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Fetch 2yr 15MIN candles from Twelve Data and save to the candle
+Fetch 15MIN candles from Twelve Data and save to the candle
 cache for run_backtest.py (--source alphavantage).
 
 Free key: twelvedata.com (no credit card)
 Read from .env: TWELVEDATA_API_KEY=your_key_here
 
 Free tier: 8 requests/minute — 8s sleep between calls.
+
+Paginates via end_date to fetch further back than one
+5000-candle batch:
+  EURUSD (24hr market): 6 batches  -> ~10 months, ~20,000 candles
+  US500/DAX/US100 (market hours): 2 batches -> ~18 months, ~10,000 candles
 
 Usage:
   python3 scripts/fetch_twelvedata.py
@@ -39,8 +44,16 @@ SYMBOL_MAP = {
     "US100":  "QQQ",
 }
 
+# Number of 5000-candle batches per symbol (paginated via end_date)
+BATCH_COUNT = {
+    "EURUSD": 6,
+    "US500":  2,
+    "DAX":    2,
+    "US100":  2,
+}
 
-def _request(td_symbol: str) -> dict:
+
+def _request(td_symbol: str, end_date: str = None) -> dict:
     api_key = os.getenv("TWELVEDATA_API_KEY")
     if not api_key:
         raise RuntimeError("TWELVEDATA_API_KEY not set in .env")
@@ -50,6 +63,8 @@ def _request(td_symbol: str) -> dict:
         "outputsize": OUTPUTSIZE,
         "apikey": api_key,
     }
+    if end_date:
+        params["end_date"] = end_date
     resp = requests.get(BASE_URL, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -74,8 +89,43 @@ def _parse_candles(data: dict) -> list:
     return candles
 
 
+def fetch_symbol(symbol: str, sleep_before_first: bool) -> list:
+    td_symbol = SYMBOL_MAP[symbol]
+    num_batches = BATCH_COUNT[symbol]
+
+    all_candles = []
+    end_date = None
+    for batch in range(1, num_batches + 1):
+        if batch > 1 or sleep_before_first:
+            print(f"Sleeping {SLEEP_SECONDS}s (rate limit)...")
+            time.sleep(SLEEP_SECONDS)
+
+        suffix = f" (end_date={end_date})" if end_date else ""
+        print(f"Fetching {symbol} {TIMEFRAME} ({td_symbol}) batch {batch}/{num_batches}{suffix}...")
+        data = _request(td_symbol, end_date=end_date)
+        candles = _parse_candles(data)
+
+        if not candles:
+            print(f"  batch {batch}: 0 candles — stopping pagination")
+            break
+
+        print(f"  batch {batch}: {len(candles):,} candles ({candles[0]['time']} to {candles[-1]['time']})")
+        all_candles.extend(candles)
+
+        if len(candles) < OUTPUTSIZE:
+            print(f"  batch {batch}: returned < {OUTPUTSIZE} — no more history, stopping pagination")
+            break
+
+        end_date = candles[0]["time"]
+
+    seen = {}
+    for c in all_candles:
+        seen[c["time"]] = c
+    return sorted(seen.values(), key=lambda c: c["time"])
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Fetch 15MIN candles from Twelve Data.")
+    parser = argparse.ArgumentParser(description="Fetch 15MIN candles from Twelve Data (paginated).")
     parser.add_argument("--symbols", default="EURUSD,US500,DAX,US100",
                         help="Comma-separated symbols (default: EURUSD,US500,DAX,US100)")
     parser.add_argument("--dry-run", action="store_true",
@@ -90,8 +140,10 @@ def main():
 
     if args.dry_run:
         for s in symbols:
+            num_batches = BATCH_COUNT[s]
             print(f"[dry-run] {s} {TIMEFRAME} -> symbol={SYMBOL_MAP[s]} interval={INTERVAL} "
-                  f"outputsize={OUTPUTSIZE}")
+                  f"outputsize={OUTPUTSIZE} batches={num_batches} "
+                  f"(target ~{num_batches * OUTPUTSIZE:,} candles)")
         print("\nDry run complete — no API calls made, no files written.")
         return
 
@@ -99,14 +151,7 @@ def main():
 
     summary = []
     for i, symbol in enumerate(symbols):
-        if i > 0:
-            print(f"Sleeping {SLEEP_SECONDS}s (rate limit)...")
-            time.sleep(SLEEP_SECONDS)
-
-        td_symbol = SYMBOL_MAP[symbol]
-        print(f"Fetching {symbol} {TIMEFRAME} ({td_symbol})...")
-        data = _request(td_symbol)
-        candles = _parse_candles(data)
+        candles = fetch_symbol(symbol, sleep_before_first=(i > 0))
 
         out_path = CACHE_DIR / f"{symbol}_{TIMEFRAME}_AV.json"
         with open(out_path, "w") as f:

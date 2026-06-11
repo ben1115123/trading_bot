@@ -129,17 +129,22 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 (US100_5MIN removed — stoch_rsi deactivated)
 
 ## Active Strategies
-| Symbol | TF   | Strategy   | Mode | Score | Source  | Notes                          |
-|--------|------|------------|------|-------|---------|--------------------------------|
-| US500  | HOUR | stoch_rsi  | Live | 0.867 | loop    |                                |
-| EURUSD | HOUR | swiftalgo  | Live | —     | webhook | Promoted 2026-05-27, $10 risk  |
-| US500  | HOUR | swiftalgo  | Live | —     | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
-| US500  | HOUR | williams_r | Paper| 0.333 | loop    | ⚠️ not firing — _is_due key collision with stoch_rsi US500 HOUR |
-| DAX    | HOUR | williams_r | Paper| 0.326 | loop    |                                |
-| US500  | 15MIN| fvg        | Paper| —     | loop    | SMC FVG POC, activated 2026-05-29 |
-| EURUSD | 15MIN| london_breakout | Paper| — | loop    | London session breakout 06:00-07:00 UTC range, activated 2026-06-04 |
-| EURUSD | 15MIN| williams_r | Paper| — | loop    | R:R strategy, 44.6% WR, +$947 est net, 435 trades, activated 2026-06-12 |
-| EURUSD | 15MIN| stoch_rsi  | Paper| — | loop    | R:R strategy, 30% WR, +$805 est net, 297 trades, activated 2026-06-12 |
+
+### Live
+| Symbol | TF   | Strategy   | Mode | Source  | Notes                          |
+|--------|------|------------|------|---------|--------------------------------|
+| US500  | HOUR | stoch_rsi  | Live | loop    |                                |
+| EURUSD | HOUR | swiftalgo  | Live | webhook | Promoted 2026-05-27, $10 risk  |
+| US500  | HOUR | swiftalgo  | Live | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
+
+### Paper
+| Symbol | TF    | Strategy   | Mode  | Source | Notes                          |
+|--------|-------|------------|-------|--------|---------------------------------|
+| US500  | HOUR  | williams_r | Paper | loop   | Accumulating trades             |
+| EURUSD | 15MIN | williams_r | Paper | loop   | 435 bt trades, PF 1.39          |
+| EURUSD | 15MIN | stoch_rsi  | Paper | loop   | 297 bt trades, PF 1.36          |
+| EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18           |
+| EURUSD | 15MIN | supertrend | Paper | loop   | 111 bt trades, PF 1.35          |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -153,6 +158,10 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | BTC    | HOUR | vwap_ema        | Already inactive (margin issues)         |
 | US100  | HOUR | rsi             | Firing live trades incorrectly — deactivated 2026-06-04 |
 | BTC    | HOUR | stoch_rsi       | BTC margin concerns — deactivated 2026-06-04             |
+| DAX    | HOUR | williams_r      | Negative backtest P&L — deactivated 2026-06-12 |
+| US500  | 15MIN| fvg             | 30.6% WR insufficient — deactivated 2026-06-12 |
+| US500  | 15MIN| smc             | 24% WR, low frequency — deactivated 2026-06-12 |
+| EURUSD | 15MIN| london_breakout | 35% WR, negative P&L — deactivated 2026-06-12  |
 
 BTC note: Two consecutive failed strategies. No BTC strategies until a
 crypto-specific volatility approach is designed and backtested.
@@ -162,18 +171,19 @@ re-promoting any of the above. To unblock: remove the tuple from the set
 AND manually verify live performance warrants re-testing.
 
 ## Paper Promotion Criteria
-Minimum before promoting paper → live:
-- 30+ resolved trades
-- >52% win rate
-- Positive simulated P&L
-- Losses not correlated with US500 stoch_rsi losses
 
-R:R-adjusted promotion criteria (for strategies with PF > 1.3):
+Standard promotion (WR-based, for 1.67 R:R strategies):
+- 30+ resolved paper trades
+- WR >= 52%
+- Positive simulated P&L
+- Losses not correlated with stoch_rsi US500
+
+R:R-adjusted promotion (for high R:R strategies, PF >= 1.3):
+- 50+ resolved paper trades (higher bar for lower WR)
 - Profit Factor >= 1.3 after estimated spread
 - Expectancy per trade > $2.00 after spread
 - Sharpe >= 0.08
-- 50+ backtest trades
-- 30+ forward paper trades
+- Losses not correlated with stoch_rsi US500
 
 ## Signal Sources
 | Source              | What it is                        |
