@@ -226,6 +226,26 @@ def insert_backtest_trade(trade: dict) -> None:
         conn.close()
 
 
+def insert_backtest_trades(trades: list) -> None:
+    """Bulk insert — one connection, one transaction for the whole list."""
+    if not trades:
+        return
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.executemany("""
+            INSERT INTO backtest_trades
+                (backtest_id, entry_time, exit_time, direction,
+                 entry_price, exit_price, pnl, duration_mins)
+            VALUES
+                (:backtest_id, :entry_time, :exit_time, :direction,
+                 :entry_price, :exit_price, :pnl, :duration_mins)
+        """, trades)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_backtest_results() -> list:
     conn = get_connection()
     try:

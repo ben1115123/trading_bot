@@ -127,7 +127,7 @@ from backend.strategies.macd_rsi import MACDRSIStrategy
 from backend.strategies.fvg import FVGStrategy
 from backend.strategies.london_breakout import LondonBreakoutStrategy
 from backend.strategies.smc import SMCStrategy
-from database.models import insert_backtest_result, insert_backtest_trade
+from database.models import insert_backtest_result, insert_backtest_trades
 
 STRATEGIES = {
     "rsi":        RSIStrategy,
@@ -290,8 +290,7 @@ def _save_run(strategy_class, symbol, timeframe, result, params,
         "strategy_type":    strategy_type,
     }
     backtest_id = insert_backtest_result(row)
-    for t in trades:
-        insert_backtest_trade({**t, "backtest_id": backtest_id})
+    insert_backtest_trades([{**t, "backtest_id": backtest_id} for t in trades])
     return backtest_id
 
 
