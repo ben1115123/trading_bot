@@ -58,6 +58,28 @@ def _fetch_yfinance_candles(symbol: str, timeframe: str, count: int) -> list:
     return candles[-count:]
 
 
+def _load_alphavantage_candles(symbol: str, timeframe: str) -> list:
+    path = CACHE_DIR / f"{symbol.upper()}_{timeframe.upper()}_AV.json"
+    if not path.exists():
+        raise RuntimeError(
+            f"No Alpha Vantage cache found at {path}. "
+            f"Run: python3 scripts/fetch_historical.py --symbol {symbol.upper()} --timeframe {timeframe.upper()}"
+        )
+    with open(path) as f:
+        return json.load(f)
+
+
+def _load_ig_cache_candles(symbol: str, timeframe: str) -> list:
+    path = CACHE_DIR / f"{symbol.upper()}_{timeframe.upper()}_IG.json"
+    if not path.exists():
+        raise RuntimeError(
+            f"No IG-collected cache found at {path}. "
+            f"Run scripts/collect_candles.py on the VPS to start building this cache."
+        )
+    with open(path) as f:
+        return json.load(f)
+
+
 def _cache_path(symbol: str, timeframe: str, count: int, source: str = "ig") -> Path:
     suffix = "_yf" if source == "yfinance" else ""
     return CACHE_DIR / f"{symbol.upper()}_{timeframe.upper()}_{count}{suffix}.json"
@@ -298,8 +320,8 @@ def main():
     parser.add_argument("--sweep",         action="store_true", help="Run full parameter sweep")
     parser.add_argument("--cache",         action="store_true", help="Cache candles to disk; load if fresh (<24h)")
     parser.add_argument("--refresh-cache", action="store_true", help="Force re-fetch even if cache exists")
-    parser.add_argument("--source",         default="ig", choices=["ig", "yfinance"],
-                        help="Data source: ig (default) or yfinance (free, no API limit)")
+    parser.add_argument("--source",         default="ig", choices=["ig", "yfinance", "alphavantage", "ig_cache"],
+                        help="Data source: ig (default), yfinance, alphavantage (cached, 2yr 15MIN), or ig_cache (self-collected)")
     parser.add_argument("--type",           default="swing", choices=["swing", "daytrading"],
                         help="Strategy type label stored in DB (default: swing)")
     parser.add_argument("--session-filter", default=None, choices=["US", "24_7"],
@@ -316,7 +338,15 @@ def main():
     strategy_class = STRATEGIES[strategy_key]
 
     candles = None
-    if args.cache and not args.refresh_cache:
+    if args.source == "alphavantage":
+        print(f"Loading {args.symbol} {args.timeframe} candles from Alpha Vantage cache...")
+        candles = _load_alphavantage_candles(args.symbol, args.timeframe)[-args.count:]
+        print(f"Loaded {len(candles)} candles.")
+    elif args.source == "ig_cache":
+        print(f"Loading {args.symbol} {args.timeframe} candles from IG-collected cache...")
+        candles = _load_ig_cache_candles(args.symbol, args.timeframe)[-args.count:]
+        print(f"Loaded {len(candles)} candles.")
+    elif args.cache and not args.refresh_cache:
         candles = _load_cache(args.symbol, args.timeframe, args.count, args.source)
         if candles:
             print(f"Loaded {len(candles)} candles from cache ({args.symbol} {args.timeframe} {args.count} [{args.source}]).")
