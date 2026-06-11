@@ -204,93 +204,116 @@ st.markdown(f"""
 
 st.markdown('<div class="section-hd">Strategy Pipeline</div>', unsafe_allow_html=True)
 
+pipeline_tf_sel = st.selectbox(
+    "Timeframe", ["All", "HOUR", "15MIN"], label_visibility="visible",
+    key="pipeline_tf_filter",
+)
+
+
+def _render_pipeline_card(row: dict) -> str:
+    n      = row["total"]     or 0
+    w      = row["wins"]      or 0
+    l_     = row["losses"]    or 0
+    pnl    = row["total_pnl"] or 0.0
+    res    = w + l_
+    wr     = (w / res * 100) if res > 0 else None
+    status = row.get("status", "paper")
+    src    = row.get("src", "loop")
+
+    if status == "active":
+        badge    = "🔵 Live"
+        badge_bg = "#1D4ED822"
+        badge_c  = "#3B82F6"
+        border_c = "#1D4ED8"
+    elif n > 0:
+        badge    = "🟢 Firing"
+        badge_bg = "#22C55E22"
+        badge_c  = "#22C55E"
+        border_c = "#22C55E"
+    else:
+        badge    = "⏳ Awaiting"
+        badge_bg = "#8B949E22"
+        badge_c  = "#8B949E"
+        border_c = "#30363D"
+
+    src_badge = (
+        '<span style="font-size:10px;color:#F59E0B;background:#F59E0B22;'
+        'padding:2px 6px;border-radius:4px;margin-left:6px">📡 webhook</span>'
+        if src == "webhook" else
+        '<span style="font-size:10px;color:#22C55E;background:#22C55E22;'
+        'padding:2px 6px;border-radius:4px;margin-left:6px">🔄 loop</span>'
+    )
+
+    wr_lbl  = "Win Rate"     if status == "active" else "Sim Win Rate"
+    pnl_lbl = "P&amp;L"     if status == "active" else "Sim P&amp;L"
+
+    wr_str = f"{wr:.1f}%" if wr is not None else "—"
+    wr_c   = "#3B82F6"    if (wr or 0) >= 50 else "#8B5CF6"
+    wr_badge = (
+        f'<span style="background:{wr_c}22;color:{wr_c};'
+        f'padding:2px 8px;border-radius:4px;font-weight:700">{wr_str}</span>'
+        if wr is not None else "—"
+    )
+
+    pnl_str = (f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}") if res > 0 else "$0.00"
+    pnl_c   = ("#22C55E" if pnl >= 0 else "#EF4444") if res > 0 else "#8B949E"
+
+    bt_wr  = row.get("bt_win_rate")
+    bt_pnl = row.get("bt_pnl")
+    bt_wr_str  = f"{bt_wr * 100:.1f}%"  if bt_wr  is not None else "—"
+    bt_pnl_str = (f"+${bt_pnl:,.2f}" if bt_pnl >= 0 else f"-${abs(bt_pnl):,.2f}") if bt_pnl is not None else "—"
+    bt_pnl_c   = ("#22C55E" if bt_pnl >= 0 else "#EF4444") if bt_pnl is not None else "#8B949E"
+
+    return f"""
+    <div style="background:#161B22;border:1px solid {border_c};
+                border-radius:10px;padding:16px 20px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;
+                  align-items:center;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:600;color:#3B82F6">
+          {row['symbol']} · {row['timeframe'] or '—'} · {row['strategy_name']}{src_badge}
+        </div>
+        <span style="background:{badge_bg};color:{badge_c};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">{badge}</span>
+      </div>
+      <div class="info-tile"><div class="lbl">Strategy</div>
+        <div class="val">{row['strategy_name']}</div></div>
+      <div class="info-tile"><div class="lbl">Signals</div>
+        <div class="val">{n}</div></div>
+      <div class="info-tile"><div class="lbl">{wr_lbl}</div>
+        <div class="val">{wr_badge}</div></div>
+      <div class="info-tile"><div class="lbl">{pnl_lbl}</div>
+        <div class="val" style="color:{pnl_c}">{pnl_str}</div></div>
+      <div class="info-tile" style="border-top:1px solid #21262D;
+        margin-top:8px;padding-top:8px">
+        <div class="lbl">Backtest Win Rate</div>
+        <div class="val">{bt_wr_str}</div></div>
+      <div class="info-tile"><div class="lbl">Backtest P&amp;L</div>
+        <div class="val" style="color:{bt_pnl_c}">{bt_pnl_str}</div></div>
+    </div>
+    """
+
+
 paper_strats = fetch_active_paper_strategies()
+if pipeline_tf_sel != "All":
+    paper_strats = [r for r in paper_strats if r["timeframe"] == pipeline_tf_sel]
+
 if paper_strats:
     COLS = 3
-    for i in range(0, len(paper_strats), COLS):
-        batch = paper_strats[i : i + COLS]
-        cols  = st.columns(COLS)
-        for col, row in zip(cols, batch):
-            with col:
-                n      = row["total"]     or 0
-                w      = row["wins"]      or 0
-                l_     = row["losses"]    or 0
-                pnl    = row["total_pnl"] or 0.0
-                res    = w + l_
-                wr     = (w / res * 100) if res > 0 else None
-                status = row.get("status", "paper")
-                src    = row.get("src", "loop")
-
-                if status == "active":
-                    badge    = "🔵 Live"
-                    badge_bg = "#1D4ED822"
-                    badge_c  = "#3B82F6"
-                    border_c = "#1D4ED8"
-                elif n > 0:
-                    badge    = "🟢 Firing"
-                    badge_bg = "#22C55E22"
-                    badge_c  = "#22C55E"
-                    border_c = "#22C55E"
-                else:
-                    badge    = "⏳ Awaiting"
-                    badge_bg = "#8B949E22"
-                    badge_c  = "#8B949E"
-                    border_c = "#30363D"
-
-                src_badge = (
-                    '<span style="font-size:10px;color:#F59E0B;background:#F59E0B22;'
-                    'padding:2px 6px;border-radius:4px;margin-left:6px">📡 webhook</span>'
-                    if src == "webhook" else
-                    '<span style="font-size:10px;color:#22C55E;background:#22C55E22;'
-                    'padding:2px 6px;border-radius:4px;margin-left:6px">🔄 loop</span>'
-                )
-
-                wr_lbl  = "Win Rate"     if status == "active" else "Sim Win Rate"
-                pnl_lbl = "P&amp;L"     if status == "active" else "Sim P&amp;L"
-
-                wr_str = f"{wr:.1f}%" if wr is not None else "—"
-                wr_c   = "#3B82F6"    if (wr or 0) >= 50 else "#8B5CF6"
-                wr_badge = (
-                    f'<span style="background:{wr_c}22;color:{wr_c};'
-                    f'padding:2px 8px;border-radius:4px;font-weight:700">{wr_str}</span>'
-                    if wr is not None else "—"
-                )
-
-                pnl_str = (f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}") if res > 0 else "$0.00"
-                pnl_c   = ("#22C55E" if pnl >= 0 else "#EF4444") if res > 0 else "#8B949E"
-
-                bt_wr  = row.get("bt_win_rate")
-                bt_pnl = row.get("bt_pnl")
-                bt_wr_str  = f"{bt_wr * 100:.1f}%"  if bt_wr  is not None else "—"
-                bt_pnl_str = (f"+${bt_pnl:,.2f}" if bt_pnl >= 0 else f"-${abs(bt_pnl):,.2f}") if bt_pnl is not None else "—"
-                bt_pnl_c   = ("#22C55E" if bt_pnl >= 0 else "#EF4444") if bt_pnl is not None else "#8B949E"
-
-                st.markdown(f"""
-                <div style="background:#161B22;border:1px solid {border_c};
-                            border-radius:10px;padding:16px 20px;margin-bottom:8px">
-                  <div style="display:flex;justify-content:space-between;
-                              align-items:center;margin-bottom:12px">
-                    <div style="font-size:12px;font-weight:600;color:#3B82F6">
-                      {row['symbol']} · {row['timeframe'] or '—'} · {row['strategy_name']}{src_badge}
-                    </div>
-                    <span style="background:{badge_bg};color:{badge_c};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">{badge}</span>
-                  </div>
-                  <div class="info-tile"><div class="lbl">Strategy</div>
-                    <div class="val">{row['strategy_name']}</div></div>
-                  <div class="info-tile"><div class="lbl">Signals</div>
-                    <div class="val">{n}</div></div>
-                  <div class="info-tile"><div class="lbl">{wr_lbl}</div>
-                    <div class="val">{wr_badge}</div></div>
-                  <div class="info-tile"><div class="lbl">{pnl_lbl}</div>
-                    <div class="val" style="color:{pnl_c}">{pnl_str}</div></div>
-                  <div class="info-tile" style="border-top:1px solid #21262D;
-                    margin-top:8px;padding-top:8px">
-                    <div class="lbl">Backtest Win Rate</div>
-                    <div class="val">{bt_wr_str}</div></div>
-                  <div class="info-tile"><div class="lbl">Backtest P&amp;L</div>
-                    <div class="val" style="color:{bt_pnl_c}">{bt_pnl_str}</div></div>
-                </div>
-                """, unsafe_allow_html=True)
+    other_rows = [r for r in paper_strats if r["timeframe"] not in ("HOUR", "15MIN")]
+    for tf_label, tf_value in (("HOUR", "HOUR"), ("15MIN", "15MIN"), ("PAPER · OTHER", None)):
+        tf_rows = other_rows if tf_value is None else [r for r in paper_strats if r["timeframe"] == tf_value]
+        if not tf_rows:
+            continue
+        st.markdown(
+            f'<div style="font-size:11px;font-weight:700;letter-spacing:0.05em;'
+            f'color:#8B949E;margin:12px 0 8px">{tf_label}</div>',
+            unsafe_allow_html=True,
+        )
+        for i in range(0, len(tf_rows), COLS):
+            batch = tf_rows[i : i + COLS]
+            cols  = st.columns(COLS)
+            for col, row in zip(cols, batch):
+                with col:
+                    st.markdown(_render_pipeline_card(row), unsafe_allow_html=True)
 else:
     st.info("No strategies configured.")
 
