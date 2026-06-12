@@ -885,7 +885,7 @@ def get_webhook_outcomes(conn, days: int = 30) -> list:
 def get_outcome_summary(conn, days: int = 30) -> list:
     cursor = conn.cursor()
     cursor.execute(f"""
-        SELECT block_reason,
+        SELECT w.block_reason,
                COUNT(*) as total_blocked,
                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as would_win,
                SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as would_lose,
@@ -895,7 +895,7 @@ def get_outcome_summary(conn, days: int = 30) -> list:
         FROM webhook_outcome_log o
         JOIN webhook_log w ON w.id = o.webhook_log_id
         WHERE w.timestamp >= datetime('now', '-{int(days)} days')
-        GROUP BY block_reason
+        GROUP BY w.block_reason
     """)
     return [dict(row) for row in cursor.fetchall()]
 

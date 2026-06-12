@@ -211,7 +211,9 @@ strategy_name hardcoded to "swiftalgo" in receiver.py
 source hardcoded to "tradingview_webhook" in receiver.py
 
 ## VIX Filter (swing strategies, live only)
-Threshold: VIX >= 22 → block | VIX >= 18 → caution, also block
+Threshold: VIX >= 20 → block | VIX >= 18 → caution, also block
+Changed 2026-06-12 based on live data:
+VIX 20-25 showed 16.7% WR across 6 trades
 Fails open: API error or fetch failure → allow entry
 Applied once per signal_loop cycle (not per symbol)
 Paper trades always fire regardless of VIX — for filter evaluation

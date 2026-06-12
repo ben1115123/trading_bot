@@ -4,7 +4,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-VIX_BLOCK_THRESHOLD   = 22.0
+VIX_BLOCK_THRESHOLD   = 20.0
 VIX_CAUTION_THRESHOLD = 18.0
 
 
