@@ -20,8 +20,22 @@ STRATEGY_BLOCKLIST = {
     ("US100", "HOUR", "rsi_divergence"),
     ("US100", "HOUR", "swiftalgo"),
     ("US100", "HOUR", "smc"),
+    ("US100", "HOUR", "ema_pullback"),            # paper only, not for live
+    ("US100", "HOUR", "ny_session_momentum"),
+    ("US100", "HOUR", "silver_bullet"),
+    ("US100", "HOUR", "london_breakout"),
+    ("US100", "HOUR", "rsi_divergence_session"),
     ("US100", "15MIN", "smc"),
+    ("US100", "15MIN", "stoch_rsi"),
+    ("US100", "15MIN", "williams_r"),
+    ("US100", "15MIN", "ny_session_momentum"),
+    ("US100", "15MIN", "silver_bullet"),
+    ("US100", "15MIN", "london_breakout"),
+    ("US100", "15MIN", "rsi_divergence_session"),
+    ("US100", "15MIN", "vwap_mean_reversion"),
+    ("US100", "15MIN", "fvg"),
     ("US100", "5MIN", "stoch_rsi"),
+
     # BTC — two consecutive strategy failures; block all until redesign
     ("BTC",   "HOUR", "stoch_rsi"),
     ("BTC",   "HOUR", "rsi_divergence"),
@@ -29,6 +43,95 @@ STRATEGY_BLOCKLIST = {
     ("BTC",   "HOUR", "rsi"),
     ("BTC",   "HOUR", "williams_r"),
     ("BTC",   "HOUR", "macd_rsi"),
+
+    # US500 HOUR — failed backtests / not validated
+    ("US500", "HOUR", "rsi"),
+    ("US500", "HOUR", "macd_rsi"),
+    ("US500", "HOUR", "vwap_ema"),
+    ("US500", "HOUR", "ema_ribbon"),
+    ("US500", "HOUR", "rsi_divergence"),
+    ("US500", "HOUR", "orb"),
+    ("US500", "HOUR", "ichimoku"),
+    ("US500", "HOUR", "keltner"),
+    ("US500", "HOUR", "ema_cross_volume"),
+    ("US500", "HOUR", "vwap_mean_reversion"),
+    ("US500", "HOUR", "connors_rsi2"),
+    ("US500", "HOUR", "bb_squeeze"),
+    ("US500", "HOUR", "supertrend"),
+    ("US500", "HOUR", "london_breakout"),
+    ("US500", "HOUR", "silver_bullet"),
+    ("US500", "HOUR", "ny_session_momentum"),
+    ("US500", "HOUR", "rsi_divergence_session"),
+    # US500 15MIN — confirmed failures or manual deactivations
+    ("US500", "15MIN", "fvg"),                    # 30.6% WR, deactivated
+    ("US500", "15MIN", "smc"),                    # 24% WR, deactivated
+    ("US500", "15MIN", "london_breakout"),        # negative P&L
+    ("US500", "15MIN", "silver_bullet"),          # negative all combos
+    ("US500", "15MIN", "vwap_mean_reversion"),    # PF 1.07
+    ("US500", "15MIN", "rsi_divergence_session"), # PF 1.09
+    ("US500", "15MIN", "ny_session_momentum"),    # PF 1.21 below bar
+
+    # EURUSD HOUR — strategies that failed
+    ("EURUSD", "HOUR", "stoch_rsi"),
+    ("EURUSD", "HOUR", "williams_r"),
+    ("EURUSD", "HOUR", "rsi"),
+    ("EURUSD", "HOUR", "macd_rsi"),
+    ("EURUSD", "HOUR", "rsi_divergence"),
+    ("EURUSD", "HOUR", "vwap_ema"),
+    ("EURUSD", "HOUR", "ema_ribbon"),
+    ("EURUSD", "HOUR", "orb"),
+    ("EURUSD", "HOUR", "ichimoku"),
+    ("EURUSD", "HOUR", "keltner"),
+    ("EURUSD", "HOUR", "ema_cross_volume"),
+    ("EURUSD", "HOUR", "vwap_mean_reversion"),
+    ("EURUSD", "HOUR", "connors_rsi2"),
+    ("EURUSD", "HOUR", "bb_squeeze"),
+    ("EURUSD", "HOUR", "supertrend"),
+    ("EURUSD", "HOUR", "fvg"),
+    ("EURUSD", "HOUR", "smc"),
+    ("EURUSD", "HOUR", "silver_bullet"),
+    # EURUSD 15MIN — failed / below promotion bar
+    ("EURUSD", "15MIN", "london_breakout"),       # 35% WR, negative P&L, deactivated
+    ("EURUSD", "15MIN", "silver_bullet"),         # 14 trades only
+    ("EURUSD", "15MIN", "vwap_mean_reversion"),   # spread kills it
+    ("EURUSD", "15MIN", "rsi_divergence_session"),# PF 1.10
+    ("EURUSD", "15MIN", "smc"),
+    ("EURUSD", "15MIN", "fvg"),
+
+    # DAX HOUR — everything failed
+    ("DAX", "HOUR", "williams_r"),       # deactivated
+    ("DAX", "HOUR", "macd_rsi"),         # deactivated
+    ("DAX", "HOUR", "rsi"),              # deactivated
+    ("DAX", "HOUR", "stoch_rsi"),
+    ("DAX", "HOUR", "rsi_divergence"),
+    ("DAX", "HOUR", "vwap_ema"),
+    ("DAX", "HOUR", "ema_ribbon"),
+    ("DAX", "HOUR", "orb"),
+    ("DAX", "HOUR", "ichimoku"),
+    ("DAX", "HOUR", "keltner"),
+    ("DAX", "HOUR", "ema_cross_volume"),
+    ("DAX", "HOUR", "vwap_mean_reversion"),
+    ("DAX", "HOUR", "connors_rsi2"),
+    ("DAX", "HOUR", "bb_squeeze"),
+    ("DAX", "HOUR", "supertrend"),
+    ("DAX", "HOUR", "fvg"),
+    ("DAX", "HOUR", "smc"),
+    ("DAX", "HOUR", "silver_bullet"),
+    ("DAX", "HOUR", "ny_session_momentum"),
+    ("DAX", "HOUR", "london_breakout"),
+    ("DAX", "HOUR", "ema_pullback"),
+    ("DAX", "HOUR", "rsi_divergence_session"),
+    # DAX 15MIN — everything failed
+    ("DAX", "15MIN", "stoch_rsi"),
+    ("DAX", "15MIN", "williams_r"),      # negative P&L
+    ("DAX", "15MIN", "ema_pullback"),    # catastrophic
+    ("DAX", "15MIN", "ny_session_momentum"), # catastrophic
+    ("DAX", "15MIN", "smc"),
+    ("DAX", "15MIN", "fvg"),
+    ("DAX", "15MIN", "silver_bullet"),
+    ("DAX", "15MIN", "london_breakout"),
+    ("DAX", "15MIN", "rsi_divergence_session"),
+    ("DAX", "15MIN", "vwap_mean_reversion"),
 }
 
 # Symbols blocked entirely — cron will not promote any strategy
