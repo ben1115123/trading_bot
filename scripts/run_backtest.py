@@ -128,6 +128,10 @@ from backend.strategies.macd_rsi import MACDRSIStrategy
 from backend.strategies.fvg import FVGStrategy
 from backend.strategies.london_breakout import LondonBreakoutStrategy
 from backend.strategies.smc import SMCStrategy
+from backend.strategies.silver_bullet import SilverBulletStrategy
+from backend.strategies.ny_session_momentum import NYSessionMomentumStrategy
+from backend.strategies.ema_pullback import EMAPullbackStrategy
+from backend.strategies.rsi_divergence_session import RSIDivergenceSessionStrategy
 from database.models import insert_backtest_result, insert_backtest_trades
 
 STRATEGIES = {
@@ -150,6 +154,10 @@ STRATEGIES = {
     "fvg":                  FVGStrategy,
     "london_breakout":      LondonBreakoutStrategy,
     "smc":                  SMCStrategy,
+    "silver_bullet":        SilverBulletStrategy,
+    "ny_session_momentum":  NYSessionMomentumStrategy,
+    "ema_pullback":         EMAPullbackStrategy,
+    "rsi_divergence_session": RSIDivergenceSessionStrategy,
 }
 
 PARAM_GRIDS = {
@@ -265,6 +273,37 @@ PARAM_GRIDS = {
         "range_start_hour": [6],
         "range_end_hour":   [7],
         "entry_window_end": [9],
+    },
+    "silver_bullet": {
+        "kill_start":     [13],
+        "kill_end":       [16],
+        "min_gap_atr":    [0.2, 0.3, 0.5],
+        "fvg_expiry":     [5, 8, 12],
+        "atr_period":     [10, 14],
+        "swing_lookback": [5, 10, 15],
+        "tp_swing_bars":  [10, 20],
+        "use_htf_bias":   [False, True],
+    },
+    "ny_session_momentum": {
+        "range_minutes":   [30, 60],
+        "min_range_pips":  [3, 5, 8],
+        "breakout_buffer": [0.0, 0.3],
+        "tp_multiplier":   [1.0, 1.5, 2.0],
+        "fade_mode":       [True, False],
+    },
+    "ema_pullback": {
+        "ema_fast":     [8, 13],
+        "ema_slow":     [21, 50],
+        "min_move_atr": [1.0, 1.5, 2.0],
+        "sl_atr_mult":  [1.0, 1.5],
+        "tp_atr_mult":  [2.0, 2.5, 3.0],
+    },
+    "rsi_divergence_session": {
+        "rsi_period":      [9, 14],
+        "divergence_bars": [8, 12, 16],
+        "min_rsi_diff":    [3, 5, 8],
+        "sl_atr_mult":     [1.0, 1.5],
+        "tp_atr_mult":     [2.0, 2.5],
     },
 }
 

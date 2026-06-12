@@ -7,14 +7,16 @@ RISK_PER_TRADE_OVERRIDE = {
 }
 
 
-def get_risk_per_trade(symbol: str) -> float:
+def get_risk_per_trade(symbol: str, is_paper: bool = False) -> float:
+    if is_paper:
+        return float(RISK_PER_TRADE)
     return RISK_PER_TRADE_OVERRIDE.get(symbol.upper(), float(RISK_PER_TRADE))
 
 
 MIN_LOT_SIZE = 0.1
 MAX_LOT_SIZE = 10
 
-def calculate_position_size(entry_price, sl_price, value_per_point, symbol: str = ""):
+def calculate_position_size(entry_price, sl_price, value_per_point, symbol: str = "", is_paper: bool = False):
     """
     Calculate lot size based on entry price, stop loss, and value per point
     """
@@ -26,7 +28,7 @@ def calculate_position_size(entry_price, sl_price, value_per_point, symbol: str 
             return None
 
         # Lot size formula
-        size = get_risk_per_trade(symbol) / (sl_distance * value_per_point)
+        size = get_risk_per_trade(symbol, is_paper=is_paper) / (sl_distance * value_per_point)
         size = round(size, 2)
 
         # Enforce minimum/maximum lot size

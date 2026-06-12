@@ -146,6 +146,9 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18           |
 | EURUSD | 15MIN | supertrend | Paper | loop   | 111 bt trades, PF 1.35          |
 | US500  | HOUR  | stoch_rsi_confluence | Paper | loop | session filter only, shadow logging — see below |
+| EURUSD | 15MIN | ny_session_momentum | Paper | loop | 37 bt trades, 75.7% WR, PF 1.64, follow mode |
+| US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50 |
+| US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -250,6 +253,12 @@ Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
 | All    | $15        | Default                       |
 
 Revert EURUSD to paper if 3 consecutive losses occur.
+
+### Paper Trade Risk Override (added 2026-06-12)
+Paper trades always use $15 risk regardless of symbol.
+EURUSD $10 override only applies to live trades.
+  Paper:  all symbols → $15
+  Live:   EURUSD → $10, all others → $15
 
 ### Daily Loss Limits
 | Source              | Limit | Behaviour when hit        |
@@ -369,6 +378,34 @@ Blocked signals logged as SHADOW_BUY/SHADOW_SELL with
 notes="SHADOW: filtered by session" for A/B comparison.
 Review after 30 paper trades + 30 shadow trades.
 Promote if confluence WR > shadow WR by 10%+
+
+### ny_session_momentum + ema_pullback (added 2026-06-12)
+| Symbol | TF    | Strategy             | Source | Rationale                          |
+|--------|-------|----------------------|--------|-------------------------------------|
+| EURUSD | 15MIN | ny_session_momentum  | loop   | NY-open range breakout, follow mode |
+| US500  | 15MIN | ema_pullback         | loop   | EMA8/EMA50 trend pullback           |
+| US100  | 15MIN | ema_pullback         | loop   | EMA13/EMA50 trend pullback          |
+
+ny_session_momentum EURUSD params: range_minutes=60, min_range_pips=3,
+breakout_buffer=0.0, tp_multiplier=1.0, fade_mode=false, range_start=13, entry_window=3
+Backtest: 37 trades, 75.7% WR, PF 1.64, ~15 trades/month.
+Note: fade_mode=True won on US500 (double-break fade), fade_mode=False won on EURUSD —
+direction edge is instrument-dependent.
+
+ema_pullback US500 params: ema_fast=8, ema_slow=50, min_move_atr=1.0,
+sl_atr_mult=1.5, tp_atr_mult=3.0, session 07:00-17:00 UTC
+Backtest: 44 trades, 45.5% WR, PF 1.57, ~15 trades/month.
+
+ema_pullback US100 params: ema_fast=13, ema_slow=50, min_move_atr=1.5,
+sl_atr_mult=1.0, tp_atr_mult=3.0, session 07:00-17:00 UTC
+US100 15MIN ema_pullback validation:
+  86% of 72 param combos profitable (PF > 1.0)
+  22 combos with PF > 1.5
+  Consistent params: fast=13, slow=50, tp_mult=3.0
+  Strong concept edge confirmed across params
+Backtest: 16 trades, 56.2% WR, PF 3.17 — low sample, watch closely.
+
+Review all 3 after 30 resolved paper trades.
 
 ### FVG Strategy (added 2026-05-29)
 | Symbol | TF    | Strategy | Rationale                                         |

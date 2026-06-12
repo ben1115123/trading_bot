@@ -2,3 +2,7 @@ from backend.strategies.fvg import FVGStrategy
 from backend.strategies.london_breakout import LondonBreakoutStrategy
 from backend.strategies.smc import SMCStrategy
 from backend.strategies.stoch_rsi_confluence import StochRSIConfluenceStrategy
+from backend.strategies.silver_bullet import SilverBulletStrategy
+from backend.strategies.ny_session_momentum import NYSessionMomentumStrategy
+from backend.strategies.ema_pullback import EMAPullbackStrategy
+from backend.strategies.rsi_divergence_session import RSIDivergenceSessionStrategy
