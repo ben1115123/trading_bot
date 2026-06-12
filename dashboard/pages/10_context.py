@@ -270,7 +270,7 @@ else:
 
         df_detail = pd.DataFrame(detail_rows)
         st.dataframe(
-            df_detail.style.applymap(_outcome_bg, subset=["Outcome"]),
+            df_detail.style.map(_outcome_bg, subset=["Outcome"]),
             use_container_width=True, hide_index=True,
         )
 
