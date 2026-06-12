@@ -323,6 +323,48 @@ def init_db():
         )
     """)
 
+    # Create webhook_outcome_log table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS webhook_outcome_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            webhook_log_id  INTEGER NOT NULL,
+            symbol          TEXT NOT NULL,
+            direction       TEXT NOT NULL,
+            block_reason    TEXT NOT NULL,
+            block_timestamp TEXT NOT NULL,
+            sl_price        REAL,
+            tp_price        REAL,
+            outcome         TEXT,
+            outcome_at      TEXT,
+            candles_to_hit  INTEGER,
+            price_at_outcome REAL,
+            estimated_pnl   REAL,
+            created_at      TEXT DEFAULT (datetime('now')),
+            resolved_at     TEXT
+        )
+    """)
+
+    # Migrate webhook_outcome_log: add any columns missing on existing DBs
+    for col, defn in [
+        ("webhook_log_id",   "INTEGER"),
+        ("symbol",           "TEXT"),
+        ("direction",        "TEXT"),
+        ("block_reason",     "TEXT"),
+        ("block_timestamp",  "TEXT"),
+        ("sl_price",         "REAL"),
+        ("tp_price",         "REAL"),
+        ("outcome",          "TEXT"),
+        ("outcome_at",       "TEXT"),
+        ("candles_to_hit",   "INTEGER"),
+        ("price_at_outcome", "REAL"),
+        ("estimated_pnl",    "REAL"),
+        ("resolved_at",      "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE webhook_outcome_log ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

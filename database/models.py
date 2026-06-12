@@ -789,6 +789,117 @@ def get_trade_context_stats(symbol: str = None, source: str = None, days: int = 
     }
 
 
+def get_unresolved_blocked_alerts(conn, limit: int = 100) -> list:
+    """
+    BLOCKED webhook_log rows from the last 7 days that have not yet been
+    resolved into webhook_outcome_log, with SL/TP extracted from raw_payload.
+    Rows where SL/TP cannot be extracted (missing/"null") are skipped.
+    """
+    import json as _json
+
+    cursor = conn.cursor()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    cursor.execute("""
+        SELECT * FROM webhook_log
+        WHERE result = 'BLOCKED'
+          AND timestamp >= ?
+          AND id NOT IN (SELECT webhook_log_id FROM webhook_outcome_log)
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, (cutoff, limit))
+
+    alerts = []
+    for row in cursor.fetchall():
+        alert = dict(row)
+        try:
+            payload = _json.loads(alert.get("raw_payload") or "{}")
+        except (ValueError, TypeError):
+            continue
+
+        direction = alert.get("direction")
+        if direction == "BUY":
+            sl, tp = payload.get("long_sl"), payload.get("long_tp")
+        elif direction == "SELL":
+            sl, tp = payload.get("short_sl"), payload.get("short_tp")
+        else:
+            continue
+
+        if sl is None or tp is None or str(sl).strip().lower() == "null" or str(tp).strip().lower() == "null":
+            continue
+
+        try:
+            alert["sl_price"] = float(sl)
+            alert["tp_price"] = float(tp)
+        except (ValueError, TypeError):
+            continue
+
+        alerts.append(alert)
+
+    return alerts
+
+
+def insert_webhook_outcome(conn, data: dict) -> int:
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO webhook_outcome_log
+            (webhook_log_id, symbol, direction, block_reason, block_timestamp,
+             sl_price, tp_price, outcome, outcome_at, candles_to_hit,
+             price_at_outcome, estimated_pnl, resolved_at)
+        VALUES
+            (:webhook_log_id, :symbol, :direction, :block_reason, :block_timestamp,
+             :sl_price, :tp_price, :outcome, :outcome_at, :candles_to_hit,
+             :price_at_outcome, :estimated_pnl, :resolved_at)
+    """, {
+        "webhook_log_id":   data.get("webhook_log_id"),
+        "symbol":           data.get("symbol"),
+        "direction":        data.get("direction"),
+        "block_reason":     data.get("block_reason"),
+        "block_timestamp":  data.get("block_timestamp"),
+        "sl_price":         data.get("sl_price"),
+        "tp_price":         data.get("tp_price"),
+        "outcome":          data.get("outcome"),
+        "outcome_at":       data.get("outcome_at"),
+        "candles_to_hit":   data.get("candles_to_hit"),
+        "price_at_outcome": data.get("price_at_outcome"),
+        "estimated_pnl":    data.get("estimated_pnl"),
+        "resolved_at":      data.get("resolved_at"),
+    })
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_webhook_outcomes(conn, days: int = 30) -> list:
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        SELECT w.timestamp, w.symbol, w.direction,
+               w.block_reason, o.outcome, o.estimated_pnl,
+               o.candles_to_hit
+        FROM webhook_log w
+        JOIN webhook_outcome_log o ON o.webhook_log_id = w.id
+        WHERE w.timestamp >= datetime('now', '-{int(days)} days')
+        ORDER BY w.timestamp DESC
+    """)
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_outcome_summary(conn, days: int = 30) -> list:
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        SELECT block_reason,
+               COUNT(*) as total_blocked,
+               SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as would_win,
+               SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as would_lose,
+               SUM(CASE WHEN outcome='UNKNOWN' THEN 1 ELSE 0 END) as unknown,
+               SUM(CASE WHEN outcome='WIN' THEN estimated_pnl ELSE 0 END) as pnl_missed,
+               SUM(CASE WHEN outcome='LOSS' THEN estimated_pnl ELSE 0 END) as losses_saved
+        FROM webhook_outcome_log o
+        JOIN webhook_log w ON w.id = o.webhook_log_id
+        WHERE w.timestamp >= datetime('now', '-{int(days)} days')
+        GROUP BY block_reason
+    """)
+    return [dict(row) for row in cursor.fetchall()]
+
+
 def get_webhook_filter_stats(days: int = 7) -> list:
     """Counts per outcome/block_reason for the last N days. EXECUTED and PAPER appear as their own reasons."""
     conn = get_connection()

@@ -9,6 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from database.db import get_connection
+from database.models import get_outcome_summary, get_webhook_outcomes
 
 st.set_page_config(page_title="Context Analysis · Trading Bot", layout="wide")
 
@@ -160,6 +161,123 @@ else:
     st.caption(
         "⚠️ Live WR shown only reflects trades with context data (from 2026-05-30). "
         "Full trade history may show different WR. Click through to Trade Log for complete picture."
+    )
+
+
+# ── Section 1B — Filter Effectiveness ────────────────────────────────────────
+
+st.markdown('<div class="section-hd">FILTER EFFECTIVENESS — Would blocked alerts have won?</div>', unsafe_allow_html=True)
+st.caption("Resolves blocked webhook alerts against actual price action — did SL or TP hit first?")
+
+try:
+    conn = get_connection()
+    outcome_summary = get_outcome_summary(conn, days=30)
+    outcome_rows    = get_webhook_outcomes(conn, days=30)
+    conn.close()
+except Exception as e:
+    outcome_summary = []
+    outcome_rows    = []
+    st.error(f"Database error: {e}")
+
+total_resolved = sum(
+    (r["would_win"] or 0) + (r["would_lose"] or 0) + (r["unknown"] or 0)
+    for r in outcome_summary
+)
+
+if not outcome_summary or total_resolved == 0:
+    _no_data_msg("Resolver running — outcomes populate daily at 06:00 UTC.")
+else:
+    st.markdown("**Summary by filter**")
+
+    summary_rows = []
+    total_blocked = total_win = total_lose = 0
+    total_pnl_missed = total_losses_saved = 0.0
+
+    for r in outcome_summary:
+        would_win  = r["would_win"] or 0
+        would_lose = r["would_lose"] or 0
+        unknown    = r["unknown"] or 0
+        pnl_missed    = r["pnl_missed"] or 0.0
+        losses_saved  = abs(r["losses_saved"] or 0.0)
+
+        total_blocked      += r["total_blocked"] or 0
+        total_win          += would_win
+        total_lose         += would_lose
+        total_pnl_missed   += pnl_missed
+        total_losses_saved += losses_saved
+
+        resolved = would_win + would_lose
+        if resolved < 10:
+            verdict = "⚪ Need more data"
+        elif losses_saved > pnl_missed:
+            verdict = "✅ Filter is helping"
+        else:
+            verdict = "🔴 Filter may be costing you"
+
+        summary_rows.append({
+            "Filter":          r["block_reason"],
+            "Total Blocked":   r["total_blocked"],
+            "Would WIN":       would_win,
+            "Would LOSE":      would_lose,
+            "P&L Missed (if executed)": f"${pnl_missed:,.2f}",
+            "Losses Saved (by blocking)": f"${losses_saved:,.2f}",
+            "Verdict":         verdict,
+        })
+
+    resolved_total = total_win + total_lose
+    if resolved_total < 10:
+        net_verdict = "⚪ Need more data"
+    elif total_losses_saved > total_pnl_missed:
+        net_verdict = "✅ Filter is helping"
+    else:
+        net_verdict = "🔴 Filter may be costing you"
+
+    summary_rows.append({
+        "Filter":          "NET FILTER VALUE",
+        "Total Blocked":   total_blocked,
+        "Would WIN":       total_win,
+        "Would LOSE":      total_lose,
+        "P&L Missed (if executed)": f"${total_pnl_missed:,.2f}",
+        "Losses Saved (by blocking)": f"${total_losses_saved:,.2f}",
+        "Verdict":         net_verdict,
+    })
+
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("**Recent blocked alerts**")
+
+    if not outcome_rows:
+        _no_data_msg("No resolved blocked alerts yet.")
+    else:
+        detail_rows = []
+        for r in outcome_rows[:20]:
+            pnl = r["estimated_pnl"]
+            detail_rows.append({
+                "Date":         r["timestamp"][:16].replace("T", " "),
+                "Symbol":       r["symbol"],
+                "Direction":    r["direction"],
+                "Block Reason": r["block_reason"],
+                "Outcome":      r["outcome"],
+                "Est P&L":      f"${pnl:,.2f}" if pnl is not None else "—",
+            })
+
+        def _outcome_bg(val):
+            if val == "WIN":
+                return "background-color: #1a4a1a; color: #7ee787"
+            if val == "LOSS":
+                return "background-color: #4a1a1a; color: #f85149"
+            return "background-color: #21262d; color: #8B949E"
+
+        df_detail = pd.DataFrame(detail_rows)
+        st.dataframe(
+            df_detail.style.applymap(_outcome_bg, subset=["Outcome"]),
+            use_container_width=True, hide_index=True,
+        )
+
+    st.caption(
+        "Verdict: Losses saved > P&L missed → filter helping. "
+        "Losses saved < P&L missed → filter may be costing you. "
+        "Fewer than 10 resolved outcomes → not enough data yet."
     )
 
 

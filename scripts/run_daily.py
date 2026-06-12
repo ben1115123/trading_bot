@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -83,6 +84,16 @@ def main() -> None:
     except Exception as e:
         log(f"  ERROR selecting: {e}")
         errors += 1
+
+    # ── E: resolve blocked webhook outcomes ─────────────────────────────────────
+    log("Resolving blocked webhook outcomes...")
+    try:
+        subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent / "resolve_webhook_outcomes.py")],
+            check=False,
+        )
+    except Exception as e:
+        log(f"  ERROR resolving webhook outcomes: {e}")
 
     log(
         f"=== Daily run complete — {total_runs} backtests run, "
