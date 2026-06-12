@@ -83,21 +83,34 @@ try:
     cur  = conn.cursor()
     cutoff_90 = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     cur.execute("""
-        SELECT symbol, strategy_name, source,
+        SELECT t.symbol, t.strategy_name, t.source,
                COUNT(*) as trades,
-               SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-               ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate
-        FROM trades
-        WHERE pnl IS NOT NULL AND status = 'CLOSED'
-          AND source IN ('signal_loop', 'live_signal_loop', 'tradingview_webhook')
-          AND timestamp >= ?
-        GROUP BY symbol, strategy_name, source
-        ORDER BY symbol, strategy_name
+               SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) as wins,
+               ROUND(100.0 * SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate
+        FROM trades t
+        INNER JOIN active_strategy a
+            ON t.symbol = a.symbol AND t.strategy_name = a.strategy_name
+        WHERE a.status IN ('active', 'live')
+          AND t.pnl IS NOT NULL AND t.status = 'CLOSED'
+          AND t.source IN ('signal_loop', 'live_signal_loop', 'tradingview_webhook')
+          AND t.timestamp >= ?
+        GROUP BY t.symbol, t.strategy_name, t.source
+        ORDER BY t.symbol, t.strategy_name
     """, (cutoff_90,))
     live_rows = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT strategy_name, symbol, COUNT(*) as total_trades
+        FROM trades
+        WHERE status = 'CLOSED' AND pnl IS NOT NULL
+          AND source IN ('signal_loop', 'live_signal_loop', 'tradingview_webhook')
+        GROUP BY strategy_name, symbol
+    """)
+    total_trades_map = {(r["strategy_name"], r["symbol"]): r["total_trades"] for r in cur.fetchall()}
     conn.close()
 except Exception as e:
     live_rows = []
+    total_trades_map = {}
     st.error(f"Database error: {e}")
 
 if not live_rows:
@@ -108,6 +121,7 @@ else:
         strat, sym, trades, live_wr = r["strategy_name"], r["symbol"], r["trades"], r["win_rate"]
         tf_label = "HOUR" if r["source"] in ("signal_loop", "live_signal_loop") else ""
         bt_wr = BACKTEST_WR_BASELINE.get((sym, strat))
+        total_trades = total_trades_map.get((strat, sym), trades)
 
         if trades < 10:
             status = "⚪ Insufficient data"
@@ -131,17 +145,21 @@ else:
                 status = "🔴 Degrading — review strategy"
 
         tracking_rows.append({
-            "Strategy":     f"{strat} {sym}" + (f" {tf_label}" if tf_label else ""),
-            "Backtest WR":  f"{bt_wr:.0f}%" if bt_wr is not None else "—",
-            "Live WR":      f"{live_wr:.1f}%",
-            "Live Trades":  trades,
-            "Gap":          gap_str,
-            "Status":       status,
+            "Strategy":               f"{strat} {sym}" + (f" {tf_label}" if tf_label else ""),
+            "Backtest WR":            f"{bt_wr:.0f}%" if bt_wr is not None else "—",
+            "Live WR":                f"{live_wr:.1f}%",
+            "Trades (context/total)": f"{trades} / {total_trades}",
+            "Gap":                    gap_str,
+            "Status":                 status,
         })
 
     st.dataframe(pd.DataFrame(tracking_rows), use_container_width=True, hide_index=True)
     st.caption(
         "🔴 status triggers review — consider demoting to paper if gap persists over 20+ trades"
+    )
+    st.caption(
+        "⚠️ Live WR shown only reflects trades with context data (from 2026-05-30). "
+        "Full trade history may show different WR. Click through to Trade Log for complete picture."
     )
 
 
@@ -225,6 +243,23 @@ else:
 # ── Filters ───────────────────────────────────────────────────────────────────
 
 st.markdown('<div class="section-hd">Filters</div>', unsafe_allow_html=True)
+
+try:
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) as n FROM trades WHERE session IS NOT NULL AND timestamp >= ?",
+        (DEPLOY_DATE,),
+    )
+    _context_trade_count = cur.fetchone()["n"]
+    conn.close()
+except Exception:
+    _context_trade_count = 0
+
+st.caption(
+    f"📊 Current data: {_context_trade_count} total trades with context. "
+    "Confident verdicts need 15+ trades per bucket."
+)
 
 fc1, fc2, fc3 = st.columns(3)
 with fc1:
@@ -391,6 +426,10 @@ else:
         "Currently filtered: stoch_rsi_confluence US500 HOUR allows only "
         "LONDON_OPEN (07:00-08:59 UTC) + NY_OPEN (13:00-15:59 UTC), all others shadow-logged"
     )
+    st.caption(
+        "Verdicts shown for sessions with 5+ trades only. "
+        "Minimum 15 trades recommended before acting on any verdict."
+    )
 
     fig = go.Figure(go.Bar(
         y=[r["session"] for r in session_rows],
@@ -457,6 +496,11 @@ else:
                 )
     else:
         st.caption("Currently blocking: Monday")
+
+    st.caption(
+        "Verdicts shown for days with 5+ trades only. "
+        "Minimum 15 trades recommended before acting on any verdict."
+    )
 
     fig = go.Figure(go.Bar(
         x=[DAY_NAMES.get(r["day_of_week"], str(r["day_of_week"])) for r in dow_rows],
