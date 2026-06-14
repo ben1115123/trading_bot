@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 CACHE_DIR = Path(__file__).resolve().parent / "candle_cache"
 CACHE_MAX_AGE_SECONDS = 86400  # 24 hours
 
-YF_SYMBOLS   = {"US500": "^GSPC", "US100": "^NDX", "BTC": "BTC-USD", "DAX": "^GDAXI", "EURUSD": "EURUSD=X"}
+YF_SYMBOLS   = {"US500": "^GSPC", "US100": "^NDX", "BTC": "BTC-USD", "DAX": "^GDAXI", "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "USDJPY=X"}
 YF_INTERVALS = {"5MIN": "5m", "15MIN": "15m", "HOUR": "1h", "DAY": "1d"}
 YF_PERIODS   = {"5m": "60d", "15m": "60d", "1h": "730d", "1d": "5y"}
 

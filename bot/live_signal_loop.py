@@ -14,7 +14,7 @@ from database.models import get_active_strategies, log_signal_check, log_paper_t
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 
-SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD"]
+SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD"]
 
 MARKET_CLOSE = {
     "US500": {"hour": 20, "minute": 45},
@@ -406,6 +406,7 @@ def _candle_dt(candle: dict):
 _EPIC_VALUE_PER_POINT = {
     "US500": 1.0, "US100": 1.0, "DAX": 1.0, "BTC": 0.1,
     "EURUSD": 10000.0,  # CS.D.EURUSD.MINI.IP: $1/pip, 0.0001 pip, contract=10k
+    "GBPUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — same as EURUSD
 }
 
 

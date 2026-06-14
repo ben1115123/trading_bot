@@ -132,6 +132,23 @@ STRATEGY_BLOCKLIST = {
     ("DAX", "15MIN", "london_breakout"),
     ("DAX", "15MIN", "rsi_divergence_session"),
     ("DAX", "15MIN", "vwap_mean_reversion"),
+
+    # GBPUSD 15MIN — only ema_pullback/williams_r showed edge (2026-06-14 sweep)
+    ("GBPUSD", "15MIN", "stoch_rsi"),
+    ("GBPUSD", "15MIN", "supertrend"),
+    ("GBPUSD", "15MIN", "ny_session_momentum"),
+    ("GBPUSD", "HOUR", "stoch_rsi"),
+    ("GBPUSD", "HOUR", "supertrend"),
+
+    # USDJPY — all strategies failed 2026-06-14 sweep
+    ("USDJPY", "15MIN", "stoch_rsi"),
+    ("USDJPY", "15MIN", "supertrend"),
+    ("USDJPY", "15MIN", "williams_r"),
+    ("USDJPY", "15MIN", "ema_pullback"),
+    ("USDJPY", "15MIN", "ny_session_momentum"),
+    ("USDJPY", "HOUR", "stoch_rsi"),
+    ("USDJPY", "HOUR", "williams_r"),
+    ("USDJPY", "HOUR", "supertrend"),
 }
 
 # Symbols blocked entirely — cron will not promote any strategy

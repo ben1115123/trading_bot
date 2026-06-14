@@ -12,6 +12,8 @@ EPIC_CONFIG = {
     "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
     "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
     "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
+    "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
+    "USDJPY": {"epic": "CS.D.USDJPY.MINI.IP",    "value_per_point": 100},
 }
 
 RISK_PER_TRADE = 15.0  # USD, matches live bot
@@ -21,6 +23,9 @@ SPREAD_COSTS = {
     "US500":  0.75,   # ~0.6pt spread x $1/pt per round trip
     "DAX":    1.50,   # ~1pt spread x $1/pt per round trip
     "US100":  1.00,   # estimate
+    "GBPUSD": 1.50,   # ~1.2 pips x $10/pip round trip
+    "USDJPY": 1.20,   # ~0.9 pips x $9/pip round trip
+    "XAUUSD": 20.00,  # gold — for future use
     "BTC":    0.00,   # not trading
 }
 

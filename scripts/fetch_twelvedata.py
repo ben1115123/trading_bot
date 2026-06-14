@@ -42,6 +42,8 @@ SYMBOL_MAP = {
     "US500":  "SPY",
     "DAX":    "EWG",
     "US100":  "QQQ",
+    "GBPUSD": "GBP/USD",
+    "USDJPY": "USD/JPY",
 }
 
 # Number of 5000-candle batches per symbol (paginated via end_date)
@@ -50,6 +52,8 @@ BATCH_COUNT = {
     "US500":  2,
     "DAX":    2,
     "US100":  2,
+    "GBPUSD": 6,
+    "USDJPY": 6,
 }
 
 

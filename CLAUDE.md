@@ -149,6 +149,8 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | EURUSD | 15MIN | ny_session_momentum | Paper | loop | 37 bt trades, 75.7% WR, PF 1.64, follow mode |
 | US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50 |
 | US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best |
+| GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
+| GBPUSD | 15MIN | williams_r           | Paper | loop | 300 bt trades, PF 1.21, R:R strategy |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -169,6 +171,11 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 
 BTC note: Two consecutive failed strategies. No BTC strategies until a
 crypto-specific volatility approach is designed and backtested.
+
+## Instrument Notes
+GBPUSD: mean reversion AND ema_pullback work (similar to EURUSD)
+USDJPY: all strategies failed — do not trade
+DAX:    all strategies failed — do not trade
 
 STRATEGY_BLOCKLIST in scripts/select_strategy.py prevents daily cron from
 re-promoting any of the above. To unblock: remove the tuple from the set
@@ -252,6 +259,7 @@ Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
 | Symbol | Risk/Trade | Reason                        |
 |--------|------------|-------------------------------|
 | EURUSD | $10        | Reduced until live edge proven |
+| GBPUSD | $10        | Reduced until live edge proven (unproven, same as EURUSD) |
 | All    | $15        | Default                       |
 
 Revert EURUSD to paper if 3 consecutive losses occur.
