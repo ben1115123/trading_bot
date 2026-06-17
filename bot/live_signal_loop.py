@@ -36,6 +36,12 @@ _last_shadow_signal: dict[str, str] = {}
 _last_checked: dict[str, datetime] = {}
 _ema200_cache: dict = {}  # symbol → (ema200, price_vs_ema200, cached_hour_key)
 
+# Per-strategy session blocks: (strategy_name, symbol, timeframe) → set of sessions to block
+# Blocked signals are shadow-logged to paper_trades for outcome tracking.
+STRATEGY_SESSION_BLOCKS: dict[tuple, set] = {
+    ("williams_r", "EURUSD", "15MIN"): {"NY_MID"},
+}
+
 
 def _get_session(hour: int) -> str:
     if 7 <= hour <= 8:   return "LONDON_OPEN"
@@ -334,6 +340,42 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
             tp     = round(entry - sl_dist * 2, 4)
 
     print(f"[signal_loop] [{symbol}] {signal} — sl={sl} tp={tp}")
+
+    # Per-strategy session gate
+    _gate_now    = datetime.now(timezone.utc)
+    _gate_sess   = _get_session(_gate_now.hour)
+    _sess_blocks = STRATEGY_SESSION_BLOCKS.get((strategy_name, symbol, timeframe), set())
+    if _gate_sess in _sess_blocks:
+        print(
+            f"[signal_loop] [{symbol}/{timeframe}/{strategy_name}] "
+            f"{signal} blocked — session {_gate_sess}"
+        )
+        _shadow_sess_key = f"{symbol}_SHADOW_{signal}_{candle_time}_sess_{_gate_sess}"
+        if _last_shadow_signal.get((symbol, timeframe, strategy_name)) != _shadow_sess_key:
+            _last_shadow_signal[(symbol, timeframe, strategy_name)] = _shadow_sess_key
+            log_paper_trade({
+                "checked_at":    _gate_now.isoformat(),
+                "symbol":        symbol,
+                "strategy_name": strategy_name,
+                "timeframe":     timeframe,
+                "candle_time":   candle_time,
+                "signal":        f"SHADOW_{signal}",
+                "entry_price":   entry,
+                "sl":            sl,
+                "tp":            tp,
+                "outcome":       "PENDING",
+                "session":       _gate_sess,
+                "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
+                "notes":         f"SHADOW: blocked by session filter ({_gate_sess})",
+            })
+            print(
+                f"[signal_loop] [{symbol}/{timeframe}/{strategy_name}] "
+                f"SHADOW {signal} logged (session {_gate_sess})"
+            )
+        log_data["signal"] = f"BLOCKED_SESSION_{_gate_sess}"
+        log_data["error"]  = f"session block: {_gate_sess}"
+        log_signal_check(log_data)
+        return
 
     if _is_paper_trade(symbol, timeframe) or active.get("status") == "paper":
         log_data["signal"] = f"PAPER_{signal}"

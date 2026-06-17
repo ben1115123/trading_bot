@@ -1,15 +1,14 @@
 import sys
 import math
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import streamlit as st
-import plotly.graph_objects as go
 import pandas as pd
 from database.db import get_connection
-from database.models import get_outcome_summary, get_webhook_outcomes
+from database.models import get_webhook_outcomes
 
 st.set_page_config(page_title="Context Analysis · Trading Bot", layout="wide")
 
@@ -17,851 +16,578 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from styles import inject_css
 inject_css()
 
-DEPLOY_DATE    = "2026-05-30"
-DAY_NAMES      = {0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday", 4: "Friday", 5: "Saturday", 6: "Sunday"}
-SESSION_ORDER  = ["LONDON_OPEN", "LONDON_MID", "NY_OPEN", "NY_MID", "NY_CLOSE", "OFF_HOURS"]
-NORMAL_SPREADS = {"US500": 0.6, "EURUSD": 0.0008, "DAX": 1.0, "US100": 0.6}
+DAY_NAMES     = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+SESSION_ORDER = ["LONDON", "LONDON_OPEN", "LONDON_MID", "NY_OPEN", "NY_MID", "NY_CLOSE", "OFF_HOURS"]
+PAGE_SIZE     = 25
 
-# Backtest WR baselines for live strategies (win_rate as %, hardcoded — proven live)
-BACKTEST_WR_BASELINE = {
-    ("US500", "stoch_rsi"): 54.0,
-}
+_SESS_DERIVE_TRADES = """COALESCE(session, CASE
+    WHEN CAST(strftime('%H', timestamp) AS INT) BETWEEN 7  AND 9  THEN 'LONDON'
+    WHEN CAST(strftime('%H', timestamp) AS INT) BETWEEN 13 AND 14 THEN 'NY_OPEN'
+    WHEN CAST(strftime('%H', timestamp) AS INT) BETWEEN 15 AND 17 THEN 'NY_MID'
+    WHEN CAST(strftime('%H', timestamp) AS INT) BETWEEN 18 AND 20 THEN 'NY_CLOSE'
+    ELSE 'OFF_HOURS' END)"""
 
-st.markdown("""
-<h1 style="margin-bottom:4px">Trade Context & Filter Analysis</h1>
-<p style="color:#8B949E;font-size:13px;margin-top:0">Are my filters helping? Which sessions work? Is live performance on track?</p>
-""", unsafe_allow_html=True)
-
-st.info(
-    f"Context data captured from {DEPLOY_DATE} onwards. "
-    "Historical trades show NULL for context fields.",
-    icon="ℹ️",
-)
+_SESS_DERIVE_PAPER = """COALESCE(session, CASE
+    WHEN CAST(strftime('%H', checked_at) AS INT) BETWEEN 7  AND 9  THEN 'LONDON'
+    WHEN CAST(strftime('%H', checked_at) AS INT) BETWEEN 13 AND 14 THEN 'NY_OPEN'
+    WHEN CAST(strftime('%H', checked_at) AS INT) BETWEEN 15 AND 17 THEN 'NY_MID'
+    WHEN CAST(strftime('%H', checked_at) AS INT) BETWEEN 18 AND 20 THEN 'NY_CLOSE'
+    ELSE 'OFF_HOURS' END)"""
 
 
-def _wr_color(wr) -> str:
-    if wr is None: return "#8B949E"
-    if wr >= 55:   return "#238636"
-    if wr >= 45:   return "#9e6a03"
-    return "#da3633"
-
-
-def _wr_bg(val) -> str:
+def _wr_bg(val):
     if val is None or (isinstance(val, float) and math.isnan(val)):
         return ""
     if val >= 55:
         return "background-color: #1a4a1a; color: #7ee787"
-    if val >= 45:
+    if val >= 40:
         return "background-color: #3a2a00; color: #e3b341"
     return "background-color: #4a1a1a; color: #f85149"
 
 
-def _no_data_msg(msg="No context data yet."):
+def _traffic(wr, pnl=None):
+    if wr is None:
+        return "⚫"
+    if pnl is not None and pnl < 0:
+        return "🔴"
+    if wr >= 55:
+        return "🟢"
+    if wr >= 40:
+        return "🟡"
+    return "🔴"
+
+
+def _no_data(msg="No data."):
     st.markdown(
-        f'<div style="color:#8B949E;font-size:13px;padding:12px 0">{msg}</div>',
+        f'<div style="color:#8B949E;font-size:13px;padding:8px 0">{msg}</div>',
         unsafe_allow_html=True,
     )
 
 
-def _trade_verdict(trades: int, win_rate) -> str:
-    """Traffic-light verdict for a bucket of trades."""
-    if trades < 5:
-        return f"⚪ Need more data ({trades}/5)"
-    if win_rate >= 55:
-        return "🟢 TRADE IT"
-    if win_rate >= 45:
-        return "🟡 NEUTRAL"
-    return "🔴 AVOID"
+def _fmt_wr(v):
+    return f"{v:.1f}%" if v is not None else "—"
 
 
-# ── Section 1 — Live vs Backtest Tracking ────────────────────────────────────
-
-st.markdown('<div class="section-hd">Live vs Backtest Tracking</div>', unsafe_allow_html=True)
-st.caption("Is live performance holding up against the backtest that justified going live? (last 90 days)")
-
-try:
-    conn = get_connection()
-    cur  = conn.cursor()
-    cutoff_90 = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-    cur.execute("""
-        SELECT t.symbol, t.strategy_name, t.source,
-               COUNT(*) as trades,
-               SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) as wins,
-               ROUND(100.0 * SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate
-        FROM trades t
-        INNER JOIN active_strategy a
-            ON t.symbol = a.symbol AND t.strategy_name = a.strategy_name
-        WHERE a.status IN ('active', 'live')
-          AND t.pnl IS NOT NULL AND t.status = 'CLOSED'
-          AND t.source IN ('signal_loop', 'live_signal_loop', 'tradingview_webhook')
-          AND t.timestamp >= ?
-        GROUP BY t.symbol, t.strategy_name, t.source
-        ORDER BY t.symbol, t.strategy_name
-    """, (cutoff_90,))
-    live_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute("""
-        SELECT strategy_name, symbol, COUNT(*) as total_trades
-        FROM trades
-        WHERE status = 'CLOSED' AND pnl IS NOT NULL
-          AND source IN ('signal_loop', 'live_signal_loop', 'tradingview_webhook')
-        GROUP BY strategy_name, symbol
-    """)
-    total_trades_map = {(r["strategy_name"], r["symbol"]): r["total_trades"] for r in cur.fetchall()}
-    conn.close()
-except Exception as e:
-    live_rows = []
-    total_trades_map = {}
-    st.error(f"Database error: {e}")
-
-if not live_rows:
-    _no_data_msg("No closed live trades in the last 90 days yet.")
-else:
-    tracking_rows = []
-    for r in live_rows:
-        strat, sym, trades, live_wr = r["strategy_name"], r["symbol"], r["trades"], r["win_rate"]
-        tf_label = "HOUR" if r["source"] in ("signal_loop", "live_signal_loop") else ""
-        bt_wr = BACKTEST_WR_BASELINE.get((sym, strat))
-        total_trades = total_trades_map.get((strat, sym), trades)
-
-        if trades < 10:
-            status = "⚪ Insufficient data"
-            gap_str = "—"
-        elif bt_wr is not None:
-            gap = bt_wr - live_wr
-            gap_str = f"{gap:+.0f}%"
-            if abs(gap) <= 10:
-                status = "🟢 On track"
-            elif abs(gap) <= 20:
-                status = "🟡 Watch closely"
-            else:
-                status = "🔴 Degrading — review strategy"
-        else:
-            gap_str = "—"
-            if live_wr >= 50:
-                status = "🟢 On track"
-            elif live_wr >= 40:
-                status = "🟡 Watch closely"
-            else:
-                status = "🔴 Degrading — review strategy"
-
-        tracking_rows.append({
-            "Strategy":               f"{strat} {sym}" + (f" {tf_label}" if tf_label else ""),
-            "Backtest WR":            f"{bt_wr:.0f}%" if bt_wr is not None else "—",
-            "Live WR":                f"{live_wr:.1f}%",
-            "Trades (context/total)": f"{trades} / {total_trades}",
-            "Gap":                    gap_str,
-            "Status":                 status,
-        })
-
-    st.dataframe(pd.DataFrame(tracking_rows), use_container_width=True, hide_index=True)
-    st.caption(
-        "🔴 status triggers review — consider demoting to paper if gap persists over 20+ trades"
-    )
-    st.caption(
-        "⚠️ Live WR shown only reflects trades with context data (from 2026-05-30). "
-        "Full trade history may show different WR. Click through to Trade Log for complete picture."
-    )
+def _fmt_pnl(v):
+    return f"${v:+.2f}" if v is not None else "—"
 
 
-# ── Section 1B — Filter Effectiveness ────────────────────────────────────────
-
-st.markdown('<div class="section-hd">FILTER EFFECTIVENESS — Would blocked alerts have won?</div>', unsafe_allow_html=True)
-st.caption("Resolves blocked webhook alerts against actual price action — did SL or TP hit first?")
-
-try:
-    conn = get_connection()
-    outcome_summary = get_outcome_summary(conn, days=30)
-    outcome_rows    = get_webhook_outcomes(conn, days=30)
-    conn.close()
-except Exception as e:
-    outcome_summary = []
-    outcome_rows    = []
-    st.error(f"Database error: {e}")
-
-total_resolved = sum(
-    (r["would_win"] or 0) + (r["would_lose"] or 0) + (r["unknown"] or 0)
-    for r in outcome_summary
-)
-
-if not outcome_summary or total_resolved == 0:
-    _no_data_msg("Resolver running — outcomes populate daily at 06:00 UTC.")
-else:
-    st.markdown("**Summary by filter**")
-
-    summary_rows = []
-    total_blocked = total_win = total_lose = 0
-    total_pnl_missed = total_losses_saved = 0.0
-
-    for r in outcome_summary:
-        would_win  = r["would_win"] or 0
-        would_lose = r["would_lose"] or 0
-        unknown    = r["unknown"] or 0
-        pnl_missed    = r["pnl_missed"] or 0.0
-        losses_saved  = abs(r["losses_saved"] or 0.0)
-
-        total_blocked      += r["total_blocked"] or 0
-        total_win          += would_win
-        total_lose         += would_lose
-        total_pnl_missed   += pnl_missed
-        total_losses_saved += losses_saved
-
-        resolved = would_win + would_lose
-        if resolved < 10:
-            verdict = "⚪ Need more data"
-        elif losses_saved > pnl_missed:
-            verdict = "✅ Filter is helping"
-        else:
-            verdict = "🔴 Filter may be costing you"
-
-        summary_rows.append({
-            "Filter":          r["block_reason"],
-            "Total Blocked":   r["total_blocked"],
-            "Would WIN":       would_win,
-            "Would LOSE":      would_lose,
-            "P&L Missed (if executed)": f"${pnl_missed:,.2f}",
-            "Losses Saved (by blocking)": f"${losses_saved:,.2f}",
-            "Verdict":         verdict,
-        })
-
-    resolved_total = total_win + total_lose
-    if resolved_total < 10:
-        net_verdict = "⚪ Need more data"
-    elif total_losses_saved > total_pnl_missed:
-        net_verdict = "✅ Filter is helping"
-    else:
-        net_verdict = "🔴 Filter may be costing you"
-
-    summary_rows.append({
-        "Filter":          "NET FILTER VALUE",
-        "Total Blocked":   total_blocked,
-        "Would WIN":       total_win,
-        "Would LOSE":      total_lose,
-        "P&L Missed (if executed)": f"${total_pnl_missed:,.2f}",
-        "Losses Saved (by blocking)": f"${total_losses_saved:,.2f}",
-        "Verdict":         net_verdict,
-    })
-
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
-
-    st.markdown("**Recent blocked alerts**")
-
-    if not outcome_rows:
-        _no_data_msg("No resolved blocked alerts yet.")
-    else:
-        detail_rows = []
-        for r in outcome_rows[:20]:
-            pnl = r["estimated_pnl"]
-            detail_rows.append({
-                "Date":         r["timestamp"][:16].replace("T", " "),
-                "Symbol":       r["symbol"],
-                "Direction":    r["direction"],
-                "Block Reason": r["block_reason"],
-                "Outcome":      r["outcome"],
-                "Est P&L":      f"${pnl:,.2f}" if pnl is not None else "—",
-            })
-
-        def _outcome_bg(val):
-            if val == "WIN":
-                return "background-color: #1a4a1a; color: #7ee787"
-            if val == "LOSS":
-                return "background-color: #4a1a1a; color: #f85149"
-            return "background-color: #21262d; color: #8B949E"
-
-        df_detail = pd.DataFrame(detail_rows)
-        st.dataframe(
-            df_detail.style.map(_outcome_bg, subset=["Outcome"]),
-            use_container_width=True, hide_index=True,
-        )
-
-    st.caption(
-        "Verdict: Losses saved > P&L missed → filter helping. "
-        "Losses saved < P&L missed → filter may be costing you. "
-        "Fewer than 10 resolved outcomes → not enough data yet."
-    )
+st.markdown("""
+<h1 style="margin-bottom:4px">Trade Context & Filter Analysis</h1>
+<p style="color:#8B949E;font-size:13px;margin-top:0">
+Per-strategy session, day-of-week, and filter breakdown across live and paper trades.
+</p>
+""", unsafe_allow_html=True)
 
 
-# ── Section 2 — Confluence A/B Test ──────────────────────────────────────────
-
-st.markdown('<div class="section-hd">Confluence A/B Test — stoch_rsi_confluence (US500 HOUR)</div>', unsafe_allow_html=True)
-st.caption("Comparing trades that passed the session filter vs. shadow trades that were filtered out.")
-
-try:
-    conn = get_connection()
-    cur  = conn.cursor()
-    cur.execute("""
-        SELECT
-            CASE WHEN notes LIKE 'SHADOW%' THEN 'shadow' ELSE 'regular' END as bucket,
-            COUNT(*) as trades,
-            SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
-            COALESCE(SUM(simulated_pnl), 0) as total_pnl
-        FROM paper_trades
-        WHERE symbol = 'US500' AND timeframe = 'HOUR' AND strategy_name = 'stoch_rsi_confluence'
-        GROUP BY bucket
-    """)
-    confluence_rows = {r["bucket"]: dict(r) for r in cur.fetchall()}
-    conn.close()
-except Exception as e:
-    confluence_rows = {}
-    st.error(f"Database error: {e}")
-
-regular = confluence_rows.get("regular", {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
-shadow  = confluence_rows.get("shadow",  {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
-
-def _resolved_wr(bucket):
-    res = (bucket.get("wins") or 0) + (bucket.get("losses") or 0)
-    if res == 0:
-        return None
-    return (bucket["wins"] or 0) / res * 100
-
-reg_wr    = _resolved_wr(regular)
-shadow_wr = _resolved_wr(shadow)
-
-if regular["trades"] == 0 and shadow["trades"] == 0:
-    _no_data_msg("No stoch_rsi_confluence paper trades yet — this section will populate over time.")
-else:
-    ab_rows = [
-        {
-            "": "✅ PASSED filter",
-            "Trades": regular["trades"],
-            "WR": f"{reg_wr:.1f}%" if reg_wr is not None else "—",
-            "P&L": f"${regular['total_pnl']:+.2f}",
-        },
-        {
-            "": "🚫 BLOCKED (shadow)",
-            "Trades": shadow["trades"],
-            "WR": f"{shadow_wr:.1f}%" if shadow_wr is not None else "—",
-            "P&L": f"${shadow['total_pnl']:+.2f}",
-        },
-    ]
-    if reg_wr is not None and shadow_wr is not None:
-        edge = reg_wr - shadow_wr
-        ab_rows.append({
-            "": "Edge from filter",
-            "Trades": "",
-            "WR": f"{edge:+.1f}%",
-            "P&L": f"${regular['total_pnl'] - shadow['total_pnl']:+.2f}",
-        })
-
-    st.dataframe(pd.DataFrame(ab_rows), use_container_width=True, hide_index=True)
-
-    if regular["trades"] < 5 or shadow["trades"] < 5:
-        st.caption("⚪ Insufficient data — need at least 5 resolved trades in each bucket.")
-    elif reg_wr is None or shadow_wr is None:
-        st.caption("⚪ Insufficient data — trades not yet resolved.")
-    elif reg_wr > shadow_wr + 5:
-        st.caption("✅ Session filter IS adding edge — keep it")
-    elif reg_wr < shadow_wr:
-        st.caption("🔴 Session filter may be HURTING — review")
-    else:
-        st.caption("⚠️ Session filter not yet proven — need more data")
-
-
-# ── Filters ───────────────────────────────────────────────────────────────────
+# ── SECTION 1: FILTERS ───────────────────────────────────────────────────────
 
 st.markdown('<div class="section-hd">Filters</div>', unsafe_allow_html=True)
 
+f1, f2, f3 = st.columns(3)
+
+with f1:
+    source_sel = st.selectbox("Source", ["LIVE", "PAPER", "ALL"], index=0, key="ctx_source")
+
 try:
     conn = get_connection()
     cur  = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) as n FROM trades WHERE session IS NOT NULL AND timestamp >= ?",
-        (DEPLOY_DATE,),
-    )
-    _context_trade_count = cur.fetchone()["n"]
-    conn.close()
-except Exception:
-    _context_trade_count = 0
-
-st.caption(
-    f"📊 Current data: {_context_trade_count} total trades with context. "
-    "Confident verdicts need 15+ trades per bucket."
-)
-
-fc1, fc2, fc3 = st.columns(3)
-with fc1:
-    sym_sel = st.selectbox("Symbol", ["All", "US500", "US100", "EURUSD", "DAX"])
-with fc2:
-    src_sel = st.selectbox("Source", ["All", "live_signal_loop", "tradingview_webhook"])
-with fc3:
-    days_sel = st.selectbox("Period", [30, 60, 90], format_func=lambda x: f"Last {x} days")
-
-sym    = None if sym_sel == "All" else sym_sel
-src    = None if src_sel == "All" else src_sel
-days   = days_sel
-cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-
-conds: list  = ["pnl IS NOT NULL", "status = 'CLOSED'", "timestamp >= ?"]
-params: list = [cutoff]
-if sym:
-    conds.append("symbol = ?")
-    params.append(sym)
-if src:
-    if src == "live_signal_loop":
-        conds.append("source IN ('signal_loop', 'live_signal_loop')")
+    if source_sel == "LIVE":
+        _strats = [r[0] for r in cur.execute(
+            "SELECT DISTINCT strategy_name FROM trades WHERE pnl IS NOT NULL AND status='CLOSED' ORDER BY strategy_name"
+        ).fetchall()]
+    elif source_sel == "PAPER":
+        _strats = [r[0] for r in cur.execute(
+            "SELECT DISTINCT strategy_name FROM paper_trades ORDER BY strategy_name"
+        ).fetchall()]
     else:
-        conds.append("source = ?")
-        params.append(src)
-where = " AND ".join(conds)
-
-
-# ── Data fetch ────────────────────────────────────────────────────────────────
-
-try:
-    conn = get_connection()
-    cur  = conn.cursor()
-
-    cur.execute(f"""
-        SELECT session,
-               COUNT(*) as trades,
-               SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-               SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
-               ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
-               ROUND(SUM(pnl), 2) as total_pnl,
-               ROUND(AVG(pnl), 2) as avg_pnl
-        FROM trades WHERE {where} AND session IS NOT NULL
-        GROUP BY session
-    """, params)
-    session_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT day_of_week,
-               COUNT(*) as trades,
-               SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-               SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
-               ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
-               ROUND(SUM(pnl), 2) as total_pnl,
-               ROUND(AVG(pnl), 2) as avg_pnl
-        FROM trades WHERE {where} AND day_of_week IS NOT NULL
-        GROUP BY day_of_week ORDER BY day_of_week
-    """, params)
-    dow_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT price_vs_ema200, direction,
-               COUNT(*) as trades,
-               SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-               ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
-               ROUND(SUM(pnl), 2) as total_pnl
-        FROM trades WHERE {where} AND price_vs_ema200 IS NOT NULL
-        GROUP BY price_vs_ema200, direction ORDER BY price_vs_ema200, direction
-    """, params)
-    ema200_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT
-            CASE
-                WHEN vix_level < 15 THEN 'Low (<15)'
-                WHEN vix_level < 20 THEN 'Normal (15-20)'
-                WHEN vix_level < 25 THEN 'Elevated (20-25)'
-                ELSE 'High (>25)'
-            END as vix_bucket,
-            COUNT(*) as trades,
-            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-            ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 1) as win_rate,
-            ROUND(SUM(pnl), 2) as total_pnl,
-            ROUND(MIN(vix_level), 1) as vix_min
-        FROM trades WHERE {where} AND vix_level IS NOT NULL
-        GROUP BY vix_bucket ORDER BY vix_min
-    """, params)
-    vix_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT symbol, ROUND(AVG(spread), 5) as avg_spread, COUNT(*) as n
-        FROM trades WHERE {where} AND spread IS NOT NULL
-        GROUP BY symbol ORDER BY symbol
-    """, params)
-    spread_avg_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT symbol, spread, pnl
-        FROM trades WHERE {where} AND spread IS NOT NULL
-    """, params)
-    spread_trade_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT atr_at_entry, pnl
-        FROM trades WHERE {where} AND atr_at_entry IS NOT NULL
-        ORDER BY atr_at_entry
-    """, params)
-    atr_raw = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT timestamp, symbol, direction, source, strategy_name, pnl,
-               spread, vix_level, ema200_daily, price_vs_ema200,
-               atr_at_entry, day_of_week, session
-        FROM trades WHERE {where}
-        ORDER BY id DESC LIMIT 500
-    """, params)
-    raw_rows = [dict(r) for r in cur.fetchall()]
-
+        _ls = {r[0] for r in cur.execute("SELECT DISTINCT strategy_name FROM trades WHERE pnl IS NOT NULL AND status='CLOSED'").fetchall()}
+        _ps = {r[0] for r in cur.execute("SELECT DISTINCT strategy_name FROM paper_trades").fetchall()}
+        _strats = sorted(_ls | _ps)
     conn.close()
 except Exception as e:
-    st.error(f"Database error: {e}")
+    _strats = []
+    st.error(f"DB error: {e}")
+
+_def_strat = "swiftalgo"
+_strat_idx = _strats.index(_def_strat) if _def_strat in _strats else 0
+
+with f2:
+    strategy_sel = st.selectbox("Strategy", _strats or ["—"], index=_strat_idx, key="ctx_strategy")
+
+try:
+    conn = get_connection()
+    cur  = conn.cursor()
+    if source_sel == "LIVE":
+        _syms = [r[0] for r in cur.execute(
+            "SELECT DISTINCT symbol FROM trades WHERE strategy_name=? AND pnl IS NOT NULL AND status='CLOSED' ORDER BY symbol",
+            (strategy_sel,)
+        ).fetchall()]
+    elif source_sel == "PAPER":
+        _syms = [r[0] for r in cur.execute(
+            "SELECT DISTINCT symbol FROM paper_trades WHERE strategy_name=? ORDER BY symbol",
+            (strategy_sel,)
+        ).fetchall()]
+    else:
+        _ls2 = {r[0] for r in cur.execute("SELECT DISTINCT symbol FROM trades WHERE strategy_name=? AND pnl IS NOT NULL AND status='CLOSED'", (strategy_sel,)).fetchall()}
+        _ps2 = {r[0] for r in cur.execute("SELECT DISTINCT symbol FROM paper_trades WHERE strategy_name=?", (strategy_sel,)).fetchall()}
+        _syms = sorted(_ls2 | _ps2)
+    conn.close()
+except Exception as e:
+    _syms = []
+
+_def_sym = "EURUSD"
+_sym_idx = _syms.index(_def_sym) if _def_sym in _syms else 0
+
+with f3:
+    symbol_sel = st.selectbox("Symbol", _syms or ["—"], index=_sym_idx, key="ctx_symbol")
+
+st.divider()
+
+if not _syms or symbol_sel == "—":
+    _no_data(f"No resolved trades for {strategy_sel} ({source_sel}).")
     st.stop()
 
-_live_vix = None
-try:
-    from filters.vix_filter import get_current_vix
-    _live_vix = get_current_vix()
-except Exception:
-    pass
+
+# ── DATA FETCH ────────────────────────────────────────────────────────────────
+
+def _fetch_live(strategy, symbol):
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            timestamp,
+            direction,
+            {_SESS_DERIVE_TRADES} AS session,
+            CAST(strftime('%w', timestamp) AS INT) AS dow,
+            pnl,
+            status,
+            vix_level,
+            atr_at_entry
+        FROM trades
+        WHERE strategy_name = ? AND symbol = ?
+          AND status = 'CLOSED' AND pnl IS NOT NULL
+        ORDER BY timestamp DESC
+    """, (strategy, symbol))
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
 
 
-# ── Section 3 — Session Performance ──────────────────────────────────────────
+def _fetch_paper(strategy, symbol):
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            checked_at AS timestamp,
+            CASE
+                WHEN signal = 'PAPER_BUY'  THEN 'BUY'
+                WHEN signal = 'PAPER_SELL' THEN 'SELL'
+                WHEN signal = 'BUY'        THEN 'BUY'
+                WHEN signal = 'SELL'       THEN 'SELL'
+                ELSE signal
+            END AS direction,
+            {_SESS_DERIVE_PAPER} AS session,
+            CAST(strftime('%w', checked_at) AS INT) AS dow,
+            simulated_pnl AS pnl,
+            outcome AS status,
+            NULL AS vix_level,
+            NULL AS atr_at_entry
+        FROM paper_trades
+        WHERE strategy_name = ? AND symbol = ?
+          AND outcome != 'PENDING'
+          AND signal NOT LIKE 'SHADOW%'
+        ORDER BY checked_at DESC
+    """, (strategy, symbol))
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+live_rows  = _fetch_live(strategy_sel, symbol_sel)  if source_sel in ("LIVE", "ALL")  else []
+paper_rows = _fetch_paper(strategy_sel, symbol_sel) if source_sel in ("PAPER", "ALL") else []
+all_rows   = live_rows + paper_rows
+
+
+# ── SECTION 2: SUMMARY STATS ─────────────────────────────────────────────────
+
+st.markdown('<div class="section-hd">Summary</div>', unsafe_allow_html=True)
+
+
+def _summary(rows, label):
+    resolved = [r for r in rows if r.get("pnl") is not None]
+    if not resolved:
+        return None
+    total      = len(resolved)
+    wins       = sum(1 for r in resolved if r["pnl"] > 0)
+    total_pnl  = round(sum(r["pnl"] for r in resolved), 2)
+    avg_pnl    = round(total_pnl / total, 2)
+    gross_win  = sum(r["pnl"] for r in resolved if r["pnl"] > 0)
+    gross_loss = abs(sum(r["pnl"] for r in resolved if r["pnl"] < 0))
+    pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
+    return {
+        "Source":    label,
+        "Trades":    total,
+        "Wins":      wins,
+        "Losses":    total - wins,
+        "WR%":       round(wins / total * 100, 1),
+        "Total P&L": total_pnl,
+        "Avg P&L":   avg_pnl,
+        "PF":        pf,
+    }
+
+
+parts = []
+if live_rows:
+    s = _summary(live_rows, "LIVE")
+    if s:
+        parts.append(s)
+if paper_rows:
+    s = _summary(paper_rows, "PAPER")
+    if s:
+        parts.append(s)
+if source_sel == "ALL" and all_rows:
+    s = _summary(all_rows, "COMBINED")
+    if s:
+        parts.append(s)
+
+if not parts:
+    _no_data("No resolved trades.")
+else:
+    df_sum = pd.DataFrame(parts)
+    st.dataframe(
+        df_sum.style
+            .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
+            .format({
+                "WR%":       _fmt_wr,
+                "Total P&L": _fmt_pnl,
+                "Avg P&L":   _fmt_pnl,
+                "PF":        lambda v: f"{v:.2f}" if v is not None else "—",
+            }),
+        use_container_width=True, hide_index=True,
+    )
+
+
+# ── SECTION 3: SESSION TRAFFIC LIGHTS ────────────────────────────────────────
 
 st.markdown('<div class="section-hd">Session Performance</div>', unsafe_allow_html=True)
 
-if not session_rows:
-    _no_data_msg(f"No session data yet — context captured from {DEPLOY_DATE} onwards.")
-else:
-    sess_order = {s: i for i, s in enumerate(SESSION_ORDER)}
-    session_rows = sorted(session_rows, key=lambda r: sess_order.get(r["session"], 99))
 
-    df_sess = pd.DataFrame(session_rows).rename(columns={
-        "session": "Session", "trades": "Trades", "wins": "Wins",
-        "losses": "Losses", "win_rate": "WR%", "total_pnl": "P&L", "avg_pnl": "Avg P&L",
-    })
-    df_sess["Verdict"] = [
-        _trade_verdict(r["trades"], r["win_rate"]) for r in session_rows
-    ]
-    df_sess = df_sess[["Session", "Trades", "Wins", "Losses", "WR%", "P&L", "Avg P&L", "Verdict"]]
+def _session_table(rows, label):
+    buckets: dict = {}
+    for r in rows:
+        sess = r.get("session") or "UNKNOWN"
+        if sess not in buckets:
+            buckets[sess] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        b = buckets[sess]
+        b["trades"] += 1
+        pnl = r.get("pnl")
+        if pnl is not None:
+            b["pnl"]  += pnl
+            b["wins"] += 1 if pnl > 0 else 0
+
+    out  = []
+    seen = set()
+    for sess in SESSION_ORDER:
+        if sess not in buckets:
+            continue
+        b   = buckets[sess]
+        wr  = round(b["wins"] / b["trades"] * 100, 1) if b["trades"] else None
+        pnl = round(b["pnl"], 2)
+        out.append({"": _traffic(wr, pnl), "Session": sess,
+                    "Trades": b["trades"], "WR%": wr, "P&L": pnl})
+        seen.add(sess)
+    for sess, b in buckets.items():
+        if sess in seen:
+            continue
+        wr  = round(b["wins"] / b["trades"] * 100, 1) if b["trades"] else None
+        pnl = round(b["pnl"], 2)
+        out.append({"": _traffic(wr, pnl), "Session": sess,
+                    "Trades": b["trades"], "WR%": wr, "P&L": pnl})
+
+    if not out:
+        _no_data(f"No session data ({label}).")
+        return
+    st.caption(label)
     st.dataframe(
-        df_sess.style
+        pd.DataFrame(out).style
             .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
-            .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}", "Avg P&L": "${:+.2f}"}),
+            .format({"WR%": _fmt_wr, "P&L": _fmt_pnl}),
         use_container_width=True, hide_index=True,
     )
 
-    best_row  = max(session_rows, key=lambda r: r["win_rate"])
-    worst_row = min(session_rows, key=lambda r: r["win_rate"])
-    st.caption(
-        f"Best session: **{best_row['session']}** ({best_row['win_rate']:.1f}%)  ·  "
-        f"Worst: **{worst_row['session']}** ({worst_row['win_rate']:.1f}%)"
-    )
-    st.caption(
-        "Currently filtered: stoch_rsi_confluence US500 HOUR allows only "
-        "LONDON_OPEN (07:00-08:59 UTC) + NY_OPEN (13:00-15:59 UTC), all others shadow-logged"
-    )
-    st.caption(
-        "Verdicts shown for sessions with 5+ trades only. "
-        "Minimum 15 trades recommended before acting on any verdict."
-    )
 
-    fig = go.Figure(go.Bar(
-        y=[r["session"] for r in session_rows],
-        x=[r["win_rate"] for r in session_rows],
-        orientation="h",
-        marker_color=[_wr_color(r["win_rate"]) for r in session_rows],
-        text=[f"{r['win_rate']}%" for r in session_rows],
-        textposition="outside",
-    ))
-    fig.update_layout(
-        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)", height=280,
-        margin=dict(l=0, r=50, t=10, b=10), xaxis_title="Win Rate %",
-    )
-    st.plotly_chart(fig, use_container_width=True)
+if source_sel == "ALL":
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        _session_table(live_rows, "LIVE")
+    with sc2:
+        _session_table(paper_rows, "PAPER")
+elif source_sel == "LIVE":
+    _session_table(live_rows, "LIVE")
+else:
+    _session_table(paper_rows, "PAPER")
 
 
-# ── Section 4 — Day of Week Performance ──────────────────────────────────────
+# ── SECTION 4: DAY OF WEEK ────────────────────────────────────────────────────
 
 st.markdown('<div class="section-hd">Day of Week Performance</div>', unsafe_allow_html=True)
-st.caption(f"Monday block active since {DEPLOY_DATE} — Monday trades will be sparse going forward.")
 
-if not dow_rows:
-    _no_data_msg("No day-of-week data yet.")
-else:
-    df_dow = pd.DataFrame(dow_rows)
-    df_dow["Day"] = df_dow["day_of_week"].map(DAY_NAMES).fillna(df_dow["day_of_week"].astype(str))
 
-    verdicts = []
-    for r in dow_rows:
-        day_name = DAY_NAMES.get(r["day_of_week"], str(r["day_of_week"]))
-        if day_name == "Monday":
-            verdicts.append("🔴 BLOCKED ✋")
-        else:
-            verdicts.append(_trade_verdict(r["trades"], r["win_rate"]))
-    df_dow["Verdict"] = verdicts
+def _dow_table(rows, label):
+    buckets: dict = {}
+    for r in rows:
+        dow = r.get("dow")
+        if dow is None:
+            continue
+        py_dow = (int(dow) - 1) % 7  # SQLite %w 0=Sun,1=Mon → Python 0=Mon
+        if py_dow not in buckets:
+            buckets[py_dow] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        b = buckets[py_dow]
+        b["trades"] += 1
+        pnl = r.get("pnl")
+        if pnl is not None:
+            b["pnl"]  += pnl
+            b["wins"] += 1 if pnl > 0 else 0
 
-    df_dow = df_dow.rename(columns={
-        "trades": "Trades", "wins": "Wins", "losses": "Losses",
-        "win_rate": "WR%", "total_pnl": "P&L", "avg_pnl": "Avg P&L",
-    })[["Day", "Trades", "Wins", "Losses", "WR%", "P&L", "Avg P&L", "Verdict"]]
+    out = []
+    for d in range(5):  # Mon–Fri only
+        if d not in buckets:
+            continue
+        b   = buckets[d]
+        wr  = round(b["wins"] / b["trades"] * 100, 1) if b["trades"] else None
+        pnl = round(b["pnl"], 2)
+        out.append({"": _traffic(wr, pnl), "Day": DAY_NAMES[d],
+                    "Trades": b["trades"], "WR%": wr, "P&L": pnl})
+
+    if not out:
+        _no_data(f"No day-of-week data ({label}).")
+        return
+    st.caption(label)
     st.dataframe(
-        df_dow.style
+        pd.DataFrame(out).style
             .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
-            .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}", "Avg P&L": "${:+.2f}"}),
+            .format({"WR%": _fmt_wr, "P&L": _fmt_pnl}),
         use_container_width=True, hide_index=True,
     )
 
-    non_monday = [r for r in dow_rows if DAY_NAMES.get(r["day_of_week"]) != "Monday"]
-    if non_monday:
-        best_day = max(non_monday, key=lambda r: r["win_rate"])
-        st.caption(
-            f"Best day: **{DAY_NAMES.get(best_day['day_of_week'])}** "
-            f"({best_day['win_rate']:.1f}%)  ·  Currently blocking: Monday"
-        )
-        tuesday = next((r for r in non_monday if DAY_NAMES.get(r["day_of_week"]) == "Tuesday"), None)
-        wednesday = next((r for r in non_monday if DAY_NAMES.get(r["day_of_week"]) == "Wednesday"), None)
-        if tuesday and tuesday["win_rate"] >= 55 and (not wednesday or wednesday["win_rate"] < 45):
-            need = max(0, 5 - tuesday["trades"])
-            if need > 0:
-                st.caption(
-                    f"Tuesday showing edge — consider blocking Wednesday "
-                    f"if pattern holds after {need}+ more trades"
-                )
-    else:
-        st.caption("Currently blocking: Monday")
 
-    st.caption(
-        "Verdicts shown for days with 5+ trades only. "
-        "Minimum 15 trades recommended before acting on any verdict."
-    )
-
-    fig = go.Figure(go.Bar(
-        x=[DAY_NAMES.get(r["day_of_week"], str(r["day_of_week"])) for r in dow_rows],
-        y=[r["win_rate"] for r in dow_rows],
-        marker_color=[_wr_color(r["win_rate"]) for r in dow_rows],
-        text=[f"{r['win_rate']}%" for r in dow_rows],
-        textposition="outside",
-    ))
-    fig.update_layout(
-        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)", height=280,
-        margin=dict(l=0, r=10, t=10, b=10), yaxis_title="Win Rate %",
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# ── Section 5 — Trend Regime ──────────────────────────────────────────────────
-
-st.markdown('<div class="section-hd">Trend Regime</div>', unsafe_allow_html=True)
-
-st.markdown("**Does trading WITH the trend help?**")
-
-if not ema200_rows:
-    _no_data_msg("No EMA200 data yet.")
+if source_sel == "ALL":
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        _dow_table(live_rows, "LIVE")
+    with dc2:
+        _dow_table(paper_rows, "PAPER")
+elif source_sel == "LIVE":
+    _dow_table(live_rows, "LIVE")
 else:
-    with_trend    = {"trades": 0, "wins": 0, "total_pnl": 0.0}
-    against_trend = {"trades": 0, "wins": 0, "total_pnl": 0.0}
-    for r in ema200_rows:
-        bucket = with_trend if (
-            (r["price_vs_ema200"] == "ABOVE" and r["direction"] == "BUY") or
-            (r["price_vs_ema200"] == "BELOW" and r["direction"] == "SELL")
-        ) else against_trend
-        bucket["trades"]    += r["trades"]
-        bucket["wins"]      += r["wins"]
-        bucket["total_pnl"] += r["total_pnl"]
+    _dow_table(paper_rows, "PAPER")
 
-    def _wr(b):
-        return (b["wins"] / b["trades"] * 100) if b["trades"] else None
 
-    with_wr    = _wr(with_trend)
-    against_wr = _wr(against_trend)
+# ── SECTION 5: FILTER EFFECTIVENESS ─────────────────────────────────────────
 
-    trend_rows = [
-        {
-            "Trade type": "With trend (aligned)",
-            "Trades": with_trend["trades"],
-            "WR%": with_wr,
-            "P&L": with_trend["total_pnl"],
-        },
-        {
-            "Trade type": "Against trend",
-            "Trades": against_trend["trades"],
-            "WR%": against_wr,
-            "P&L": against_trend["total_pnl"],
-        },
-    ]
-    df_trend = pd.DataFrame(trend_rows)
-    st.dataframe(
-        df_trend.style
-            .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
-            .format({"WR%": lambda v: f"{v:.1f}%" if v is not None else "—", "P&L": "${:+.2f}"}),
-        use_container_width=True, hide_index=True,
-    )
+st.markdown('<div class="section-hd">Filter Effectiveness — Blocked Signals</div>', unsafe_allow_html=True)
 
-    if with_wr is not None and against_wr is not None:
-        if with_wr > against_wr + 10:
-            st.caption("✅ Trend alignment helps — consider EMA200 filter")
-        else:
-            st.caption("⚠️ Trend direction not decisive yet")
-    else:
-        st.caption("⚪ Need more data in one or both buckets")
-
-    st.caption("ABOVE/BUY = trend-following long · BELOW/SELL = trend-following short")
-
-st.markdown("**Current market regime**")
-_regime_symbol = sym or "US500"
+# Shadow paper trades — session-blocked signal_loop signals
 try:
-    from scripts.run_backtest import _fetch_yfinance_candles
-    _candles = _fetch_yfinance_candles(_regime_symbol, "DAY", 250)
-    if len(_candles) >= 200:
-        _closes = [c["close"] for c in _candles]
-        _k = 2 / 201
-        _ema = _closes[0]
-        for _c in _closes[1:]:
-            _ema = _c * _k + _ema * (1 - _k)
-        _pve = "ABOVE" if _closes[-1] > _ema else "BELOW"
-        st.caption(f"{_regime_symbol}: Price is currently **{_pve}** daily EMA200 (EMA200 ≈ {_ema:,.2f})")
-    else:
-        _no_data_msg("Not enough daily candles to compute EMA200.")
+    conn        = get_connection()
+    cur         = conn.cursor()
+    cur.execute("""
+        SELECT checked_at, signal, simulated_pnl, outcome, notes, session
+        FROM paper_trades
+        WHERE strategy_name = ? AND symbol = ?
+          AND signal LIKE 'SHADOW%'
+        ORDER BY checked_at DESC
+    """, (strategy_sel, symbol_sel))
+    shadow_rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+except Exception as e:
+    shadow_rows = []
+    st.error(f"DB error: {e}")
+
+# Blocked webhook alerts — for webhook-sourced strategies (swiftalgo)
+try:
+    conn        = get_connection()
+    wh_outcomes = get_webhook_outcomes(conn, days=90)
+    wh_outcomes = [r for r in wh_outcomes if r.get("symbol") == symbol_sel]
+    conn.close()
 except Exception:
-    _no_data_msg("Could not fetch live price for current regime.")
+    wh_outcomes = []
 
-
-# ── Section 6 — VIX & ATR ──────────────────────────────────────────────────────
-
-st.markdown('<div class="section-hd">VIX & ATR Regime</div>', unsafe_allow_html=True)
-
-vc1, vc2 = st.columns(2)
-
-with vc1:
-    st.markdown("**Volatility Context (VIX Buckets)**")
-    if _live_vix is not None:
-        if _live_vix < 15:
-            vix_label = "🟢 Low (<15)"
-        elif _live_vix < 20:
-            vix_label = "🟡 Normal (15-20)"
-        elif _live_vix < 25:
-            vix_label = "🟠 Elevated (20-25)"
+if shadow_rows:
+    resolved = [r for r in shadow_rows if r["outcome"] in ("WIN", "LOSS")]
+    pending  = [r for r in shadow_rows if r["outcome"] == "PENDING"]
+    st.markdown(
+        f"**Session-blocked signals (shadow log)** — "
+        f"{len(shadow_rows)} total · {len(resolved)} resolved · {len(pending)} pending"
+    )
+    if resolved:
+        s_wins = sum(1 for r in resolved if r["outcome"] == "WIN")
+        s_wr   = round(s_wins / len(resolved) * 100, 1)
+        s_pnl  = round(sum((r["simulated_pnl"] or 0) for r in resolved), 2)
+        if s_wr < 45:
+            verdict = "✅ Good to block — WR below threshold"
+        elif s_wr >= 55:
+            verdict = "🔴 Consider unblocking — high WR when fired"
         else:
-            vix_label = "🔴 High (>25)"
-        st.caption(f"Current VIX: **{_live_vix:.2f}** — {vix_label}")
-
-    if not vix_rows:
-        _no_data_msg("No VIX data yet.")
-    else:
-        df_vix = pd.DataFrame(vix_rows).drop(columns=["vix_min"], errors="ignore")
-        df_vix = df_vix.rename(columns={
-            "vix_bucket": "VIX Regime", "trades": "Trades", "wins": "Wins",
-            "win_rate": "WR%", "total_pnl": "P&L",
-        })
-        st.dataframe(
-            df_vix.style
-                .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
-                .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}"}),
-            use_container_width=True, hide_index=True,
+            verdict = "🟡 Ambiguous — accumulate more data"
+        st.caption(
+            f"WR if unblocked: **{s_wr:.1f}%** | Simulated P&L: **${s_pnl:+.2f}** — {verdict}"
         )
 
-with vc2:
-    st.markdown("**ATR Regime (terciles)**")
-    if len(atr_raw) < 6:
-        _no_data_msg("Insufficient ATR data (need ≥ 6 trades with context).")
-    else:
-        n  = len(atr_raw)
-        t1 = atr_raw[n // 3]["atr_at_entry"]
-        t2 = atr_raw[2 * n // 3]["atr_at_entry"]
+    df_shadow = pd.DataFrame([{
+        "Date":    (r["checked_at"] or "")[:16].replace("T", " "),
+        "Signal":  r["signal"],
+        "Session": r.get("session") or "—",
+        "Outcome": r["outcome"],
+        "Sim P&L": _fmt_pnl(r.get("simulated_pnl")),
+        "Notes":   r.get("notes") or "",
+    } for r in shadow_rows[:25]])
+    st.dataframe(df_shadow, use_container_width=True, hide_index=True)
 
-        atr_buckets: dict = {"Low ATR": [], "Medium ATR": [], "High ATR": []}
-        for r in atr_raw:
-            pnl = r.get("pnl")
-            if pnl is None:
-                continue
-            atr = r["atr_at_entry"]
-            if atr <= t1:
-                atr_buckets["Low ATR"].append(pnl)
-            elif atr <= t2:
-                atr_buckets["Medium ATR"].append(pnl)
-            else:
-                atr_buckets["High ATR"].append(pnl)
+elif wh_outcomes:
+    st.markdown(f"**Blocked webhook alerts** — {len(wh_outcomes)} resolved")
+    df_wh = pd.DataFrame([{
+        "Date":         (r.get("timestamp") or "")[:16].replace("T", " "),
+        "Direction":    r.get("direction"),
+        "Block Reason": r.get("block_reason"),
+        "Outcome":      r.get("outcome"),
+        "Est P&L":      _fmt_pnl(r.get("estimated_pnl")),
+    } for r in wh_outcomes[:25]])
+    st.dataframe(df_wh, use_container_width=True, hide_index=True)
 
-        atr_df_rows = []
-        for label, pnls in atr_buckets.items():
-            if pnls:
-                w = sum(1 for p in pnls if p > 0)
-                atr_df_rows.append({
-                    "ATR Regime": label, "Trades": len(pnls),
-                    "WR%":       round(w / len(pnls) * 100, 1),
-                    "Total P&L": round(sum(pnls), 2),
-                })
+else:
+    _no_data("No blocked signals found for this strategy/symbol yet.")
 
-        if atr_df_rows:
-            df_atr = pd.DataFrame(atr_df_rows)
+
+# ── SECTION 6: VIX + ATR (live only) ────────────────────────────────────────
+
+st.markdown('<div class="section-hd">VIX & ATR Context</div>', unsafe_allow_html=True)
+
+if source_sel == "PAPER":
+    st.info("VIX/ATR context only available for live trades.", icon="ℹ️")
+else:
+    vix_src = [r for r in live_rows if r.get("vix_level") is not None]
+    atr_src = sorted(
+        [r for r in live_rows if r.get("atr_at_entry") is not None],
+        key=lambda r: r["atr_at_entry"],
+    )
+
+    vc1, vc2 = st.columns(2)
+
+    with vc1:
+        st.markdown("**VIX Buckets**")
+        if not vix_src:
+            _no_data("No VIX data for this selection.")
+        else:
+            vbuckets: dict = {}
+            vorder = ["Low (<15)", "Normal (15-20)", "Elevated (20-25)", "High (>25)"]
+            for r in vix_src:
+                v = r["vix_level"]
+                k = ("Low (<15)" if v < 15 else "Normal (15-20)" if v < 20
+                     else "Elevated (20-25)" if v < 25 else "High (>25)")
+                if k not in vbuckets:
+                    vbuckets[k] = {"trades": 0, "wins": 0, "pnl": 0.0}
+                vbuckets[k]["trades"] += 1
+                pnl = r.get("pnl")
+                if pnl is not None:
+                    vbuckets[k]["pnl"]  += pnl
+                    vbuckets[k]["wins"] += 1 if pnl > 0 else 0
+            vrows = []
+            for k in vorder:
+                if k not in vbuckets:
+                    continue
+                b  = vbuckets[k]
+                wr = round(b["wins"] / b["trades"] * 100, 1) if b["trades"] else None
+                vrows.append({"VIX": k, "Trades": b["trades"],
+                              "WR%": wr, "P&L": round(b["pnl"], 2)})
             st.dataframe(
-                df_atr.style
+                pd.DataFrame(vrows).style
                     .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
-                    .format({"WR%": "{:.1f}%", "Total P&L": "${:+.2f}"}),
+                    .format({"WR%": _fmt_wr, "P&L": _fmt_pnl}),
                 use_container_width=True, hide_index=True,
             )
-            st.caption(
-                f"Tercile boundaries: Low ≤ {t1:.2f} · Medium ≤ {t2:.2f} · High > {t2:.2f}"
-            )
-            best_atr = max(atr_df_rows, key=lambda r: r["WR%"])
-            st.caption(f"Best entries in {best_atr['ATR Regime']} regime ({best_atr['WR%']:.0f}% WR)")
+
+    with vc2:
+        st.markdown("**ATR Regime (terciles)**")
+        if len(atr_src) < 6:
+            _no_data("Need ≥ 6 trades with ATR data.")
         else:
-            _no_data_msg("No resolved ATR data yet.")
-
-
-# ── Section 7 — Spread Analysis ───────────────────────────────────────────────
-
-st.markdown('<div class="section-hd">Spread Analysis</div>', unsafe_allow_html=True)
-st.caption(f"Spread data available from {DEPLOY_DATE} onwards (webhook trades only).")
-
-if not spread_avg_rows:
-    _no_data_msg("No spread data yet.")
-else:
-    sp1, sp2 = st.columns(2)
-    with sp1:
-        st.markdown("**Average spread by symbol**")
-        df_sp = pd.DataFrame(spread_avg_rows).rename(columns={
-            "symbol": "Symbol", "avg_spread": "Avg Spread", "n": "Trades",
-        })
-        st.dataframe(df_sp, use_container_width=True, hide_index=True)
-
-    with sp2:
-        st.markdown("**Win rate by spread width**")
-        bins: dict = {"Normal (≤1×)": [], "Slightly Wide (1–1.5×)": [], "Wide (1.5–2×)": []}
-        for r in spread_trade_rows:
-            normal = NORMAL_SPREADS.get(r.get("symbol", ""), 0)
-            if not normal or r.get("spread") is None or r.get("pnl") is None:
-                continue
-            ratio = r["spread"] / normal
-            pnl   = r["pnl"]
-            if ratio <= 1.0:
-                bins["Normal (≤1×)"].append(pnl)
-            elif ratio <= 1.5:
-                bins["Slightly Wide (1–1.5×)"].append(pnl)
-            else:
-                bins["Wide (1.5–2×)"].append(pnl)
-
-        bin_rows = []
-        for label, pnls in bins.items():
-            if pnls:
+            n  = len(atr_src)
+            t1 = atr_src[n // 3]["atr_at_entry"]
+            t2 = atr_src[2 * n // 3]["atr_at_entry"]
+            abuckets: dict = {"Low": [], "Medium": [], "High": []}
+            for r in atr_src:
+                pnl = r.get("pnl")
+                if pnl is None:
+                    continue
+                atr   = r["atr_at_entry"]
+                label = "Low" if atr <= t1 else "Medium" if atr <= t2 else "High"
+                abuckets[label].append(pnl)
+            arows = []
+            for label, pnls in abuckets.items():
+                if not pnls:
+                    continue
                 w = sum(1 for p in pnls if p > 0)
-                bin_rows.append({
-                    "Spread": label, "Trades": len(pnls),
+                arows.append({
+                    "ATR": label, "Trades": len(pnls),
                     "WR%": round(w / len(pnls) * 100, 1),
                     "P&L": round(sum(pnls), 2),
                 })
-        if bin_rows:
-            df_bins = pd.DataFrame(bin_rows)
-            st.dataframe(
-                df_bins.style
-                    .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
-                    .format({"WR%": "{:.1f}%", "P&L": "${:+.2f}"}),
-                use_container_width=True, hide_index=True,
-            )
-        else:
-            _no_data_msg("Insufficient spread data for binning.")
+            if arows:
+                st.dataframe(
+                    pd.DataFrame(arows).style
+                        .apply(lambda col: [_wr_bg(v) for v in col], subset=["WR%"])
+                        .format({"WR%": _fmt_wr, "P&L": _fmt_pnl}),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption(
+                    f"Low ≤ {t1:.4f} · Medium ≤ {t2:.4f} · High > {t2:.4f}"
+                )
+            else:
+                _no_data("No resolved ATR data.")
 
 
-# ── Section 8 — Raw Context Data ─────────────────────────────────────────────
+# ── SECTION 7: TRADE LOG ─────────────────────────────────────────────────────
 
-with st.expander("View raw context data"):
-    if not raw_rows:
-        st.caption("No data.")
-    else:
-        df_raw = pd.DataFrame(raw_rows)
-        if "timestamp" in df_raw.columns:
-            df_raw["timestamp"] = df_raw["timestamp"].apply(
-                lambda t: (
-                    datetime.fromisoformat(str(t).replace("Z", "+00:00"))
-                    .strftime("%Y-%m-%d %H:%M")
-                ) if t else "—"
-            )
-        if "day_of_week" in df_raw.columns:
-            df_raw["day_of_week"] = df_raw["day_of_week"].map(DAY_NAMES).fillna(df_raw["day_of_week"])
-        st.dataframe(df_raw, use_container_width=True, hide_index=True)
+st.markdown('<div class="section-hd">Trade Log</div>', unsafe_allow_html=True)
+
+if not all_rows:
+    _no_data("No trades for this selection.")
+else:
+    log_display = []
+    for r in all_rows:
+        ts  = r.get("timestamp") or ""
+        dow = r.get("dow")
+        py_dow = (int(dow) - 1) % 7 if dow is not None else None
+        log_display.append({
+            "Date":      ts[:16].replace("T", " ") if ts else "—",
+            "Direction": r.get("direction") or "—",
+            "Session":   r.get("session") or "—",
+            "Day":       DAY_NAMES.get(py_dow, "?") if py_dow is not None else "—",
+            "P&L":       _fmt_pnl(r.get("pnl")),
+            "Status":    r.get("status") or "—",
+            "VIX":       f"{r['vix_level']:.1f}" if r.get("vix_level") is not None else "—",
+        })
+
+    total_pages = max(1, math.ceil(len(log_display) / PAGE_SIZE))
+    pg_key = "ctx_page"
+    if pg_key not in st.session_state:
+        st.session_state[pg_key] = 0
+    pg = max(0, min(st.session_state[pg_key], total_pages - 1))
+
+    st.dataframe(
+        pd.DataFrame(log_display[pg * PAGE_SIZE : (pg + 1) * PAGE_SIZE]),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(f"Page {pg + 1} of {total_pages}  ·  {len(log_display)} total trades")
+
+    pc1, pc2, _ = st.columns([1, 1, 6])
+    with pc1:
+        if st.button("◀ Prev", disabled=(pg == 0)):
+            st.session_state[pg_key] = pg - 1
+            st.rerun()
+    with pc2:
+        if st.button("Next ▶", disabled=(pg >= total_pages - 1)):
+            st.session_state[pg_key] = pg + 1
+            st.rerun()
