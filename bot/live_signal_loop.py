@@ -137,7 +137,9 @@ def _weekend_close_positions() -> None:
                         direction=direction,
                         epic=epic,
                         expiry=expiry,
+                        level=None,
                         order_type="MARKET",
+                        quote_id=None,
                         size=size,
                     )
                     print(f"[weekend_close] ✓ Closed {deal_id}")
