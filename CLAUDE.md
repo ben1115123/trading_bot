@@ -136,12 +136,13 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | HOUR | stoch_rsi  | Live | loop    |                                |
 | EURUSD | HOUR | swiftalgo  | Live | webhook | Promoted 2026-05-27, $10 risk  |
 | US500  | HOUR | swiftalgo  | Live | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
+| EURUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-17, $10 risk, NY_MID session blocked — review LONDON_OPEN block after more data |
+| GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $10 risk, no session blocks — review after 2026-06-29 |
 
 ### Paper
 | Symbol | TF    | Strategy   | Mode  | Source | Notes                          |
 |--------|-------|------------|-------|--------|---------------------------------|
 | US500  | HOUR  | williams_r | Paper | loop   | Accumulating trades             |
-| EURUSD | 15MIN | williams_r | Paper | loop   | 435 bt trades, PF 1.39          |
 | EURUSD | 15MIN | stoch_rsi  | Paper | loop   | 297 bt trades, PF 1.36          |
 | EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18           |
 | EURUSD | 15MIN | supertrend | Paper | loop   | 111 bt trades, PF 1.35          |
@@ -150,7 +151,6 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50 |
 | US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
-| GBPUSD | 15MIN | williams_r           | Paper | loop | 300 bt trades, PF 1.21, R:R strategy |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
