@@ -25,6 +25,18 @@ MARKET_CLOSE = {
 
 TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "15MIN": 900, "HOUR": 3600, "DAY": 86400}
 
+_SYMBOL_DECIMALS: dict[str, int] = {
+    "EURUSD": 5, "GBPUSD": 5, "EURGBP": 5,
+    "USDJPY": 3,
+    "US500": 2, "US100": 2, "DAX": 2,
+    "XAUUSD": 2,
+}
+
+
+def _round_precision(symbol: str) -> int:
+    return _SYMBOL_DECIMALS.get(symbol, 4)
+
+
 _raw_paper    = os.getenv("PAPER_TRADE_SYMBOLS", "")
 PAPER_SYMBOLS: set[str] = {s.strip() for s in _raw_paper.split(",") if s.strip()}
 
@@ -332,14 +344,15 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
     else:
         # Default: SL/TP from candle range
         sl_dist = candle["high"] - candle["low"]
+        _prec   = _round_precision(symbol)
         if signal == "BUY":
             action = "buy"
-            sl     = round(entry - sl_dist, 4)
-            tp     = round(entry + sl_dist * 2, 4)
+            sl     = round(entry - sl_dist, _prec)
+            tp     = round(entry + sl_dist * 2, _prec)
         else:
             action = "sell"
-            sl     = round(entry + sl_dist, 4)
-            tp     = round(entry - sl_dist * 2, 4)
+            sl     = round(entry + sl_dist, _prec)
+            tp     = round(entry - sl_dist * 2, _prec)
 
     print(f"[signal_loop] [{symbol}] {signal} — sl={sl} tp={tp}")
 
