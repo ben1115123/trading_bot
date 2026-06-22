@@ -394,8 +394,9 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
 
     if _is_paper_trade(symbol, timeframe) or active.get("status") == "paper":
         log_data["signal"] = f"PAPER_{signal}"
+        _paper_now = datetime.now(timezone.utc)
         log_paper_trade({
-            "checked_at":    datetime.now(timezone.utc).isoformat(),
+            "checked_at":    _paper_now.isoformat(),
             "symbol":        symbol,
             "strategy_name": strategy_name,
             "timeframe":     timeframe,
@@ -406,6 +407,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
             "tp":            tp,
             "outcome":       "PENDING",
             "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
+            "session":       _get_session(_paper_now.hour),
         })
         log_signal_check(log_data)
         print(f"[signal_loop] [{symbol}/{timeframe}] PAPER {signal} logged — not executed")

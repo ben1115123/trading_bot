@@ -80,6 +80,7 @@ EPIC_CONFIG = {
     "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
     "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
     "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
+    "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
 }
 
 # -------------------------
