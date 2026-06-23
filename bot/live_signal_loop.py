@@ -32,6 +32,17 @@ _SYMBOL_DECIMALS: dict[str, int] = {
     "XAUUSD": 2,
 }
 
+_MIN_SL_DIST: dict[str, float] = {
+    "EURUSD": 0.00050,
+    "GBPUSD": 0.00060,
+    "EURGBP": 0.00050,
+    "USDJPY": 0.050,
+    "US500":  3.0,
+    "US100":  4.0,
+    "DAX":    5.0,
+    "XAUUSD": 1.50,
+}
+
 
 def _round_precision(symbol: str) -> int:
     return _SYMBOL_DECIMALS.get(symbol, 4)
@@ -343,7 +354,13 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
             tp     = round(float(_sig_tp), 5)
     else:
         # Default: SL/TP from candle range
-        sl_dist = candle["high"] - candle["low"]
+        _raw_dist = candle["high"] - candle["low"]
+        sl_dist = max(_raw_dist, _MIN_SL_DIST.get(symbol, _raw_dist))
+        if sl_dist > _raw_dist:
+            print(
+                f"[signal_loop] [{symbol}] candle range "
+                f"{_raw_dist:.5f} below floor {sl_dist:.5f} — using floor"
+            )
         _prec   = _round_precision(symbol)
         if signal == "BUY":
             action = "buy"
