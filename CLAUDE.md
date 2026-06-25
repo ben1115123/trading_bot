@@ -260,6 +260,7 @@ Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
 |--------|------------|-------------------------------|
 | EURUSD | $10        | Reduced until live edge proven |
 | GBPUSD | $10        | Reduced until live edge proven (unproven, same as EURUSD) |
+| US500  | $10        | Reduced 2026-06-25 to match EURUSD/GBPUSD — all 5 live strategies now $10 |
 | All    | $15        | Default                       |
 
 Revert EURUSD to paper if 3 consecutive losses occur.
@@ -268,7 +269,11 @@ Revert EURUSD to paper if 3 consecutive losses occur.
 Paper trades always use $15 risk regardless of symbol.
 EURUSD $10 override only applies to live trades.
   Paper:  all symbols → $15
-  Live:   EURUSD → $10, all others → $15
+  Live:   EURUSD/GBPUSD/US500 → $10, all others → $15
+
+### Dead Config
+VPS .env has RISK_PER_TRADE=5 — NOT read by any code. risk_manager.py
+hardcodes RISK_PER_TRADE=15 as default. Don't trust this env var.
 
 ### Daily Loss Limits
 | Source              | Limit | Behaviour when hit        |
