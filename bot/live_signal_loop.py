@@ -250,14 +250,17 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
         log_signal_check(log_data)
         return
 
-    stats       = _get_daily_stats()
-    risk_reason = _risk_check(symbol, stats)
-    if risk_reason:
-        print(f"[signal_loop] [{symbol}] risk limit: {risk_reason}")
-        log_data["signal"] = "BLOCKED"
-        log_data["error"]  = f"risk limit: {risk_reason}"
-        log_signal_check(log_data)
-        return
+    is_paper = _is_paper_trade(symbol, timeframe) or active.get("status") == "paper"
+
+    if not is_paper:
+        stats       = _get_daily_stats()
+        risk_reason = _risk_check(symbol, stats)
+        if risk_reason:
+            print(f"[signal_loop] [{symbol}] risk limit: {risk_reason}")
+            log_data["signal"] = "BLOCKED"
+            log_data["error"]  = f"risk limit: {risk_reason}"
+            log_signal_check(log_data)
+            return
 
     try:
         candles = _fetch_yfinance_candles(symbol, timeframe, 500)
@@ -409,7 +412,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
         log_signal_check(log_data)
         return
 
-    if _is_paper_trade(symbol, timeframe) or active.get("status") == "paper":
+    if is_paper:
         log_data["signal"] = f"PAPER_{signal}"
         _paper_now = datetime.now(timezone.utc)
         log_paper_trade({
