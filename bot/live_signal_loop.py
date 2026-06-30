@@ -456,6 +456,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
             symbol, action, sl=sl, tp=tp,
             strategy_name=strategy_name,
             source="live_signal_loop",
+            yf_entry=entry,
         )
         placed = 1 if result else 0
         log_data["trade_placed"] = placed

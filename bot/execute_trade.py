@@ -83,6 +83,22 @@ EPIC_CONFIG = {
     "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
 }
 
+# Minimum SL distance from IG live entry price.
+# yfinance candle close can lag the IG quote by several pips, making a
+# valid signal SL appear dangerously close at execution time.
+_MIN_SL_DIST: dict[str, float] = {
+    "EURUSD": 0.00050,
+    "GBPUSD": 0.00060,
+    "US500":  3.0,
+    "US100":  4.0,
+    "DAX":    5.0,
+}
+
+_SYMBOL_DECIMALS: dict[str, int] = {
+    "EURUSD": 5, "GBPUSD": 5,
+    "US500": 2, "US100": 2, "DAX": 2,
+}
+
 # -------------------------
 # Global state
 # -------------------------
@@ -203,7 +219,7 @@ def place_trade_from_alert(data):
 # -------------------------
 # Trade execution
 # -------------------------
-def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_webhook", source="tradingview_webhook"):
+def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_webhook", source="tradingview_webhook", yf_entry=None):
     print("===================================")
     print(f"Executing Trade: {symbol} | Action: {action} | SL: {sl} | TP: {tp}")
 
@@ -222,6 +238,32 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         entry_price = offer if direction == "BUY" else bid
 
         print(f"Entry Price: {entry_price}")
+
+        # Guard: SL may be too close to IG live price due to yfinance data lag.
+        # If yf_entry (yfinance candle close) is supplied, use it to reconstruct
+        # the exact intended sl_dist and R:R ratio. Otherwise fall back to 2:1.
+        _min_dist = _MIN_SL_DIST.get(symbol)
+        if _min_dist is not None and abs(entry_price - sl) < _min_dist:
+            if yf_entry is not None and abs(yf_entry - sl) > 0:
+                _orig_sl_dist = abs(yf_entry - sl)
+                _orig_tp_dist = abs(tp - yf_entry)
+                _rr = _orig_tp_dist / _orig_sl_dist
+            else:
+                _orig_sl_dist = abs(tp - sl) / 3  # fallback: assume 2:1
+                _rr = 2.0
+            _intended_sl_dist = max(_orig_sl_dist, _min_dist)
+            _prec = _SYMBOL_DECIMALS.get(symbol, 5)
+            if direction == "BUY":
+                sl = round(entry_price - _intended_sl_dist, _prec)
+                tp = round(entry_price + _rr * _intended_sl_dist, _prec)
+            else:
+                sl = round(entry_price + _intended_sl_dist, _prec)
+                tp = round(entry_price - _rr * _intended_sl_dist, _prec)
+            print(
+                f"[SL DRIFT] {symbol} sl_dist was below min={_min_dist:.5f} — "
+                f"reanchored to live price. yf_entry={yf_entry} rr={_rr:.2f} "
+                f"new_sl={sl} new_tp={tp}"
+            )
 
         size = calculate_position_size(entry_price, sl, value_per_point, symbol=symbol)
 
