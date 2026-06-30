@@ -2,9 +2,10 @@ from trading_ig import IGService
 from dotenv import load_dotenv
 import os
 import time
+from datetime import datetime, timezone
 
 from risk_manager import calculate_position_size
-from database.models import log_trade
+from database.models import log_trade, log_paper_trade
 
 # -------------------------
 # Load credentials
@@ -98,6 +99,20 @@ _SYMBOL_DECIMALS: dict[str, int] = {
     "EURUSD": 5, "GBPUSD": 5,
     "US500": 2, "US100": 2, "DAX": 2,
 }
+
+# IG API rejection reason codes indicating a capacity/margin constraint.
+# Shadow-log these: the signal was valid but the broker had no room.
+# Other codes (e.g. ATTACHED_ORDER_LEVEL_ERROR) are bad-order errors —
+# not missed trades — and are NOT shadow-logged.
+_MARGIN_REASONS: frozenset = frozenset({
+    "INSUFFICIENT_FUNDS",
+    "MARGIN_LIMITED",
+    "MARGIN_EXCEEDS_LIMIT",
+    "EXCEEDED_ACCOUNT_LIMIT",
+    "MARGIN_EXCEEDED",
+    "CR_MARGIN",
+    "EXCEEDS_RISK_LIMIT",
+})
 
 # -------------------------
 # Global state
@@ -219,7 +234,7 @@ def place_trade_from_alert(data):
 # -------------------------
 # Trade execution
 # -------------------------
-def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_webhook", source="tradingview_webhook", yf_entry=None):
+def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_webhook", source="tradingview_webhook", yf_entry=None, timeframe=None):
     print("===================================")
     print(f"Executing Trade: {symbol} | Action: {action} | SL: {sl} | TP: {tp}")
 
@@ -299,7 +314,36 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
             return False
 
         if response.get("dealStatus") == "REJECTED":
-            print("Trade rejected:", response.get("reason"))
+            reason = response.get("reason", "UNKNOWN")
+            print(f"Trade rejected: {reason}")
+            if reason in _MARGIN_REASONS:
+                try:
+                    _now = datetime.now(timezone.utc)
+                    _h   = _now.hour
+                    _session = (
+                        "LONDON"    if 7  <= _h < 12 else
+                        "NY_OPEN"   if 13 <= _h < 15 else
+                        "NY_MID"    if 15 <= _h < 18 else
+                        "OFF_HOURS"
+                    )
+                    log_paper_trade({
+                        "checked_at":    _now.isoformat(),
+                        "symbol":        symbol,
+                        "strategy_name": strategy_name,
+                        "timeframe":     timeframe,
+                        "candle_time":   _now.isoformat(),
+                        "signal":        f"SHADOW_{direction}",
+                        "entry_price":   entry_price,
+                        "sl":            sl,
+                        "tp":            tp,
+                        "outcome":       "PENDING",
+                        "params_json":   "{}",
+                        "session":       _session,
+                        "notes":         f"SHADOW: blocked by insufficient margin ({reason})",
+                    })
+                    print(f"[MARGIN BLOCK] {symbol} {direction} shadow-logged (reason={reason})")
+                except Exception as _shadow_err:
+                    print(f"[MARGIN BLOCK] shadow log failed: {_shadow_err}")
             return False
 
         if response.get("status") == "OPEN":

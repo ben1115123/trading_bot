@@ -388,7 +388,7 @@ else:
 
 st.markdown('<div class="section-hd">Filter Effectiveness — Blocked Signals</div>', unsafe_allow_html=True)
 
-# Shadow paper trades — session-blocked signal_loop signals
+# Shadow paper trades — signals blocked by session filter or margin rejection
 try:
     conn        = get_connection()
     cur         = conn.cursor()
@@ -418,7 +418,7 @@ if shadow_rows:
     resolved = [r for r in shadow_rows if r["outcome"] in ("WIN", "LOSS")]
     pending  = [r for r in shadow_rows if r["outcome"] == "PENDING"]
     st.markdown(
-        f"**Session-blocked signals (shadow log)** — "
+        f"**Blocked signals (shadow log)** — "
         f"{len(shadow_rows)} total · {len(resolved)} resolved · {len(pending)} pending"
     )
     if resolved:
