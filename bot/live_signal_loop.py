@@ -577,7 +577,12 @@ def _loop() -> None:
             _vix_blocked = False
 
         for symbol in SYMBOLS:
-            for active in get_active_strategies(symbol=symbol):
+            try:
+                active_list = get_active_strategies(symbol=symbol)
+            except Exception as e:
+                print(f"[signal_loop] [{symbol}] get_active_strategies failed, skipping: {e}")
+                continue
+            for active in active_list:
                 timeframe     = active.get("timeframe", "HOUR")
                 strategy_name = active.get("strategy_name", "")
                 strategy_type = active.get("strategy_type", "swing")
