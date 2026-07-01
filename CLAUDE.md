@@ -255,25 +255,32 @@ EURUSD paper entry_price: midpoint of SL+TP (approximation, P&L rough)
 lot_size = get_risk_per_trade(symbol) / (sl_distance × value_per_point)
 Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
 
+### Account Rebuild Mode (2026-07-02)
+All live strategies temporarily at $3 risk while account rebuilds from $100 deposit.
+Scale plan:
+  $100 → $200: $3/trade
+  $200 → $500: $5/trade
+  $500+:        $10/trade
+
 ### Per-Symbol Risk Overrides (risk_manager.py RISK_PER_TRADE_OVERRIDE)
 | Symbol | Risk/Trade | Reason                        |
 |--------|------------|-------------------------------|
-| EURUSD | $10        | Reduced until live edge proven |
-| GBPUSD | $10        | Reduced until live edge proven (unproven, same as EURUSD) |
-| US500  | $10        | Reduced 2026-06-25 to match EURUSD/GBPUSD — all 5 live strategies now $10 |
-| All    | $15        | Default                       |
+| EURUSD | $3         | Account rebuild from $100     |
+| GBPUSD | $3         | Account rebuild from $100     |
+| US500  | $3         | Account rebuild from $100     |
+| All    | $3         | Default (reduced from $15)    |
 
 Revert EURUSD to paper if 3 consecutive losses occur.
 
 ### Paper Trade Risk Override (added 2026-06-12)
 Paper trades always use $15 risk regardless of symbol.
-EURUSD $10 override only applies to live trades.
+Live $3 override does not affect paper trade sizing.
   Paper:  all symbols → $15
-  Live:   EURUSD/GBPUSD/US500 → $10, all others → $15
+  Live:   all symbols → $3 (rebuild mode)
 
 ### Dead Config
 VPS .env has RISK_PER_TRADE=5 — NOT read by any code. risk_manager.py
-hardcodes RISK_PER_TRADE=15 as default. Don't trust this env var.
+hardcodes RISK_PER_TRADE=3 as default (rebuild mode). Don't trust this env var.
 
 ### Daily Loss Limits
 | Source              | Limit | Behaviour when hit        |
