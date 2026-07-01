@@ -1,11 +1,11 @@
 # risk_manager.py
 
-RISK_PER_TRADE = 15  # USD per trade default
+RISK_PER_TRADE = 3  # USD per trade default
 
 RISK_PER_TRADE_OVERRIDE = {
-    "US500": 10.0,   # reduced to match EURUSD/GBPUSD, all live now $10
-    "EURUSD": 10.0,  # reduced until edge proven
-    "GBPUSD": 10.0,  # reduced until edge proven
+    "US500": 3.0,    # reduced while rebuilding account from $100
+    "EURUSD": 3.0,   # reduced while rebuilding account from $100
+    "GBPUSD": 3.0,   # reduced while rebuilding account from $100
 }
 
 
