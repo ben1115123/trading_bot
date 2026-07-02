@@ -204,7 +204,7 @@ def _get_daily_stats() -> dict:
         conn.close()
 
 
-def _risk_check(symbol: str, stats: dict) -> str | None:
+def _risk_check(symbol: str, stats: dict, strategy_name: str | None = None) -> str | None:
     """Returns reason string if blocked, None if ok to trade.
     Loss limit is the real guardrail.
     Trade counts are safety nets for runaway signals only.
@@ -216,9 +216,10 @@ def _risk_check(symbol: str, stats: dict) -> str | None:
     if stats["total_trades"] >= MAX_TRADES_PER_DAY:
         return f"max daily trades reached ({MAX_TRADES_PER_DAY})"
 
-    sym_count = stats["by_symbol"].get(symbol, 0)
-    if sym_count >= MAX_TRADES_PER_SYMBOL:
-        return f"max trades for {symbol} today ({MAX_TRADES_PER_SYMBOL})"
+    if strategy_name != "williams_r":
+        sym_count = stats["by_symbol"].get(symbol, 0)
+        if sym_count >= MAX_TRADES_PER_SYMBOL:
+            return f"max trades for {symbol} today ({MAX_TRADES_PER_SYMBOL})"
 
     return None
 
@@ -254,7 +255,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
 
     if not is_paper:
         stats       = _get_daily_stats()
-        risk_reason = _risk_check(symbol, stats)
+        risk_reason = _risk_check(symbol, stats, strategy_name)
         if risk_reason:
             print(f"[signal_loop] [{symbol}] risk limit: {risk_reason}")
             log_data["signal"] = "BLOCKED"
