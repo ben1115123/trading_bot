@@ -455,6 +455,14 @@ Min gap size: 0.5x ATR10
     "Spot Gold ($1)"        → XAUUSD
     "Germany 40 Cash (£1)"  → DAX
 
+## Infrastructure Incidents
+2026-07-02: Found stale systemd service (tradingbot.service) running
+since Apr 12 alongside Docker container — both sharing same IG account,
+same DB, same repo. Duplicate signal loop was firing live trades on
+stale Apr-12 code for 3+ months undetected. Process killed, systemd
+service disabled. Docker-only policy confirmed — no systemd services
+should run the bot.
+
 ## Key Gotchas
 - VPS backtest_results table diverges from local —
   backtest sweeps run locally are NOT synced to VPS.
