@@ -279,6 +279,8 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
                 f"reanchored to live price. yf_entry={yf_entry} rr={_rr:.2f} "
                 f"new_sl={sl} new_tp={tp}"
             )
+            from bot.notifier import send_telegram
+            send_telegram(f"SL DRIFT {symbol} — reanchored to live price", level="WARN")
 
         size = calculate_position_size(entry_price, sl, value_per_point, symbol=symbol)
 
@@ -316,6 +318,8 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         if response.get("dealStatus") == "REJECTED":
             reason = response.get("reason", "UNKNOWN")
             print(f"Trade rejected: {reason}")
+            from bot.notifier import send_telegram
+            send_telegram(f"REJECTED {symbol} {direction} — {reason}", level="ERROR")
             if reason in _MARGIN_REASONS:
                 try:
                     _now = datetime.now(timezone.utc)
@@ -348,6 +352,10 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
 
         if response.get("status") == "OPEN":
             print("Trade SUCCESSFULLY placed")
+            from bot.notifier import send_telegram
+            send_telegram(
+                f"OPENED {strategy_name} {symbol} {direction} @ {entry_price} "
+                f"SL {sl} TP {tp} (${expected_risk:.2f} risk)", level="INFO")
             try:
                 log_trade({
                     "symbol": symbol,

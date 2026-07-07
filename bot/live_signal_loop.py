@@ -13,6 +13,7 @@ from database.models import get_active_strategies, log_signal_check, log_paper_t
     get_pending_paper_trades, resolve_paper_trade, update_trade_context
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
+from bot.notifier import send_telegram
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD"]
 
@@ -58,6 +59,7 @@ MAX_TRADES_PER_SYMBOL = 6      # bug catcher only
 _last_signal: dict[str, str] = {}
 _last_shadow_signal: dict[str, str] = {}
 _last_checked: dict[str, datetime] = {}
+_last_daily_loss_alert_date: str | None = None
 _ema200_cache: dict = {}  # symbol → (ema200, price_vs_ema200, cached_hour_key)
 
 # Per-strategy session blocks: (strategy_name, symbol, timeframe) → set of sessions to block
@@ -260,6 +262,14 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         risk_reason = _risk_check(symbol, stats, strategy_name)
         if risk_reason:
             print(f"[signal_loop] [{symbol}] risk limit: {risk_reason}")
+            if risk_reason.startswith("daily loss limit hit"):
+                global _last_daily_loss_alert_date
+                _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                if _last_daily_loss_alert_date != _today:
+                    _last_daily_loss_alert_date = _today
+                    send_telegram(
+                        "DAILY LOSS LIMIT HIT — live trading paused until midnight UTC",
+                        level="ERROR")
             log_data["signal"] = "BLOCKED"
             log_data["error"]  = f"risk limit: {risk_reason}"
             log_signal_check(log_data)
@@ -601,6 +611,7 @@ def _loop() -> None:
                 active_list = get_active_strategies(symbol=symbol)
             except Exception as e:
                 print(f"[signal_loop] [{symbol}] get_active_strategies failed, skipping: {e}")
+                send_telegram(f"SIGNAL LOOP ERROR {symbol}: {e}", level="ERROR")
                 continue
             for active in active_list:
                 timeframe     = active.get("timeframe", "HOUR")
@@ -618,6 +629,7 @@ def _loop() -> None:
                     _checked_this_cycle.append(f"{symbol}/{timeframe}/{strategy_name}")
                 except Exception as e:
                     print(f"[signal_loop] [{symbol}/{timeframe}] unhandled error: {e}")
+                    send_telegram(f"SIGNAL LOOP ERROR {symbol}: {e}", level="ERROR")
 
         print(f"[signal_loop] Checked this cycle ({len(_checked_this_cycle)}): {_checked_this_cycle}")
         print(f"[signal_loop] Candle fetches this cycle: {len(_candle_cache)} unique (symbol,timeframe) pairs")

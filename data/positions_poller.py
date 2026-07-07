@@ -147,6 +147,12 @@ def _detect_and_close_trades(ig_service, ensure_session, active_deal_ids: list) 
                 f"Positions poller: closed trade {deal_id} "
                 f"price={close_data['close_price']} pnl={close_data['realised_pnl']}"
             )
+            from bot.notifier import send_telegram
+            _pnl = close_data['realised_pnl'] or 0.0
+            _emoji = "🟢" if _pnl >= 0 else "🔴"
+            send_telegram(
+                f"{_emoji} CLOSED {trade_row.get('symbol', deal_id)} "
+                f"{trade_row.get('direction', '')} P&L ${_pnl:.2f}", level="INFO")
         else:
             print(f"Positions poller: deal {deal_id} not found in trades table (not logged)")
 
