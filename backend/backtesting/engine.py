@@ -3,8 +3,14 @@ from datetime import datetime, timezone
 
 from backend.backtesting.metrics import (
     calc_win_rate, calc_max_drawdown, calc_sharpe_ratio,
-    calc_total_profit, calc_benchmark_return,
+    calc_total_profit, calc_benchmark_return, calc_profit_factor,
 )
+
+WF_TRAIN_MONTHS        = 6
+WF_TEST_MONTHS         = 1
+WF_STEP_MONTHS         = 1
+WF_MIN_WINDOWS         = 4
+WF_SHRUNK_TRAIN_MONTHS = 4
 
 EPIC_CONFIG = {
     "US500":  {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
@@ -116,6 +122,19 @@ def _lot_size(sl_distance: float, value_per_point: float) -> float:
     return round(max(0.1, min(10.0, RISK_PER_TRADE / (sl_distance * value_per_point))), 2)
 
 
+def _parse_candle_time(t) -> datetime:
+    return datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+
+
+def _add_months(dt: datetime, n: int) -> datetime:
+    month = dt.month - 1 + n
+    year  = dt.year + month // 12
+    month = month % 12 + 1
+    day_cap = [31, 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28,
+               31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+    return dt.replace(year=year, month=month, day=min(dt.day, day_cap))
+
+
 def run_backtest(strategy, candles: list, symbol: str,
                  max_hold_candles: int = None,
                  session_filter: str = None) -> dict:
@@ -126,6 +145,19 @@ def run_backtest(strategy, candles: list, symbol: str,
     all_signals = strategy.generate_signals(candles)
     test_signals = all_signals[split:]
 
+    trades = _simulate_trades(test, test_signals, symbol, max_hold_candles, session_filter)
+
+    return {
+        "trades":           trades,
+        "benchmark_return": calc_benchmark_return(test),
+        "candles_total":    len(candles),
+        "candles_train":    split,
+        "candles_test":     len(test),
+    }
+
+
+def _simulate_trades(test: list, test_signals: list, symbol: str,
+                     max_hold_candles: int = None, session_filter: str = None) -> list:
     vpp = EPIC_CONFIG[symbol.upper()]["value_per_point"]
     spread_cost = SPREAD_COSTS.get(symbol.upper(), 0.75)
     trades = []
@@ -243,13 +275,7 @@ def run_backtest(strategy, candles: list, symbol: str,
                 "tp_price":         sig.get("tp_price"),
             }
 
-    return {
-        "trades":           trades,
-        "benchmark_return": calc_benchmark_return(test),
-        "candles_total":    len(candles),
-        "candles_train":    split,
-        "candles_test":     len(test),
-    }
+    return trades
 
 
 def run_parameter_sweep(strategy_class, candles: list, symbol: str, param_grid: dict,
@@ -264,3 +290,92 @@ def run_parameter_sweep(strategy_class, candles: list, symbol: str, param_grid: 
         result["params"] = params
         results.append(result)
     return results
+
+
+def _build_wf_windows(start, end, train_months, test_months, step_months):
+    windows = []
+    train_start = start
+    while True:
+        train_end = _add_months(train_start, train_months)
+        test_end  = _add_months(train_end, test_months)
+        if test_end > end:
+            break
+        windows.append((train_start, train_end, test_end))
+        train_start = _add_months(train_start, step_months)
+    return windows
+
+
+def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = None,
+                     max_hold_candles: int = None, session_filter: str = None) -> dict:
+    """Rolling walk-forward validation. Additive mode — does not replace run_backtest's
+    80/20 split. train=6mo/test=1mo/step=1mo by default; shrinks train to 4mo if that
+    yields fewer than WF_MIN_WINDOWS windows.
+    """
+    parsed = sorted(((_parse_candle_time(c["time"]), c) for c in candles), key=lambda x: x[0])
+    if not parsed:
+        return {"windows": [], "shrunk_train": False, "train_months_used": WF_TRAIN_MONTHS,
+                "median_pf": 0.0, "pct_profitable": 0.0, "worst_window": None,
+                "combined_trades": [], "combined_pnl": 0.0,
+                "verdict": "REJECT", "verdict_reason": "no candle data"}
+
+    start, end = parsed[0][0], parsed[-1][0]
+    windows = _build_wf_windows(start, end, WF_TRAIN_MONTHS, WF_TEST_MONTHS, WF_STEP_MONTHS)
+    shrunk, train_months_used = False, WF_TRAIN_MONTHS
+    if len(windows) < WF_MIN_WINDOWS:
+        windows = _build_wf_windows(start, end, WF_SHRUNK_TRAIN_MONTHS, WF_TEST_MONTHS, WF_STEP_MONTHS)
+        shrunk, train_months_used = True, WF_SHRUNK_TRAIN_MONTHS
+
+    window_results, combined_trades = [], []
+    for tr_start, tr_end, te_end in windows:
+        train_candles = [c for t, c in parsed if tr_start <= t < tr_end]
+        test_candles  = [c for t, c in parsed if tr_end  <= t < te_end]
+        if not test_candles:
+            continue
+
+        strategy = strategy_class(params=params) if params else strategy_class()
+        if hasattr(strategy, "fit"):
+            strategy.fit(train_candles)  # no current strategy implements this — future-proofing only
+
+        combined_candles = train_candles + test_candles
+        all_signals  = strategy.generate_signals(combined_candles)
+        test_signals = all_signals[len(train_candles):]
+
+        trades = _simulate_trades(test_candles, test_signals, symbol, max_hold_candles, session_filter)
+        combined_trades.extend(trades)
+        window_results.append({
+            "train_start": tr_start, "train_end": tr_end, "test_end": te_end,
+            "trades": len(trades),
+            "win_rate": calc_win_rate(trades),
+            "pnl": calc_total_profit(trades),
+            "profit_factor": calc_profit_factor(trades),
+            "has_trades": len(trades) > 0,
+        })
+
+    valid = [w for w in window_results if w["has_trades"]]
+    pfs = sorted(w["profit_factor"] for w in valid)
+    if pfs:
+        n = len(pfs)
+        median_pf = pfs[n // 2] if n % 2 else round((pfs[n // 2 - 1] + pfs[n // 2]) / 2, 4)
+    else:
+        median_pf = 0.0
+    pct_profitable = round(100 * sum(1 for w in valid if w["profit_factor"] > 1.0) / len(valid), 1) if valid else 0.0
+    worst_window = min(valid, key=lambda w: w["profit_factor"]) if valid else None
+    combined_pnl = calc_total_profit(combined_trades)
+
+    if not valid:
+        verdict, verdict_reason = "REJECT", "no windows produced trades"
+    elif median_pf < 1.0:
+        verdict, verdict_reason = "REJECT", f"median PF {median_pf} < 1.0"
+    elif median_pf >= 1.2 and pct_profitable >= 70:
+        verdict, verdict_reason = "ROBUST", f"median PF {median_pf} >= 1.2 and {pct_profitable}% windows profitable"
+    elif combined_pnl > 0:
+        verdict, verdict_reason = "FRAGILE", f"profitable overall (${combined_pnl}) but only {pct_profitable}% of windows profitable"
+    else:
+        verdict, verdict_reason = "MARGINAL", f"median PF {median_pf}, {pct_profitable}% windows profitable, not net profitable overall"
+
+    return {
+        "windows": window_results, "shrunk_train": shrunk, "train_months_used": train_months_used,
+        "median_pf": median_pf, "pct_profitable": pct_profitable, "worst_window": worst_window,
+        "combined_trades": combined_trades, "combined_pnl": combined_pnl,
+        "verdict": verdict, "verdict_reason": verdict_reason,
+    }

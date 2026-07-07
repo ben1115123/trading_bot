@@ -7,6 +7,7 @@ Usage:
   python scripts/run_backtest.py --symbol BTC --timeframe DAY --strategy supertrend --count 500 --sweep
 """
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -105,9 +106,12 @@ load_dotenv()
 
 from trading_ig import IGService
 
-from backend.backtesting.engine import fetch_candles, run_backtest, run_parameter_sweep
+from backend.backtesting.engine import (
+    fetch_candles, run_backtest, run_parameter_sweep, run_walk_forward,
+    WF_TRAIN_MONTHS, WF_MIN_WINDOWS,
+)
 from backend.backtesting.metrics import (
-    calc_win_rate, calc_max_drawdown, calc_sharpe_ratio, calc_total_profit,
+    calc_win_rate, calc_max_drawdown, calc_sharpe_ratio, calc_total_profit, calc_profit_factor,
 )
 from backend.strategies.rsi import RSIStrategy
 from backend.strategies.supertrend import SuperTrendStrategy
@@ -363,6 +367,31 @@ def _print_run(strategy_name, symbol, timeframe, result, params, backtest_id=Non
     print()
 
 
+def _print_walk_forward(strategy_name, symbol, timeframe, wf, params):
+    print(f"  {strategy_name}  params={params}  {symbol} {timeframe}  [WALK-FORWARD]")
+    if wf["shrunk_train"]:
+        print(f"  Insufficient data for {WF_TRAIN_MONTHS}mo train / {WF_MIN_WINDOWS}+ windows "
+              f"— shrunk train to {wf['train_months_used']}mo")
+    print(f"  {len(wf['windows'])} test window(s)\n")
+    print(f"  {'Window':<8}{'Test period':<26}{'Trades':<8}{'WR%':<8}{'P&L':<12}{'PF':<8}")
+    for i, w in enumerate(wf["windows"], 1):
+        period = f"{w['train_end'].date()} -> {w['test_end'].date()}"
+        wr = f"{w['win_rate']*100:.1f}"
+        pf = f"{w['profit_factor']:.2f}" if w["has_trades"] else "N/A"
+        print(f"  {i:<8}{period:<26}{w['trades']:<8}{wr:<8}{w['pnl']:<12.2f}{pf:<8}")
+    print()
+    print(f"  Median PF:          {wf['median_pf']}")
+    print(f"  Windows profitable: {wf['pct_profitable']}%")
+    if wf["worst_window"]:
+        ww = wf["worst_window"]
+        print(f"  Worst window PF:    {ww['profit_factor']:.2f}  "
+              f"({ww['train_end'].date()} -> {ww['test_end'].date()})")
+    print(f"  Combined P&L:       ${wf['combined_pnl']:.2f}  "
+          f"({len(wf['combined_trades'])} trades across all windows)")
+    print(f"  VERDICT: {wf['verdict']} — {wf['verdict_reason']}")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run strategy backtest against IG historical data.")
     parser.add_argument("--symbol",    required=True,       help="US500 | US100 | BTC")
@@ -380,6 +409,9 @@ def main():
                         help="Only generate signals during session: US (market hours) or 24_7")
     parser.add_argument("--max-hold",       type=int, default=None,
                         help="Force-close trades after N candles (e.g. 78 = one US day at 5MIN)")
+    parser.add_argument("--walk-forward",   action="store_true",
+                        help="Rolling walk-forward validation (train=6mo/test=1mo/step=1mo, "
+                             "shrinks to 4mo train if <4 windows) instead of the 80/20 split")
     args = parser.parse_args()
 
     strategy_key = args.strategy.lower()
@@ -419,6 +451,30 @@ def main():
             print(f"Saved to cache.")
     print()
 
+    if args.walk_forward:
+        if args.sweep:
+            param_grid = PARAM_GRIDS[strategy_key]
+            combos = 1
+            for v in param_grid.values():
+                combos *= len(v)
+            print(f"Running walk-forward parameter sweep ({combos} combinations): {param_grid}\n")
+            keys = list(param_grid.keys())
+            for combo in itertools.product(*param_grid.values()):
+                params = dict(zip(keys, combo))
+                wf = run_walk_forward(strategy_class, candles, args.symbol, params=params,
+                                      max_hold_candles=args.max_hold, session_filter=args.session_filter)
+                _print_walk_forward(strategy_class.name, args.symbol, args.timeframe, wf, params)
+            print(f"Overfitting reminder: {combos} parameter combinations were walk-forward "
+                  f"tested. Even walk-forward results can overfit across a wide sweep — "
+                  f"treat top results as candidates, not conclusions.")
+        else:
+            strategy = strategy_class()
+            params   = strategy.params
+            wf = run_walk_forward(strategy_class, candles, args.symbol, params=params,
+                                  max_hold_candles=args.max_hold, session_filter=args.session_filter)
+            _print_walk_forward(strategy_class.name, args.symbol, args.timeframe, wf, params)
+        return
+
     if args.sweep:
         param_grid = PARAM_GRIDS[strategy_key]
         combos = 1
@@ -439,6 +495,9 @@ def main():
             _print_run(strategy_class.name, args.symbol, args.timeframe, r, params, bid)
 
         print(f"Saved {len(sweep_results)} runs to database.")
+        print(f"Overfitting reminder: {combos} parameter combinations were tested in this "
+              f"sweep. Best-looking result may be due to chance — validate promising "
+              f"candidates out-of-sample (e.g. --walk-forward) before promoting.")
     else:
         strategy = strategy_class()
         params   = strategy.params

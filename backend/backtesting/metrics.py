@@ -39,6 +39,16 @@ def calc_sharpe_ratio(trades: list, risk_free_rate: float = 0.0) -> float:
     return round((mean - risk_free_rate) / std, 4)
 
 
+def calc_profit_factor(trades: list) -> float:
+    if not trades:
+        return 0.0
+    gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+    gross_loss   = -sum(t["pnl"] for t in trades if t["pnl"] < 0)
+    if gross_loss == 0:
+        return round(gross_profit, 4) if gross_profit > 0 else 0.0
+    return round(gross_profit / gross_loss, 4)
+
+
 def calc_benchmark_return(candles: list) -> float:
     if len(candles) < 2:
         return 0.0
