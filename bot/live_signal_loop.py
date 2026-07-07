@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
 from database.models import get_active_strategies, log_signal_check, log_paper_trade, \
-    get_pending_paper_trades, resolve_paper_trade, update_trade_context
+    get_pending_paper_trades, resolve_paper_trade, update_trade_context, upsert_heartbeat
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 from bot.notifier import send_telegram
@@ -633,6 +633,11 @@ def _loop() -> None:
 
         print(f"[signal_loop] Checked this cycle ({len(_checked_this_cycle)}): {_checked_this_cycle}")
         print(f"[signal_loop] Candle fetches this cycle: {len(_candle_cache)} unique (symbol,timeframe) pairs")
+
+        try:
+            upsert_heartbeat("signal_loop", f"{len(_checked_this_cycle)} strategies checked")
+        except Exception as e:
+            print(f"[signal_loop] heartbeat upsert failed: {e}")
 
         now            = datetime.now(timezone.utc)
         secs_past_5min = (now.minute % 5) * 60 + now.second

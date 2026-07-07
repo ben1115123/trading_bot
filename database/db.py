@@ -365,6 +365,15 @@ def init_db():
         except Exception:
             pass
 
+    # Create heartbeat table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS heartbeat (
+            name       TEXT PRIMARY KEY,
+            last_beat  TEXT,
+            details    TEXT
+        )
+    """)
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

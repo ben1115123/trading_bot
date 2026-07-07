@@ -147,6 +147,26 @@ def clear_closed_positions(active_deal_ids: list) -> None:
         conn.close()
 
 
+def upsert_heartbeat(name: str, details: str = "") -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO heartbeat (name, last_beat, details)
+            VALUES (:name, :last_beat, :details)
+            ON CONFLICT(name) DO UPDATE SET
+                last_beat = excluded.last_beat,
+                details   = excluded.details
+        """, {
+            "name":      name,
+            "last_beat": datetime.now(timezone.utc).isoformat(),
+            "details":   details,
+        })
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def close_trade(deal_id: str, close_price=None, close_time=None, realised_pnl=None) -> int:
     conn = get_connection()
     try:
