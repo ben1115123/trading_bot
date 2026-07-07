@@ -368,10 +368,10 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
         verdict, verdict_reason = "REJECT", f"median PF {median_pf} < 1.0"
     elif median_pf >= 1.2 and pct_profitable >= 70:
         verdict, verdict_reason = "ROBUST", f"median PF {median_pf} >= 1.2 and {pct_profitable}% windows profitable"
-    elif combined_pnl > 0:
+    elif combined_pnl > 0 and pct_profitable < 70:
         verdict, verdict_reason = "FRAGILE", f"profitable overall (${combined_pnl}) but only {pct_profitable}% of windows profitable"
     else:
-        verdict, verdict_reason = "MARGINAL", f"median PF {median_pf}, {pct_profitable}% windows profitable, not net profitable overall"
+        verdict, verdict_reason = "MARGINAL", f"median PF {median_pf}, {pct_profitable}% windows profitable — doesn't clear ROBUST or fall to FRAGILE/REJECT"
 
     return {
         "windows": window_results, "shrunk_train": shrunk, "train_months_used": train_months_used,
