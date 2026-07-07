@@ -228,7 +228,8 @@ def _is_paper_trade(symbol: str, timeframe: str) -> bool:
     return symbol in PAPER_SYMBOLS or f"{symbol}_{timeframe}" in PAPER_SYMBOLS
 
 
-def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> None:
+def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
+                   candle_cache: dict | None = None) -> None:
     strategy_name = active["strategy_name"]
     timeframe     = active.get("timeframe", "HOUR")
     params_json   = active.get("params_json") or "{}"
@@ -263,17 +264,28 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None) -> 
             log_signal_check(log_data)
             return
 
-    try:
-        candles = _fetch_yfinance_candles(symbol, timeframe, 500)
-    except Exception as e:
-        print(f"[signal_loop] [{symbol}] candle fetch failed: {e}")
-        log_data["error"] = f"candle fetch error: {e}"
-        log_signal_check(log_data)
-        return
-
     strat_cls = STRATEGIES.get(strategy_name)
     if strat_cls is None:
-        print(f"[signal_loop] [{symbol}] Unknown strategy: {strategy_name} — skipping")
+        print(f"[signal_loop] [{symbol}] Unknown strategy: {strategy_name} — skipping (no candle fetch)")
+        return
+
+    cache_key = (symbol, timeframe)
+    if candle_cache is not None and cache_key in candle_cache:
+        candles, fetch_err = candle_cache[cache_key]
+    else:
+        try:
+            candles   = _fetch_yfinance_candles(symbol, timeframe, 500)
+            fetch_err = None
+        except Exception as e:
+            candles   = None
+            fetch_err = e
+        if candle_cache is not None:
+            candle_cache[cache_key] = (candles, fetch_err)
+
+    if fetch_err is not None:
+        print(f"[signal_loop] [{symbol}] candle fetch failed: {fetch_err}")
+        log_data["error"] = f"candle fetch error: {fetch_err}"
+        log_signal_check(log_data)
         return
 
     try:
@@ -579,6 +591,9 @@ def _loop() -> None:
         except Exception:
             _vix_blocked = False
 
+        _candle_cache: dict[tuple, tuple] = {}
+        _checked_this_cycle: list[str] = []
+
         for symbol in SYMBOLS:
             try:
                 active_list = get_active_strategies(symbol=symbol)
@@ -596,10 +611,14 @@ def _loop() -> None:
                     print(f"[signal_loop] VIX elevated — skipping {symbol} {strategy_name} entry")
                     continue
                 try:
-                    _check_symbol(symbol, active, vix_level=_vix_level)
+                    _check_symbol(symbol, active, vix_level=_vix_level, candle_cache=_candle_cache)
                     _last_checked[(symbol, timeframe, strategy_name)] = datetime.now(timezone.utc)
+                    _checked_this_cycle.append(f"{symbol}/{timeframe}/{strategy_name}")
                 except Exception as e:
                     print(f"[signal_loop] [{symbol}/{timeframe}] unhandled error: {e}")
+
+        print(f"[signal_loop] Checked this cycle ({len(_checked_this_cycle)}): {_checked_this_cycle}")
+        print(f"[signal_loop] Candle fetches this cycle: {len(_candle_cache)} unique (symbol,timeframe) pairs")
 
         now            = datetime.now(timezone.utc)
         secs_past_5min = (now.minute % 5) * 60 + now.second
