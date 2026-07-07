@@ -14,7 +14,7 @@ from database.models import get_active_strategies, log_signal_check, log_paper_t
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 
-SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD"]
+SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD"]
 
 MARKET_CLOSE = {
     "US500": {"hour": 20, "minute": 45},
@@ -26,7 +26,7 @@ MARKET_CLOSE = {
 TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "15MIN": 900, "HOUR": 3600, "DAY": 86400}
 
 _SYMBOL_DECIMALS: dict[str, int] = {
-    "EURUSD": 5, "GBPUSD": 5, "EURGBP": 5,
+    "EURUSD": 5, "GBPUSD": 5, "EURGBP": 5, "AUDUSD": 5,
     "USDJPY": 3,
     "US500": 2, "US100": 2, "DAX": 2,
     "XAUUSD": 2,
@@ -35,6 +35,7 @@ _SYMBOL_DECIMALS: dict[str, int] = {
 _MIN_SL_DIST: dict[str, float] = {
     "EURUSD": 0.00050,
     "GBPUSD": 0.00060,
+    "AUDUSD": 0.00050,
     "EURGBP": 0.00050,
     "USDJPY": 0.050,
     "US500":  3.0,
@@ -501,6 +502,7 @@ _EPIC_VALUE_PER_POINT = {
     "US500": 1.0, "US100": 1.0, "DAX": 1.0, "BTC": 0.1,
     "EURUSD": 10000.0,  # CS.D.EURUSD.MINI.IP: $1/pip, 0.0001 pip, contract=10k
     "GBPUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — same as EURUSD
+    "AUDUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — paper only, no IG epic yet
 }
 
 

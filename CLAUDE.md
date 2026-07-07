@@ -136,8 +136,7 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | HOUR | stoch_rsi  | Live | loop    |                                |
 | EURUSD | HOUR | swiftalgo  | Live | webhook | Promoted 2026-05-27, $10 risk  |
 | US500  | HOUR | swiftalgo  | Live | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
-| EURUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-17, $10 risk, NY_MID session blocked — review LONDON_OPEN block after more data |
-| GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $10 risk, no session blocks — review after 2026-06-29 |
+| GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $1.50 risk (halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades), no session blocks |
 
 ### Paper
 | Symbol | TF    | Strategy   | Mode  | Source | Notes                          |
@@ -151,6 +150,8 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50 |
 | US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
+| EURUSD | 15MIN | williams_r           | Paper | loop | Demoted from live 2026-07-07 — walk-forward REJECT (median PF 0.92, 42.9% windows profitable). 80/20 promotion result was a favorable-regime artifact |
+| AUDUSD | 15MIN | williams_r           | Paper | loop | Added 2026-07-07 — walk-forward MARGINAL (median PF 1.15, 100% windows profitable, best consistency of all candidates). No IG epic yet — paper only |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -266,7 +267,7 @@ Scale plan:
 | Symbol | Risk/Trade | Reason                        |
 |--------|------------|-------------------------------|
 | EURUSD | $3         | Account rebuild from $100     |
-| GBPUSD | $3         | Account rebuild from $100     |
+| GBPUSD | $1.50      | Halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades |
 | US500  | $3         | Account rebuild from $100     |
 | All    | $3         | Default (reduced from $15)    |
 

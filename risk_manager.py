@@ -5,7 +5,7 @@ RISK_PER_TRADE = 3  # USD per trade default
 RISK_PER_TRADE_OVERRIDE = {
     "US500": 3.0,    # reduced while rebuilding account from $100
     "EURUSD": 3.0,   # reduced while rebuilding account from $100
-    "GBPUSD": 3.0,   # reduced while rebuilding account from $100
+    "GBPUSD": 1.5,   # FRAGILE walk-forward verdict — halved pending 20-trade review
 }
 
 
