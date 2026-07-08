@@ -6,7 +6,7 @@ load_dotenv()
 
 username = os.getenv("IG_USERNAME")
 password = os.getenv("IG_PASSWORD")
-api_key = os.getenv("IG_API_KEY")
+api_key = os.getenv("IG_DEMO_API_KEY")  # always demo — this script places a real order
 
 ig_service = IGService(
     username,

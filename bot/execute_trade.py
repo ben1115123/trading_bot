@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from risk_manager import calculate_position_size
 from database.models import log_trade, log_paper_trade
+from ig_env import get_ig_credentials
 
 # -------------------------
 # Load credentials
@@ -13,12 +14,12 @@ from database.models import log_trade, log_paper_trade
 load_dotenv()
 username = os.getenv("IG_USERNAME")
 password = os.getenv("IG_PASSWORD")
-api_key = os.getenv("IG_API_KEY")
+api_key, IG_ACC_TYPE = get_ig_credentials()
 
 # -------------------------
 # Initialize IG
 # -------------------------
-ig_service = IGService(username, password, api_key, acc_type="LIVE")
+ig_service = IGService(username, password, api_key, acc_type=IG_ACC_TYPE)
 
 # -------------------------
 # Session Manager
@@ -31,7 +32,7 @@ def recreate_session():
 
     print("🔥 Recreating IG session completely...")
 
-    ig_service = IGService(username, password, api_key, acc_type="LIVE")
+    ig_service = IGService(username, password, api_key, acc_type=IG_ACC_TYPE)
     ig_service.create_session()
 
     try:
@@ -41,11 +42,14 @@ def recreate_session():
             accounts["preferred"] == True, "accountId"
         ].values[0]
 
-        if current_account != "TW75S":
-            ig_service.switch_account("TW75S", True)
-            print("Switched to TW75S")
+        if IG_ACC_TYPE == "LIVE":
+            if current_account != "TW75S":
+                ig_service.switch_account("TW75S", True)
+                print("Switched to TW75S")
+            else:
+                print("Already using TW75S")
         else:
-            print("Already using TW75S")
+            print(f"[DEMO] Session landed on account {current_account}")
 
     except Exception as e:
         print("Account switch failed:", e)

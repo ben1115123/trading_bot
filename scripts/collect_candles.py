@@ -28,6 +28,7 @@ load_dotenv()
 from trading_ig import IGService
 
 from backend.backtesting.engine import fetch_candles
+from ig_env import get_ig_credentials
 
 CACHE_DIR = Path(__file__).resolve().parent / "candle_cache"
 SYMBOLS = ["EURUSD", "US500", "DAX"]
@@ -38,8 +39,8 @@ FETCH_COUNT = 50  # plenty to cover gaps even if cron missed a few runs
 def create_ig_session() -> IGService:
     username = os.getenv("IG_USERNAME")
     password = os.getenv("IG_PASSWORD")
-    api_key  = os.getenv("IG_API_KEY")
-    svc = IGService(username, password, api_key, acc_type="LIVE")
+    api_key, acc_type = get_ig_credentials()
+    svc = IGService(username, password, api_key, acc_type=acc_type)
     svc.create_session()
     return svc
 

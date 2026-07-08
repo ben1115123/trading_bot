@@ -15,6 +15,7 @@ load_dotenv()
 from trading_ig import IGService
 from database.db import get_connection
 from database.models import close_trade
+from ig_env import get_ig_credentials
 
 INSTRUMENT_TO_SYMBOL = {
     "US 500 Cash ($1)":      "US500",
@@ -145,11 +146,12 @@ def _is_already_logged(ref: str, symbol: str, direction: str,
 
 def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
     print("Initializing IG session...")
+    _api_key, _acc_type = get_ig_credentials()
     ig = IGService(
         os.getenv("IG_USERNAME"),
         os.getenv("IG_PASSWORD"),
-        os.getenv("IG_API_KEY"),
-        acc_type="LIVE",
+        _api_key,
+        acc_type=_acc_type,
     )
     ig.create_session()
 
