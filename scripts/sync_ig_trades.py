@@ -146,10 +146,10 @@ def _is_already_logged(ref: str, symbol: str, direction: str,
 
 def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
     print("Initializing IG session...")
-    _api_key, _acc_type = get_ig_credentials()
+    _username, _password, _api_key, _acc_type = get_ig_credentials()
     ig = IGService(
-        os.getenv("IG_USERNAME"),
-        os.getenv("IG_PASSWORD"),
+        _username,
+        _password,
         _api_key,
         acc_type=_acc_type,
     )

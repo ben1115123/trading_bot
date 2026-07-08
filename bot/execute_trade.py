@@ -12,9 +12,7 @@ from ig_env import get_ig_credentials
 # Load credentials
 # -------------------------
 load_dotenv()
-username = os.getenv("IG_USERNAME")
-password = os.getenv("IG_PASSWORD")
-api_key, IG_ACC_TYPE = get_ig_credentials()
+username, password, api_key, IG_ACC_TYPE = get_ig_credentials()
 
 # -------------------------
 # Initialize IG

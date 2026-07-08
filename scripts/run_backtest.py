@@ -314,9 +314,7 @@ PARAM_GRIDS = {
 
 
 def create_ig_session() -> IGService:
-    username = os.getenv("IG_USERNAME")
-    password = os.getenv("IG_PASSWORD")
-    api_key, acc_type = get_ig_credentials()
+    username, password, api_key, acc_type = get_ig_credentials()
     svc = IGService(username, password, api_key, acc_type=acc_type)
     svc.create_session()
     return svc
