@@ -46,10 +46,12 @@ EPIC_MAP = {
 SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD"]  # mirrors
                                                                           # live_signal_loop.SYMBOLS
 
-# pandas-offset-parseable strings for trading_ig's conv_resol() — NOT IG's raw
-# enum names (e.g. "MINUTE_15"); conv_resol() calls pandas to_offset() on
-# whatever it's given, which raises on a raw enum string.
-_REST_RESOLUTION = {"15MIN": "15Min", "HOUR": "1h"}
+# IG's raw REST resolution enum values. conv_resol() (which translates
+# pandas-offset strings like "15Min" -> "MINUTE_15") is only invoked by
+# trading_ig when return_dataframe=True -- this module uses
+# return_dataframe=False, so conv_resol never runs and the raw enum must
+# be passed directly, or IG's API rejects the resolution param outright.
+_REST_RESOLUTION = {"15MIN": "MINUTE_15", "HOUR": "HOUR"}
 
 # CHART:{epic}:{scale} — only these 4 scales exist server-side
 _LS_SCALE_FOR_TIMEFRAME = {"HOUR": "HOUR", "15MIN": "5MINUTE"}  # 15MIN is aggregated
