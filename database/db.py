@@ -374,6 +374,22 @@ def init_db():
         )
     """)
 
+    # Create candle_source_compare table — yfinance vs IG stream, one row per
+    # symbol+timeframe per signal_loop cycle while CANDLE_SOURCE=yfinance
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS candle_source_compare (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            checked_at    TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            timeframe     TEXT NOT NULL,
+            yf_close      REAL,
+            yf_time       TEXT,
+            stream_close  REAL,
+            stream_time   TEXT,
+            delta_pips    REAL
+        )
+    """)
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

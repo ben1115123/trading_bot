@@ -167,6 +167,32 @@ def upsert_heartbeat(name: str, details: str = "") -> None:
         conn.close()
 
 
+def log_candle_source_compare(row: dict) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO candle_source_compare
+                (checked_at, symbol, timeframe, yf_close, yf_time,
+                 stream_close, stream_time, delta_pips)
+            VALUES
+                (:checked_at, :symbol, :timeframe, :yf_close, :yf_time,
+                 :stream_close, :stream_time, :delta_pips)
+        """, {
+            "checked_at":   datetime.now(timezone.utc).isoformat(),
+            "symbol":       row["symbol"],
+            "timeframe":    row["timeframe"],
+            "yf_close":     row.get("yf_close"),
+            "yf_time":      row.get("yf_time"),
+            "stream_close": row.get("stream_close"),
+            "stream_time":  row.get("stream_time"),
+            "delta_pips":   row.get("delta_pips"),
+        })
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def close_trade(deal_id: str, close_price=None, close_time=None, realised_pnl=None) -> int:
     conn = get_connection()
     try:

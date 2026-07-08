@@ -39,7 +39,7 @@ SPREAD_COSTS = {
 _TIMEFRAME_MAP = {
     "MINUTE": "1Min", "MINUTE_2": "2Min", "MINUTE_3": "3Min",
     "MINUTE_5": "5Min", "MINUTE_10": "10Min", "MINUTE_15": "15Min",
-    "MINUTE_30": "30Min", "5MIN": "5Min",
+    "MINUTE_30": "30Min", "5MIN": "5Min", "15MIN": "15Min",
     "HOUR": "1h", "HOUR_2": "2h", "HOUR_3": "3h", "HOUR_4": "4h",
     "DAY": "D", "WEEK": "W",
 }

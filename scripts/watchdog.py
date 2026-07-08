@@ -110,8 +110,7 @@ def _should_alert(state: dict, key: str, now: datetime) -> bool:
     return (now - last_dt).total_seconds() >= REALERT_MINUTES * 60
 
 
-def check_heartbeat(env: dict, state: dict, now: datetime) -> None:
-    key = "stale_heartbeat"
+def check_heartbeat(env: dict, state: dict, now: datetime, name: str, key: str) -> None:
     if not _is_market_hours(now):
         print("[watchdog] outside market hours — skipping heartbeat check")
         return
@@ -121,7 +120,7 @@ def check_heartbeat(env: dict, state: dict, now: datetime) -> None:
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cur = conn.cursor()
-        cur.execute("SELECT last_beat FROM heartbeat WHERE name = 'signal_loop'")
+        cur.execute("SELECT last_beat FROM heartbeat WHERE name = ?", (name,))
         row = cur.fetchone()
         conn.close()
     except Exception as e:
@@ -129,7 +128,7 @@ def check_heartbeat(env: dict, state: dict, now: datetime) -> None:
         return
 
     if not row or not row[0]:
-        print("[watchdog] no signal_loop heartbeat row yet")
+        print(f"[watchdog] no {name} heartbeat row yet")
         return
 
     try:
@@ -141,11 +140,11 @@ def check_heartbeat(env: dict, state: dict, now: datetime) -> None:
         return
 
     age_min = (now - last_beat).total_seconds() / 60
-    print(f"[watchdog] signal_loop last beat {age_min:.1f} min ago")
+    print(f"[watchdog] {name} last beat {age_min:.1f} min ago")
 
     if age_min > STALE_MINUTES:
         if _should_alert(state, key, now):
-            msg = f"💀 SIGNAL LOOP STALE — last heartbeat {age_min:.0f} min ago"
+            msg = f"💀 {name.upper()} STALE — last heartbeat {age_min:.0f} min ago"
             if _send_telegram(env, msg):
                 state[key] = now.isoformat()
                 _append_alert_log(key, msg, now)
@@ -233,7 +232,8 @@ def main():
     env = _load_env(ENV_PATH)
     state = _load_state()
 
-    check_heartbeat(env, state, now)
+    check_heartbeat(env, state, now, "signal_loop", "stale_heartbeat")
+    check_heartbeat(env, state, now, "candle_stream", "stale_candle_stream")
     check_duplicate_process(env, state, now)
     check_container(env, state, now)
 
