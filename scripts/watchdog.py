@@ -21,6 +21,7 @@ REPO_DIR   = Path("/home/ubuntu/trading_bot")
 DB_PATH    = REPO_DIR / "database" / "trades.db"
 ENV_PATH   = REPO_DIR / ".env"
 STATE_PATH = Path("/tmp/watchdog_state.json")
+ALERT_LOG_PATH = REPO_DIR / "logs" / "watchdog_alerts.jsonl"
 
 STALE_MINUTES        = 20
 REALERT_MINUTES       = 60
@@ -85,6 +86,19 @@ def _save_state(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state))
 
 
+def _append_alert_log(condition: str, message: str, now: datetime) -> None:
+    try:
+        ALERT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(ALERT_LOG_PATH, "a") as f:
+            f.write(json.dumps({
+                "timestamp": now.isoformat(),
+                "condition": condition,
+                "message":   message,
+            }) + "\n")
+    except Exception as e:
+        print(f"[watchdog] alert log append failed: {e}")
+
+
 def _should_alert(state: dict, key: str, now: datetime) -> bool:
     last = state.get(key)
     if not last:
@@ -131,8 +145,10 @@ def check_heartbeat(env: dict, state: dict, now: datetime) -> None:
 
     if age_min > STALE_MINUTES:
         if _should_alert(state, key, now):
-            if _send_telegram(env, f"💀 SIGNAL LOOP STALE — last heartbeat {age_min:.0f} min ago"):
+            msg = f"💀 SIGNAL LOOP STALE — last heartbeat {age_min:.0f} min ago"
+            if _send_telegram(env, msg):
                 state[key] = now.isoformat()
+                _append_alert_log(key, msg, now)
     else:
         state.pop(key, None)
 
@@ -180,12 +196,11 @@ def check_duplicate_process(env: dict, state: dict, now: datetime) -> None:
 
     if rogue_pids:
         if _should_alert(state, key, now):
-            if _send_telegram(
-                env,
-                f"🔴 DUPLICATE PROCESS DETECTED — 'uvicorn main:app' running on HOST "
-                f"outside Docker (PIDs {sorted(rogue_pids)}) — bot should live in Docker only"
-            ):
+            msg = (f"🔴 DUPLICATE PROCESS DETECTED — 'uvicorn main:app' running on HOST "
+                   f"outside Docker (PIDs {sorted(rogue_pids)}) — bot should live in Docker only")
+            if _send_telegram(env, msg):
                 state[key] = now.isoformat()
+                _append_alert_log(key, msg, now)
     else:
         state.pop(key, None)
 
@@ -205,8 +220,10 @@ def check_container(env: dict, state: dict, now: datetime) -> None:
 
     if not running:
         if _should_alert(state, key, now):
-            if _send_telegram(env, "💀 BOT CONTAINER DOWN — trading_bot-bot-1 is not running"):
+            msg = "💀 BOT CONTAINER DOWN — trading_bot-bot-1 is not running"
+            if _send_telegram(env, msg):
                 state[key] = now.isoformat()
+                _append_alert_log(key, msg, now)
     else:
         state.pop(key, None)
 
