@@ -27,7 +27,8 @@ bot/live_signal_loop.py     ✅ Unified signal loop (HOUR + 5MIN)
 bot/notifier.py             ✅ send_telegram() — see Alerting section
 scripts/watchdog.py         ✅ Host cron, heartbeat/duplicate/container checks
 scripts/daily_summary.py    ✅ Host cron 23:00 UTC, one summary message
-risk_manager.py             Lot size ($15 USD fixed risk)
+risk_manager.py             Lot size ($10 USD fixed risk, see Risk Management)
+ig_env.py                   ✅ get_ig_credentials() — DEMO/LIVE switch, see Broker section
 filters/rule_filters.py     Trend filter (disabled)
 filters/vix_filter.py       VIX filter — blocks swing entries >= 18
                             Fails open (API error → allow)
@@ -197,9 +198,36 @@ conditions still unresolved at summary time).
 ❌ Never stop bot container without permission
 
 ## Broker — IG Markets
-Library: trading_ig (IGService)  |  Account: LIVE (TW75S)
-Credentials: IG_USERNAME, IG_PASSWORD, IG_API_KEY (from .env)
+Library: trading_ig (IGService)
 Session: auto-refresh every 10min, full recreate on 401
+
+### Current mode: DEMO (switched 2026-07-08)
+Account: DEMO (Z67Y2C)  |  Was: LIVE (TW75S)
+Switch controlled by IG_ACC_TYPE env var, read via ig_env.py
+get_ig_credentials() — returns (username, password, api_key, acc_type).
+Default LIVE if IG_ACC_TYPE unset.
+
+DEMO credentials are separate from LIVE, NOT the same login:
+  IG_USERNAME / IG_PASSWORD / IG_API_KEY           — LIVE
+  IG_DEMO_USERNAME / IG_DEMO_PASSWORD / IG_DEMO_API_KEY — DEMO (falls
+    back to the LIVE username/password if the DEMO-specific vars are
+    absent, but not for this account — they're set and required)
+
+Revert to LIVE:
+  1. .env: set IG_ACC_TYPE=LIVE (or remove the var — same default)
+  2. SSH VPS → docker-compose up -d   (NOT restart — restart reuses
+     the existing container and does not reload .env)
+  3. Verify: docker logs trading_bot-bot-1 | grep "Switched to TW75S"
+
+execute_trade.py's hardcoded force-switch to TW75S only runs when
+IG_ACC_TYPE=LIVE — in DEMO mode it logs whichever account the session
+lands on instead (currently Z67Y2C), since a demo login has no TW75S
+to switch to.
+
+Known bug fixed 2026-07-08: bot/test_ig.py and bot/test_trade.py were
+hardcoded acc_type="DEMO" but pulled IG_API_KEY (the LIVE key) instead
+of IG_DEMO_API_KEY — silently would have failed or hit the wrong
+environment. Both now use the DEMO-specific vars.
 
 ## Supported Assets (Live)
 | Symbol | Epic                   | yfinance | Value/Point |
@@ -341,32 +369,33 @@ EURUSD paper entry_price: midpoint of SL+TP (approximation, P&L rough)
 lot_size = get_risk_per_trade(symbol) / (sl_distance × value_per_point)
 Min: 0.1 | Max: 10.0 | Entry price fetched live from IG
 
-### Account Rebuild Mode (2026-07-02)
-All live strategies temporarily at $3 risk while account rebuilds from $100 deposit.
-Scale plan:
+### Account Rebuild Mode (2026-07-02) — PAUSED during DEMO validation
+Live account rebuild scaling plan (resumes if/when reverted to LIVE):
   $100 → $200: $3/trade
   $200 → $500: $5/trade
   $500+:        $10/trade
+Full $10 risk restored 2026-07-08 for the DEMO validation phase —
+demo has no real capital to protect, so the rebuild-mode throttling
+and GBPUSD's FRAGILE-verdict half-risk are both suspended, not
+deleted. Re-apply the scaling plan above when reverting to LIVE.
 
 ### Per-Symbol Risk Overrides (risk_manager.py RISK_PER_TRADE_OVERRIDE)
 | Symbol | Risk/Trade | Reason                        |
 |--------|------------|-------------------------------|
-| EURUSD | $3         | Account rebuild from $100     |
-| GBPUSD | $1.50      | Halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades |
-| US500  | $3         | Account rebuild from $100     |
-| All    | $3         | Default (reduced from $15)    |
-
-Revert EURUSD to paper if 3 consecutive losses occur.
+| EURUSD | $10        | Demo validation phase (2026-07-08) |
+| GBPUSD | $10        | Demo validation phase — FRAGILE-verdict half-risk suspended, not deleted |
+| US500  | $10        | Demo validation phase (2026-07-08) |
+| All    | $10        | Default                       |
 
 ### Paper Trade Risk Override (added 2026-06-12)
-Paper trades always use $15 risk regardless of symbol.
-Live $3 override does not affect paper trade sizing.
-  Paper:  all symbols → $15
-  Live:   all symbols → $3 (rebuild mode)
+Paper trades always use $10 risk regardless of symbol (RISK_PER_TRADE
+default). Live overrides above don't affect paper trade sizing —
+they're the same value right now only because both are $10 during
+demo validation.
 
 ### Dead Config
 VPS .env has RISK_PER_TRADE=5 — NOT read by any code. risk_manager.py
-hardcodes RISK_PER_TRADE=3 as default (rebuild mode). Don't trust this env var.
+hardcodes RISK_PER_TRADE=10 as default. Don't trust this env var.
 
 ### Daily Loss Limits
 | Source              | Limit | Behaviour when hit        |
