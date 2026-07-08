@@ -138,25 +138,52 @@ def check_heartbeat(env: dict, state: dict, now: datetime) -> None:
 
 
 def check_duplicate_process(env: dict, state: dict, now: datetime) -> None:
+    """Flags any 'uvicorn main:app' process NOT owned by trading_bot-bot-1.
+
+    Docker does not hide container processes from the host's process table
+    (no PID namespace isolation by default) -- the container's own uvicorn
+    always shows up in a plain host-level `pgrep`. So "0 on host" is not
+    the right healthy baseline; the container's PID must be excluded via
+    `docker top`, and only a uvicorn PID *outside* that set (e.g. a stale
+    host-level systemd/nohup process, like the Apr-12 incident) is a real
+    duplicate.
+    """
     key = "duplicate_process"
     try:
-        result = subprocess.run(
-            ["pgrep", "-cf", "uvicorn main:app"],
+        pgrep_result = subprocess.run(
+            ["pgrep", "-f", "uvicorn main:app"],
             capture_output=True, text=True,
         )
-        out = result.stdout.strip()
-        count = int(out) if out.isdigit() else 0
-    except Exception as e:
-        print(f"[watchdog] pgrep failed: {e}")
-        return
-    print(f"[watchdog] host uvicorn process count: {count}")
+        matched_pids = {p.strip() for p in pgrep_result.stdout.splitlines() if p.strip()}
 
-    if count > 0:
+        top_result = subprocess.run(
+            ["docker", "top", "trading_bot-bot-1"],
+            capture_output=True, text=True,
+        )
+        container_pids = set()
+        if top_result.returncode == 0:
+            lines = top_result.stdout.splitlines()
+            if lines:
+                header = lines[0].split()
+                pid_idx = header.index("PID") if "PID" in header else 1
+                for line in lines[1:]:
+                    parts = line.split(None, pid_idx + 1)
+                    if len(parts) > pid_idx:
+                        container_pids.add(parts[pid_idx])
+    except Exception as e:
+        print(f"[watchdog] pgrep/docker top failed: {e}")
+        return
+
+    rogue_pids = matched_pids - container_pids
+    print(f"[watchdog] uvicorn PIDs on host: {matched_pids or '{}'} "
+          f"| container-owned: {container_pids or '{}'} | rogue: {rogue_pids or '{}'}")
+
+    if rogue_pids:
         if _should_alert(state, key, now):
             if _send_telegram(
                 env,
-                f"🔴 DUPLICATE PROCESS DETECTED — {count} 'uvicorn main:app' running on "
-                f"HOST (expected 0, bot lives in Docker)"
+                f"🔴 DUPLICATE PROCESS DETECTED — 'uvicorn main:app' running on HOST "
+                f"outside Docker (PIDs {sorted(rogue_pids)}) — bot should live in Docker only"
             ):
                 state[key] = now.isoformat()
     else:
