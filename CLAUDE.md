@@ -23,6 +23,10 @@ bot/live_signal_loop.py     ✅ Unified signal loop (HOUR + 5MIN)
                             Market hours block per symbol
                             Daily loss limit $75 (signal_loop)
                             Paper trade resolver runs each cycle
+                            ✅ Heartbeat upsert end of every cycle
+bot/notifier.py             ✅ send_telegram() — see Alerting section
+scripts/watchdog.py         ✅ Host cron, heartbeat/duplicate/container checks
+scripts/daily_summary.py    ✅ Host cron 23:00 UTC, one summary message
 risk_manager.py             Lot size ($15 USD fixed risk)
 filters/rule_filters.py     Trend filter (disabled)
 filters/vix_filter.py       VIX filter — blocks swing entries >= 18
@@ -105,6 +109,87 @@ Bot container uses /app/docker-entrypoint.sh (starts cron + uvicorn)
 4. docker-compose up -d --build
 5. docker-compose ps             (verify all 3 up)
 6. curl localhost:8000 + curl localhost:8501
+
+Gotcha: `docker-compose restart <service>` reuses the existing
+container — it does NOT re-read .env. Changing .env (e.g. new
+credentials) requires `docker-compose up -d <service>` to recreate
+the container, or the old env stays baked in.
+
+## Alerting (Telegram)
+
+Four layers, added 2026-07-07/08.
+
+### Layer 1 — bot/notifier.py
+`send_telegram(message, level="INFO"|"WARN"|"ERROR") -> bool`
+POSTs to Telegram via urllib (no new deps). Never raises — wraps
+everything, returns False on any failure, prints locally.
+Level prefixes: 🟢 INFO, 🟡 WARN, 🔴 ERROR (red reserved exclusively
+for system problems — CLOSED trade alerts always use level="INFO"
+with the win/loss emoji embedded in the message text instead).
+Rate limit: 20 msg/60s. Over cap: message dropped, drop-counter
+incremented, count appended to the next message that does send
+("...+3 alerts dropped"). 5s HTTP timeout — a slow Telegram API can
+never block a trading cycle.
+
+### Layer 2 — event hooks (additive lines only, no logic changes)
+| File | Hook | Level |
+|------|------|-------|
+| bot/execute_trade.py | OPENED (successful placement) | INFO |
+| bot/execute_trade.py | REJECTED (margin + non-margin, one hook) | ERROR |
+| bot/execute_trade.py | SL DRIFT (reanchor branch) | WARN |
+| bot/live_signal_loop.py | SIGNAL LOOP ERROR (get_active_strategies guard + per-symbol _check_symbol exception handler) | ERROR |
+| bot/live_signal_loop.py | DAILY LOSS LIMIT HIT (deduped to first trigger per UTC day via `_last_daily_loss_alert_date`) | ERROR |
+| data/positions_poller.py | CLOSED (🟢/🔴 by P&L sign in message text, level always INFO) | INFO |
+
+### Layer 3 — heartbeat + watchdog
+`heartbeat` table (name PK, last_beat, details) — signal_loop upserts
+`name='signal_loop'` at the end of every cycle regardless of how many
+strategies were due that cycle.
+
+scripts/watchdog.py runs on the HOST (not in the container — the
+whole point is surviving container death). Deliberately stdlib-only,
+no project imports: parses .env directly (host cron env has no
+TELEGRAM_* — those only reach the container via docker-compose's
+env_file) and reads trades.db directly via sqlite3.
+
+Checks:
+- signal_loop heartbeat stale >20min during market hours
+  (Sun 22:00 UTC – Fri 21:00 UTC) → 💀 SIGNAL LOOP STALE
+- duplicate uvicorn process on host → 🔴 DUPLICATE PROCESS DETECTED
+  Gotcha: Docker does NOT hide container processes from the host's
+  process table (no PID namespace isolation by default) — a plain
+  `pgrep -cf "uvicorn main:app"` always counts the container's own
+  process too. The check cross-references matched PIDs against
+  `docker top trading_bot-bot-1` and only flags a PID outside the
+  container's own tree (e.g. a repeat of the Apr-12 stale-systemd
+  incident). Caught this live: the first-ever run false-positived
+  before this fix.
+- trading_bot-bot-1 not running → 💀 BOT CONTAINER DOWN
+
+Anti-spam: `/tmp/watchdog_state.json` tracks last-alert-time per
+condition, re-alerts the same condition at most every 60min, and
+clears on recovery so a fresh occurrence alerts immediately.
+
+Every alert actually sent (not suppressed by the 60min window) is
+also appended as one JSON line (`timestamp`, `condition`, `message`)
+to `logs/watchdog_alerts.jsonl` — an append-only history alongside
+the dedup state, not a replacement for it.
+
+Host cron `/etc/cron.d/trading-watchdog`:
+```
+*/10 * * * * ubuntu python3 /home/ubuntu/trading_bot/scripts/watchdog.py >> /home/ubuntu/trading_bot/logs/watchdog.log 2>&1
+0 23 * * * ubuntu python3 /home/ubuntu/trading_bot/scripts/daily_summary.py >> /home/ubuntu/trading_bot/logs/daily_summary.log 2>&1
+```
+
+### Layer 4 — scripts/daily_summary.py
+One Telegram message at 23:00 UTC (07:00 MYT), host cron (same reason
+as watchdog — needs to read watchdog_alerts.jsonl, which lives on the
+host filesystem). Stdlib-only, same .env/sqlite3 approach as
+watchdog.py. Covers: trades opened/closed + net P&L + win/loss per
+strategy (last 24h), current open positions, heartbeat status per
+name, and watchdog alerts fired in the last 24h (read from
+watchdog_alerts.jsonl — shows fired-and-cleared events, not just
+conditions still unresolved at summary time).
 
 ## Claude Code SSH Permissions
 ✅ SSH, run docker, git pull, check logs, restart containers
