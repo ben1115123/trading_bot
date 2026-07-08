@@ -10,12 +10,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
 from database.models import get_active_strategies, log_signal_check, log_paper_trade, \
-    get_pending_paper_trades, resolve_paper_trade, update_trade_context, upsert_heartbeat
+    get_pending_paper_trades, resolve_paper_trade, update_trade_context, upsert_heartbeat, \
+    log_candle_source_compare
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 from bot.notifier import send_telegram
+from bot.candle_stream import get_candles as get_stream_candles
 
 SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD"]
+
+CANDLE_SOURCE = os.getenv("CANDLE_SOURCE", "yfinance").lower()  # 'yfinance' (default,
+                                                                 # unchanged) | 'ig_stream'
+_PIP_SIZE = {
+    "EURUSD": 0.0001, "GBPUSD": 0.0001, "AUDUSD": 0.0001, "EURGBP": 0.0001,
+    "USDJPY": 0.01,
+    "US500": 1.0, "US100": 1.0, "DAX": 1.0,
+}
 
 MARKET_CLOSE = {
     "US500": {"hour": 20, "minute": 45},
@@ -231,6 +241,31 @@ def _is_paper_trade(symbol: str, timeframe: str) -> bool:
     return symbol in PAPER_SYMBOLS or f"{symbol}_{timeframe}" in PAPER_SYMBOLS
 
 
+def _log_candle_comparison(symbol: str, timeframe: str, yf_candles: list) -> None:
+    """Parallel validation: yfinance vs IG stream latest-close delta. Only
+    called while CANDLE_SOURCE is still 'yfinance' -- never blocks or
+    affects the actual trading fetch path above it.
+    yf_candles[-2] matches this file's existing convention (candles[-1] is
+    the in-progress current candle). The stream buffer, by contrast, only
+    ever contains genuinely completed candles (CONS_END-gated / REST is
+    inherently complete), so stream_candles[-1] is already the latest
+    completed one -- no [-2] needed there.
+    """
+    stream_candles = get_stream_candles(symbol, timeframe)
+    if not stream_candles or len(yf_candles) < 2:
+        return
+    yf_last = yf_candles[-2]
+    stream_last = stream_candles[-1]
+    pip_size = _PIP_SIZE.get(symbol, 1.0)
+    delta = (yf_last["close"] - stream_last["close"]) / pip_size
+    log_candle_source_compare({
+        "symbol": symbol, "timeframe": timeframe,
+        "yf_close": yf_last["close"], "yf_time": str(yf_last.get("time")),
+        "stream_close": stream_last["close"], "stream_time": str(stream_last.get("time")),
+        "delta_pips": round(delta, 2),
+    })
+
+
 def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
                    candle_cache: dict | None = None) -> None:
     strategy_name = active["strategy_name"]
@@ -284,12 +319,21 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
     if candle_cache is not None and cache_key in candle_cache:
         candles, fetch_err = candle_cache[cache_key]
     else:
-        try:
-            candles   = _fetch_yfinance_candles(symbol, timeframe, 500)
-            fetch_err = None
-        except Exception as e:
-            candles   = None
-            fetch_err = e
+        if CANDLE_SOURCE == "ig_stream":
+            candles = get_stream_candles(symbol, timeframe)
+            fetch_err = None if candles is not None else "ig_stream buffer not warm yet"
+        else:
+            try:
+                candles   = _fetch_yfinance_candles(symbol, timeframe, 500)
+                fetch_err = None
+            except Exception as e:
+                candles   = None
+                fetch_err = e
+            if candles:
+                try:
+                    _log_candle_comparison(symbol, timeframe, candles)
+                except Exception as e:
+                    print(f"[signal_loop] [{symbol}] candle comparison log failed: {e}")
         if candle_cache is not None:
             candle_cache[cache_key] = (candles, fetch_err)
 
