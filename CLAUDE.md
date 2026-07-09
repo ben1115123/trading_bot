@@ -229,6 +229,47 @@ hardcoded acc_type="DEMO" but pulled IG_API_KEY (the LIVE key) instead
 of IG_DEMO_API_KEY — silently would have failed or hit the wrong
 environment. Both now use the DEMO-specific vars.
 
+### Price scale quirk — ig_scale.py (fixed 2026-07-09)
+CS.D.EURUSD.MINI.IP quotes in native **points scale** (e.g. bid=11423.3)
+on the DEMO account (Z67Y2C), not decimal FX price (1.14233) like every
+other FX epic and like this same epic on the LIVE account (TW75S).
+Discovered via 3x ATTACHED_ORDER_LEVEL_ERROR rejections on EURUSD SELL
+(2026-07-08): entry_price came back native-scale from IG while SL/TP
+(webhook, always decimal) went out unconverted — stop_level ended up
+~10000x off market. Same mismatch silently corrupted candle_stream.py's
+yfinance-vs-stream comparison logging (~1e8 "pip" deltas).
+
+`ig_scale.py` is the fix: classifies each symbol's native scale
+**empirically** — compares the live bid against a known decimal-price
+band per symbol — and caches it. Do NOT trust IG's `scalingFactor`
+snapshot field: GBPUSD/AUDUSD carry `scalingFactor=10000` despite
+already being decimal, while EURUSD (the one epic that actually needed
+/10000 on this account) carries `scalingFactor=1`. That field does not
+reliably predict which epics need conversion — this was empirically
+disproven while diagnosing the bug, not assumed.
+
+Confirmed epic scale differs by ACCOUNT, not just by epic — EURUSD was
+decimal on LIVE (TW75S) before the 2026-07-08 switch (every EURUSD
+trade in `trades` table pre-dating the switch has decimal entry_price)
+and became points-scale only after switching to DEMO (Z67Y2C). Re-run
+`init_price_scales(ig_service, EPIC_CONFIG_map, force=True)` after ANY
+session recreate or account switch — never assume scale carries over.
+
+Ambiguous readings (fit neither the decimal nor the x10000 band for
+that symbol) never guess — they raise, send a Telegram ERROR alert, and
+block that symbol from trading (`ig_scale.is_resolved(symbol)` returns
+False) until a human resolves it.
+
+All IG price reads/writes route through `ig_scale.to_decimal()` /
+`ig_scale.to_native()` at the boundary: `execute_trade.py` (entry_price,
+stop_level/limit_level sent to `create_open_position`, risk sizing),
+`positions_poller.py` (open_price/bid/offer/close_price, P&L calc),
+`candle_stream.py` (REST warm-up OHLC, live stream mid-OHLC — internal
+buffers are decimal so the compare-vs-yfinance logging is apples-to-
+apples), `sync_ig_trades.py` (openLevel/closeLevel from transaction
+history). Everything else in the codebase (SL/TP math, DB storage,
+dashboards, webhooks) stays decimal, unchanged.
+
 ## Supported Assets (Live)
 | Symbol | Epic                   | yfinance | Value/Point |
 |--------|------------------------|----------|-------------|
