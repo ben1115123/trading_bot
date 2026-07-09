@@ -29,6 +29,7 @@ from trading_ig import IGService
 from trading_ig.stream import IGStreamService, Subscription, ClientListener
 
 from ig_env import get_ig_credentials
+import ig_scale
 from database.models import get_active_strategies, upsert_heartbeat
 from scripts.run_backtest import STRATEGIES
 
@@ -108,6 +109,10 @@ def _rest_fetch(ig_service: IGService, symbol: str, timeframe: str, count: int) 
     if not prices_raw:
         return None
 
+    if not ig_scale.is_resolved(symbol):
+        print(f"[candle_stream] {symbol} price scale unresolved — skipping REST fetch")
+        return None
+
     candles = []
     for row in prices_raw:
         try:
@@ -121,7 +126,10 @@ def _rest_fetch(ig_service: IGService, symbol: str, timeframe: str, count: int) 
             continue
         candles.append({
             "time": _normalize_rest_time(row["snapshotTime"]),
-            "open": float(o), "high": float(h), "low": float(l), "close": float(c),
+            "open": ig_scale.to_decimal(symbol, float(o)),
+            "high": ig_scale.to_decimal(symbol, float(h)),
+            "low": ig_scale.to_decimal(symbol, float(l)),
+            "close": ig_scale.to_decimal(symbol, float(c)),
         })
     return candles
 
@@ -196,15 +204,21 @@ def _backfill_gap(ig_service: IGService, symbol: str, timeframe: str) -> None:
 # -------------------------
 # Streaming
 # -------------------------
-def _mid_ohlc(values: dict) -> tuple | None:
+def _mid_ohlc(symbol: str, values: dict) -> tuple | None:
     """(BID_x + OFR_x) / 2 per field — matches the REST warm-up's mid-price
-    convention so the two never disagree on price basis."""
+    convention so the two never disagree on price basis. Converted to
+    decimal scale via ig_scale before being buffered, same as REST."""
+    if not ig_scale.is_resolved(symbol):
+        return None
     try:
         o = (float(values["BID_OPEN"]) + float(values["OFR_OPEN"])) / 2
         h = (float(values["BID_HIGH"]) + float(values["OFR_HIGH"])) / 2
         l = (float(values["BID_LOW"]) + float(values["OFR_LOW"])) / 2
         c = (float(values["BID_CLOSE"]) + float(values["OFR_CLOSE"])) / 2
-        return o, h, l, c
+        return (
+            ig_scale.to_decimal(symbol, o), ig_scale.to_decimal(symbol, h),
+            ig_scale.to_decimal(symbol, l), ig_scale.to_decimal(symbol, c),
+        )
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -296,7 +310,7 @@ def _on_update(item_name: str, values: dict) -> None:
     if not symbol or not scale:
         return
 
-    mid = _mid_ohlc(values)
+    mid = _mid_ohlc(symbol, values)
     if mid is None:
         return
     utm = values.get("UTM")
@@ -389,6 +403,11 @@ def _connect_and_subscribe(pairs: list) -> tuple:
     stream_service.create_session()  # raises or sys.exit(1) on failure — caller catches both
     stream_service.add_client_listener(_ConnectionListener())
 
+    try:
+        ig_scale.init_price_scales(ig_service, EPIC_MAP, force=False)
+    except Exception as e:
+        print(f"[candle_stream] init_price_scales failed: {e}")
+
     epics_needing = {EPIC_MAP[symbol] for symbol, _ in pairs if symbol in EPIC_MAP}
     scales_needed = {_LS_SCALE_FOR_TIMEFRAME[tf] for _, tf in pairs}
 
@@ -459,6 +478,7 @@ def start_candle_stream() -> None:
                                        return_dataframe=False)
             try:
                 warmup_service.create_session()
+                ig_scale.init_price_scales(warmup_service, EPIC_MAP, force=False)
                 _warm_up(warmup_service, pairs)
             except (Exception, SystemExit) as e:
                 print(f"[candle_stream] initial warm-up failed, stream will backfill on connect: {e}")

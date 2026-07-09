@@ -3,6 +3,8 @@ import time
 import re
 from datetime import datetime, timezone, timedelta
 
+import ig_scale
+
 
 def _parse_pnl(raw) -> float | None:
     """Parse IG profitAndLoss string e.g. '+$15.23' or '-$4.50' to float."""
@@ -21,7 +23,7 @@ def _to_float(val) -> float | None:
         return None
 
 
-def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entry_time: str = None, lookback_hours: int = 48, max_attempts: int = 5, retry_delay: int = 10) -> dict | None:
+def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entry_time: str = None, symbol: str = None, lookback_hours: int = 48, max_attempts: int = 5, retry_delay: int = 10) -> dict | None:
     """
     Find close data for a deal in IG transaction history.
     Primary: reference == deal_reference (IG echoes dealReference in transaction history).
@@ -66,7 +68,7 @@ def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entr
             if match is not None and not match.empty:
                 row = match.iloc[0]
                 return {
-                    "close_price":  _to_float(row.get("closeLevel")),
+                    "close_price":  ig_scale.to_decimal(symbol, _to_float(row.get("closeLevel"))),
                     "close_time":   row.get("dateUtc") or datetime.now(timezone.utc).isoformat(),
                     "realised_pnl": _parse_pnl(row.get("profitAndLoss")),
                 }
@@ -124,6 +126,7 @@ def _detect_and_close_trades(ig_service, ensure_session, active_deal_ids: list) 
             deal_id,
             deal_reference=trade_row.get("deal_reference"),
             entry_time=trade_row.get("timestamp"),
+            symbol=trade_row.get("symbol"),
         )
 
         if close_data is None:
@@ -182,9 +185,9 @@ def _poll_loop():
                     epic       = row.get("epic")
                     direction  = row.get("direction")
                     size       = row.get("size")
-                    open_price = row.get("level")
-                    bid        = row.get("bid")
-                    offer      = row.get("offer")
+                    open_price_native = row.get("level")
+                    bid_native        = row.get("bid")
+                    offer_native      = row.get("offer")
 
                     if not deal_id or not epic:
                         continue
@@ -199,6 +202,16 @@ def _poll_loop():
                         continue
 
                     symbol, vpp = symbol_info
+
+                    if symbol in ig_scale.CHECKED_SYMBOLS and not ig_scale.is_resolved(symbol):
+                        print(f"WARNING: {symbol} price scale unresolved "
+                              f"— skipping P&L calc for {deal_id}")
+                        active_deals.append(deal_id)
+                        continue
+
+                    open_price = ig_scale.to_decimal(symbol, open_price_native)
+                    bid        = ig_scale.to_decimal(symbol, bid_native)
+                    offer      = ig_scale.to_decimal(symbol, offer_native)
                     current_price = bid if direction == "BUY" else offer
 
                     if current_price is not None and open_price is not None:
@@ -246,7 +259,7 @@ def _get_closed_trades_missing_pnl_recent(hours: int = 2) -> list:
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, deal_id, deal_reference, timestamp, close_time
+            SELECT id, deal_id, deal_reference, symbol, timestamp, close_time
             FROM trades
             WHERE status = 'CLOSED'
               AND pnl IS NULL
@@ -312,6 +325,7 @@ def _deferred_pnl_loop():
                     ig_service, deal_id,
                     deal_reference=t.get("deal_reference"),
                     entry_time=t.get("timestamp"),
+                    symbol=t.get("symbol"),
                     max_attempts=1,
                     retry_delay=1,
                 )

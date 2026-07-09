@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from risk_manager import calculate_position_size
 from database.models import log_trade, log_paper_trade
 from ig_env import get_ig_credentials
+import ig_scale
 
 # -------------------------
 # Load credentials
@@ -18,6 +19,18 @@ username, password, api_key, IG_ACC_TYPE = get_ig_credentials()
 # Initialize IG
 # -------------------------
 ig_service = IGService(username, password, api_key, acc_type=IG_ACC_TYPE)
+
+# -------------------------
+# Asset configuration
+# -------------------------
+EPIC_CONFIG = {
+    "US500":  {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
+    "US100":  {"epic": "IX.D.NASDAQ.IFMM.IP",    "value_per_point": 1},
+    "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
+    "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
+    "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
+    "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
+}
 
 # -------------------------
 # Session Manager
@@ -52,6 +65,15 @@ def recreate_session():
     except Exception as e:
         print("Account switch failed:", e)
 
+    try:
+        ig_scale.init_price_scales(
+            ig_service,
+            {s: c["epic"] for s, c in EPIC_CONFIG.items()},
+            force=True,
+        )
+    except Exception as e:
+        print(f"[ig_scale] init failed: {e}")
+
     last_login_time = time.time()
 
 
@@ -73,18 +95,6 @@ def ensure_session():
 
 # Initialize session at start
 recreate_session()
-
-# -------------------------
-# Asset configuration
-# -------------------------
-EPIC_CONFIG = {
-    "US500":  {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
-    "US100":  {"epic": "IX.D.NASDAQ.IFMM.IP",    "value_per_point": 1},
-    "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
-    "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
-    "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
-    "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
-}
 
 # Minimum SL distance from IG live entry price.
 # yfinance candle close can lag the IG quote by several pips, making a
@@ -246,13 +256,20 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
 
     direction = "BUY" if action.lower() == "buy" else "SELL"
 
+    if symbol in ig_scale.CHECKED_SYMBOLS and not ig_scale.is_resolved(symbol):
+        print(f"[ig_scale] {symbol} price scale unresolved — refusing trade")
+        from bot.notifier import send_telegram
+        send_telegram(f"REFUSED {symbol} {direction} — price scale unresolved, "
+                      f"trading blocked until resolved", level="ERROR")
+        return False
+
     try:
         ensure_session()
 
         market = ig_service.fetch_market_by_epic(epic)
         bid = market["snapshot"]["bid"]
         offer = market["snapshot"]["offer"]
-        entry_price = offer if direction == "BUY" else bid
+        entry_price = ig_scale.to_decimal(symbol, offer if direction == "BUY" else bid)
 
         print(f"Entry Price: {entry_price}")
 
@@ -303,8 +320,8 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
             order_type="MARKET",
             size=size,
             level=None,
-            limit_level=tp,
-            stop_level=sl,
+            limit_level=ig_scale.to_native(symbol, tp),
+            stop_level=ig_scale.to_native(symbol, sl),
             limit_distance=None,
             stop_distance=None,
             trailing_stop=False,

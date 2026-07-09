@@ -16,6 +16,7 @@ from trading_ig import IGService
 from database.db import get_connection
 from database.models import close_trade
 from ig_env import get_ig_credentials
+import ig_scale
 
 INSTRUMENT_TO_SYMBOL = {
     "US 500 Cash ($1)":      "US500",
@@ -24,6 +25,19 @@ INSTRUMENT_TO_SYMBOL = {
     "Spot Gold ($1)":        "XAUUSD",
     "Germany 40 Cash (£1)":  "DAX",
     "EUR/USD Mini":          "EURUSD",  # CS.D.EURUSD.MINI.IP — verify name on first live trade
+}
+
+# Local epic map for ig_scale classification only -- deliberately not
+# importing bot.execute_trade here (its module-level recreate_session()
+# would open a second IG session alongside this script's own, same
+# concern noted in candle_stream.py's docstring).
+_EPIC_MAP_FOR_SCALE = {
+    "US500":  "IX.D.SPTRD.IFMM.IP",
+    "US100":  "IX.D.NASDAQ.IFMM.IP",
+    "DAX":    "IX.D.DAX.IFMS.IP",
+    "EURUSD": "CS.D.EURUSD.MINI.IP",
+    "GBPUSD": "CS.D.GBPUSD.MINI.IP",
+    "AUDUSD": "CS.D.AUDUSD.MINI.IP",
 }
 
 
@@ -154,6 +168,7 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
         acc_type=_acc_type,
     )
     ig.create_session()
+    ig_scale.init_price_scales(ig, _EPIC_MAP_FOR_SCALE, force=True)
 
     from_dt = datetime.utcnow() - timedelta(days=days)
     print(f"Fetching IG transactions since {from_dt.strftime('%Y-%m-%d')}...")
@@ -176,10 +191,10 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
     inserted = closed = filled = skipped = 0
 
     for _, tx in transactions.iterrows():
-        ref         = str(tx.get("reference", "") or "").strip()
-        close_price = _to_float(tx.get("closeLevel"))
-        close_time  = str(tx.get("dateUtc") or datetime.now(timezone.utc).isoformat())
-        pnl         = _parse_pnl(tx.get("profitAndLoss"))
+        ref                = str(tx.get("reference", "") or "").strip()
+        close_price_native = _to_float(tx.get("closeLevel"))
+        close_time         = str(tx.get("dateUtc") or datetime.now(timezone.utc).isoformat())
+        pnl                = _parse_pnl(tx.get("profitAndLoss"))
 
         if not ref:
             skipped += 1
@@ -198,7 +213,12 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
             size       = abs(_to_float(size_raw) or 0.0)
             direction  = "BUY" if not size_raw.startswith("-") else "SELL"
             open_time  = str(tx.get("openDateUtc") or close_time)
-            entry_price = _to_float(tx.get("openLevel"))
+            if symbol in ig_scale.CHECKED_SYMBOLS and not ig_scale.is_resolved(symbol):
+                print(f"  SKIP  ref={ref} {symbol} — price scale unresolved")
+                skipped += 1
+                continue
+            entry_price = ig_scale.to_decimal(symbol, _to_float(tx.get("openLevel")))
+            close_price = ig_scale.to_decimal(symbol, close_price_native)
             if _is_already_logged(ref, symbol, direction, entry_price, open_time):
                 open_direction = "SELL" if direction == "BUY" else "BUY"
                 fill_trade = _get_trade_by_open(
@@ -232,6 +252,13 @@ def sync_ig_trades(days: int = 7, confirm: bool = False) -> dict:
                 })
             inserted += 1
             continue
+
+        trade_symbol = trade.get("symbol")
+        if trade_symbol in ig_scale.CHECKED_SYMBOLS and not ig_scale.is_resolved(trade_symbol):
+            print(f"  SKIP  ref={ref} {trade_symbol} — price scale unresolved")
+            skipped += 1
+            continue
+        close_price = ig_scale.to_decimal(trade_symbol, close_price_native)
 
         if trade["status"] == "OPEN":
             print(f"  CLOSE id={trade['id']} ref={ref} pnl={pnl} close_price={close_price}")
