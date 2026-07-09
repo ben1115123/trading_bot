@@ -31,7 +31,8 @@ from trading_ig.stream import IGStreamService, Subscription, ClientListener
 from ig_env import get_ig_credentials
 import ig_scale
 from database.models import get_active_strategies, upsert_heartbeat
-from scripts.run_backtest import STRATEGIES
+from scripts.run_backtest import STRATEGIES, _fetch_yfinance_candles
+from bot.notifier import send_telegram
 
 # -------------------------
 # Config
@@ -102,6 +103,8 @@ def _rest_fetch(ig_service: IGService, symbol: str, timeframe: str, count: int) 
             epic=epic, resolution=resolution, numpoints=count,
         )
     except Exception as e:
+        if "exceeded-account-historical-data-allowance" in str(e):
+            raise _QuotaExceeded(str(e)) from e
         print(f"[candle_stream] REST fetch failed {symbol}/{timeframe}: {e}")
         return None
 
@@ -145,6 +148,38 @@ def _normalize_rest_time(raw: str) -> str:
         return str(raw)
 
 
+class _QuotaExceeded(Exception):
+    pass
+
+
+def _normalize_yf_time(raw: str) -> str:
+    """yfinance candle time is str(pandas.Timestamp) -- 'YYYY-MM-DD HH:MM:SS+00:00',
+    space-separated rather than 'T'-separated. Normalize the same way
+    _normalize_rest_time does so both sources parse identically downstream."""
+    try:
+        dt = datetime.fromisoformat(str(raw).replace(" ", "T", 1))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except Exception:
+        return str(raw)
+
+
+def _yfinance_fallback(symbol: str, timeframe: str, count: int) -> list | None:
+    """Warm-up/backfill fallback when IG's weekly historical-data REST quota
+    is exhausted. yfinance candles are already decimal-scale (real ticker
+    price) -- no ig_scale conversion needed, unlike the IG REST path."""
+    try:
+        raw = _fetch_yfinance_candles(symbol, timeframe, count)
+    except Exception as e:
+        print(f"[candle_stream] yfinance fallback failed {symbol}/{timeframe}: {e}")
+        return None
+    return [{
+        "time": _normalize_yf_time(c["time"]),
+        "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"],
+    } for c in raw]
+
+
 def _needed_pairs() -> list:
     """Derived from active_strategy at warm-up/reconnect time, not hardcoded —
     only pairs with a real strategy class (STRATEGIES dict) and a known epic
@@ -172,33 +207,58 @@ def _needed_pairs() -> list:
 
 def _warm_up(ig_service: IGService, pairs: list) -> None:
     print(f"[candle_stream] warm-up starting for {len(pairs)} pairs: {pairs}")
+    fallback_used = False
     for symbol, timeframe in pairs:
-        candles = _rest_fetch(ig_service, symbol, timeframe, WARMUP_COUNT)
+        source = "IG REST"
+        try:
+            candles = _rest_fetch(ig_service, symbol, timeframe, WARMUP_COUNT)
+        except _QuotaExceeded as e:
+            print(f"[candle_stream] IG historical-data quota exceeded for "
+                  f"{symbol}/{timeframe} -- falling back to yfinance: {e}")
+            candles = _yfinance_fallback(symbol, timeframe, WARMUP_COUNT)
+            source = "yfinance (quota fallback)"
+            fallback_used = True
         if not candles:
-            print(f"[candle_stream] warm-up got nothing for {symbol}/{timeframe}")
+            print(f"[candle_stream] warm-up got nothing for {symbol}/{timeframe} (source={source})")
             continue
         with _lock:
             _buffers[(symbol, timeframe)] = candles[-MAX_BUFFER:]
-        print(f"[candle_stream] warm-up {symbol}/{timeframe}: {len(candles)} candles")
+        print(f"[candle_stream] warm-up {symbol}/{timeframe}: {len(candles)} candles (source={source})")
+    if fallback_used:
+        send_telegram(
+            "candle_stream: IG historical-data quota exceeded -- warm-up "
+            "fell back to yfinance for one or more pairs", level="WARN")
 
 
-def _backfill_gap(ig_service: IGService, symbol: str, timeframe: str) -> None:
+def _backfill_gap(ig_service: IGService, symbol: str, timeframe: str) -> bool:
     """After reconnect: REST already returns IG-server-aggregated 15MIN bars
     directly (MINUTE_15 is a real REST resolution even though it isn't a
     Lightstreamer scale), so gap backfill never touches the 3-bar aggregator
     — it fills the buffer with genuine complete candles regardless of
-    timeframe. Bounded to WARMUP_COUNT so a long outage doesn't over-fetch."""
-    candles = _rest_fetch(ig_service, symbol, timeframe, WARMUP_COUNT)
+    timeframe. Bounded to WARMUP_COUNT so a long outage doesn't over-fetch.
+    Returns True if the yfinance quota fallback engaged, for the caller to
+    dedupe its Telegram alert to one per reconnect cycle."""
+    source = "IG REST"
+    fallback_used = False
+    try:
+        candles = _rest_fetch(ig_service, symbol, timeframe, WARMUP_COUNT)
+    except _QuotaExceeded as e:
+        print(f"[candle_stream] IG historical-data quota exceeded for "
+              f"{symbol}/{timeframe} -- falling back to yfinance: {e}")
+        candles = _yfinance_fallback(symbol, timeframe, WARMUP_COUNT)
+        source = "yfinance (quota fallback)"
+        fallback_used = True
     if not candles:
-        print(f"[candle_stream] gap backfill got nothing for {symbol}/{timeframe}")
-        return
+        print(f"[candle_stream] gap backfill got nothing for {symbol}/{timeframe} (source={source})")
+        return fallback_used
     with _lock:
         existing = _buffers.get((symbol, timeframe), [])
         seen_times = {c["time"] for c in existing}
         merged = existing + [c for c in candles if c["time"] not in seen_times]
         merged.sort(key=lambda c: c["time"])
         _buffers[(symbol, timeframe)] = merged[-MAX_BUFFER:]
-    print(f"[candle_stream] gap backfill {symbol}/{timeframe}: buffer now {len(merged)}")
+    print(f"[candle_stream] gap backfill {symbol}/{timeframe}: buffer now {len(merged)} (source={source})")
+    return fallback_used
 
 
 # -------------------------
@@ -443,8 +503,14 @@ def _reconnect_supervisor() -> None:
             backoff_idx = 0
             print("[candle_stream] connected")
 
+            backfill_fallback = False
             for symbol, timeframe in pairs:
-                _backfill_gap(ig_service, symbol, timeframe)
+                if _backfill_gap(ig_service, symbol, timeframe):
+                    backfill_fallback = True
+            if backfill_fallback:
+                send_telegram(
+                    "candle_stream: IG historical-data quota exceeded -- gap "
+                    "backfill fell back to yfinance for one or more pairs", level="WARN")
 
             # Block here until the connection listener flags a disconnect.
             _disconnected.wait()
