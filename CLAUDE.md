@@ -287,22 +287,22 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 ### Live
 | Symbol | TF   | Strategy   | Mode | Source  | Notes                          |
 |--------|------|------------|------|---------|--------------------------------|
-| US500  | HOUR | stoch_rsi  | Live | loop    |                                |
+| US500  | HOUR | stoch_rsi  | Live | loop    | FRAGILE walk-forward verdict (2026-07-09): median PF 1.33, 57.1% windows profitable, 3 of 28 windows PF 0.00. Kept in demo roster at full size for reconciliation data — does NOT meet Phase 3 ROBUST bar for any future live-account return. Review alongside GBPUSD at the 2026-07-21 gate |
 | EURUSD | HOUR | swiftalgo  | Live | webhook | Promoted 2026-05-27, $10 risk  |
 | US500  | HOUR | swiftalgo  | Live | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
-| GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $1.50 risk (halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades), no session blocks |
+| GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $1.50 risk (halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades), no session blocks. Review at the 2026-07-21 gate alongside stoch_rsi US500 HOUR |
 
 ### Paper
 | Symbol | TF    | Strategy   | Mode  | Source | Notes                          |
 |--------|-------|------------|-------|--------|---------------------------------|
 | US500  | HOUR  | williams_r | Paper | loop   | Accumulating trades             |
 | EURUSD | 15MIN | stoch_rsi  | Paper | loop   | 297 bt trades, PF 1.36          |
-| EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18           |
+| EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18. Walk-forward (2026-07-09): FRAGILE — median PF 1.08, 57.1% windows profitable, 149 trades across 7 windows |
 | EURUSD | 15MIN | supertrend | Paper | loop   | 111 bt trades, PF 1.35          |
 | US500  | HOUR  | stoch_rsi_confluence | Paper | loop | session filter only, shadow logging — see below |
 | EURUSD | 15MIN | ny_session_momentum | Paper | loop | 37 bt trades, 75.7% WR, PF 1.64, follow mode |
-| US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50 |
-| US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best |
+| US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50. Walk-forward (2026-07-09): FRAGILE — median PF 1.03, 53.8% windows profitable, 171 trades across 13 windows |
+| US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best. Walk-forward (2026-07-09): FRAGILE — median PF 1.12, 69.2% windows profitable (one window short of ROBUST's 70% bar), 70 trades across 13 windows. The PF 3.17 sweep result did not survive — overfit |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
 | EURUSD | 15MIN | williams_r           | Paper | loop | Demoted from live 2026-07-07 — walk-forward REJECT (median PF 0.92, 42.9% windows profitable). 80/20 promotion result was a favorable-regime artifact |
 | AUDUSD | 15MIN | williams_r           | Paper | loop | Added 2026-07-07 — walk-forward MARGINAL (median PF 1.15, 100% windows profitable, best consistency of all candidates). No IG epic yet — paper only |
@@ -329,12 +329,36 @@ crypto-specific volatility approach is designed and backtested.
 
 ## Instrument Notes
 GBPUSD: mean reversion AND ema_pullback work (similar to EURUSD)
-USDJPY: all strategies failed — do not trade
+USDJPY: all strategies failed in old single-split tests — do not trade.
+        Re-examined 2026-07-09 specifically for williams_r under
+        walk-forward (see below) — still not promoted, but closest of
+        the expansion batch to ROBUST.
 DAX:    all strategies failed — do not trade
 
 STRATEGY_BLOCKLIST in scripts/select_strategy.py prevents daily cron from
 re-promoting any of the above. To unblock: remove the tuple from the set
 AND manually verify live performance warrants re-testing.
+
+### williams_r FX expansion batch (walk-forward, 2026-07-09)
+Tested williams_r (period=14, oversold=-85, overbought=-15 — same as
+AUDUSD paper entry) against 3 untested pairs, ~30k 15MIN candles each
+(Twelve Data via fetch_twelvedata.py), to see if AUDUSD's 100%-windows
+result was a property of williams_r as a signal class or pair-specific:
+- USDJPY: FRAGILE — median PF 1.13, 66.7% windows profitable (6
+  windows, 1091 trades). Closest to ROBUST but one window short of the
+  70% bar.
+- EURGBP: REJECT — median PF 0.97, 33.3% windows profitable (6
+  windows, 1004 trades).
+- NZDUSD: REJECT — median PF 0.93, 50.0% windows profitable (6
+  windows, 1181 trades).
+
+Conclusion: williams_r's edge does NOT generalize across FX pairs —
+AUDUSD's walk-forward result stands alone, not evidence of a portable
+signal class. No roster changes from this batch. Correction note: an
+initial follow-up claimed EURGBP scored ROBUST (median PF 1.42, 92.3%
+windows) — that number did not come from any run and was a reporting
+error, caught before any deploy. The REJECT figures above are the only
+real, reproduced result.
 
 US100 all strategies blocklisted 2026-06-12 — rsi_divergence was
 auto-promoted live by cron without review. All US100 strategies blocked
