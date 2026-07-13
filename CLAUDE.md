@@ -291,6 +291,8 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | EURUSD | HOUR | swiftalgo  | Live | webhook | Promoted 2026-05-27, $10 risk  |
 | US500  | HOUR | swiftalgo  | Live | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
 | GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $1.50 risk (halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades), no session blocks. Review at the 2026-07-21 gate alongside stoch_rsi US500 HOUR |
+| EURUSD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — promoted for regime-tagged execution data. Walk-forward status: original 2026-07-07 run REJECT (median PF 0.92, 42.9% windows), corrected 2026-07-14 rerun with rostered params (period=10, oversold=-90, overbought=-20) MARGINAL (median PF 1.08, 85.7% windows, 442 test trades) — verdict boundary-sensitive, NOT an edge promotion. Discrepancy investigated: same cache (predates the original run), same params (verified via active_strategy id=22 timestamp), same window count (7=7) ruling out a --count difference, no engine/strategy code changed since — root cause irreproducible because walk-forward runs were never persisted (no DB row, no saved output); likely a --session-filter or --max-hold CLI flag difference in the original invocation. $10 risk |
+| USDCAD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — never backtested before this batch. Walk-forward: REJECT (median PF 0.99, 50% windows, 410 test trades, default params period=14/oversold=-85/overbought=-15 — no prior rostered config existed). NOT an edge promotion — running live on demo purely for regime-tagged execution data. Epic CS.D.USDCAD.MINI.IP verified clean decimal scale (bid=1.41468, TRADEABLE) on demo (Z67Y2C) 2026-07-14; newly registered in ig_scale.py and execute_trade.py EPIC_CONFIG. $10 risk |
 
 ### Paper
 | Symbol | TF    | Strategy   | Mode  | Source | Notes                          |
@@ -304,7 +306,6 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50. Walk-forward (2026-07-09): FRAGILE — median PF 1.03, 53.8% windows profitable, 171 trades across 13 windows |
 | US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best. Walk-forward (2026-07-09): FRAGILE — median PF 1.12, 69.2% windows profitable (one window short of ROBUST's 70% bar), 70 trades across 13 windows. The PF 3.17 sweep result did not survive — overfit |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
-| EURUSD | 15MIN | williams_r           | Paper | loop | Demoted from live 2026-07-07 — walk-forward REJECT (median PF 0.92, 42.9% windows profitable). 80/20 promotion result was a favorable-regime artifact |
 | AUDUSD | 15MIN | williams_r           | Paper | loop | Added 2026-07-07 — walk-forward MARGINAL (median PF 1.15, 100% windows profitable, best consistency of all candidates). No IG epic yet — paper only |
 
 ## Deactivated Strategies (2026-05-27)
@@ -816,6 +817,10 @@ PHASE 9 — Online Learning / Strategy Auto-Generation
 - NEVER switch active strategy during market hours
 - active_strategy table = single source of truth
 - ALWAYS log strategy switches with reason
+- Any analysis of a rostered strategy must pull its real params
+  from active_strategy first — never assume file defaults
+  (3rd occurrence of this divergence, 2026-07-14: williams_r
+  EURUSD/GBPUSD live params differ from class defaults)
 - NEVER run live trades on paper symbols
 - Paper trade symbols controlled by PAPER_TRADE_SYMBOLS env
 - connors_rsi2 NOT active — designed for daily bars only

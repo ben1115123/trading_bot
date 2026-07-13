@@ -30,6 +30,7 @@ _EXPECTED_DECIMAL_RANGE: dict[str, tuple[float, float]] = {
     "EURUSD": (0.5, 2.0),
     "GBPUSD": (0.5, 2.5),
     "AUDUSD": (0.3, 1.5),
+    "USDCAD": (0.5, 2.0),
     "US500":  (500.0, 20000.0),
     "US100":  (2000.0, 100000.0),
     "DAX":    (2000.0, 100000.0),

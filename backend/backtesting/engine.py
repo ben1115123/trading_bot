@@ -5,6 +5,7 @@ from backend.backtesting.metrics import (
     calc_win_rate, calc_max_drawdown, calc_sharpe_ratio,
     calc_total_profit, calc_benchmark_return, calc_profit_factor,
 )
+from backend.backtesting.regime import classify_regimes
 
 WF_TRAIN_MONTHS        = 6
 WF_TEST_MONTHS         = 1
@@ -20,6 +21,10 @@ EPIC_CONFIG = {
     "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
     "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
     "USDJPY": {"epic": "CS.D.USDJPY.MINI.IP",    "value_per_point": 100},
+    "AUDUSD": {"epic": "CS.D.AUDUSD.MINI.IP",    "value_per_point": 10000},
+    "USDCAD": {"epic": "CS.D.USDCAD.MINI.IP",    "value_per_point": 10000},
+    "EURGBP": {"epic": "CS.D.EURGBP.MINI.IP",    "value_per_point": 10000},
+    "NZDUSD": {"epic": "CS.D.NZDUSD.MINI.IP",    "value_per_point": 10000},
 }
 
 RISK_PER_TRADE = 15.0  # USD, matches live bot
@@ -30,7 +35,11 @@ SPREAD_COSTS = {
     "DAX":    1.50,   # ~1pt spread x $1/pt per round trip
     "US100":  1.00,   # estimate
     "GBPUSD": 1.50,   # ~1.2 pips x $10/pip round trip
-    "USDJPY": 1.20,   # ~0.9 pips x $9/pip round trip
+    "USDJPY": 0.70,   # 0.7 pips (pip=0.01 for JPY pairs) x ~$1/pip round trip — corrected 2026-07-09, was 1.20
+    "AUDUSD": 0.60,   # ~0.6 pips x $10/pip round trip
+    "USDCAD": 0.90,   # ~0.9 pips x $10/pip round trip
+    "EURGBP": 1.00,   # 1.0 pip x ~$1/pip round trip
+    "NZDUSD": 1.00,   # 1.0 pip x ~$1/pip round trip
     "XAUUSD": 20.00,  # gold — for future use
     "BTC":    0.00,   # not trading
 }
@@ -145,7 +154,10 @@ def run_backtest(strategy, candles: list, symbol: str,
     all_signals = strategy.generate_signals(candles)
     test_signals = all_signals[split:]
 
-    trades = _simulate_trades(test, test_signals, symbol, max_hold_candles, session_filter)
+    regimes = classify_regimes(candles)
+    test_regimes = regimes[split:]
+
+    trades = _simulate_trades(test, test_signals, symbol, max_hold_candles, session_filter, test_regimes)
 
     return {
         "trades":           trades,
@@ -157,7 +169,8 @@ def run_backtest(strategy, candles: list, symbol: str,
 
 
 def _simulate_trades(test: list, test_signals: list, symbol: str,
-                     max_hold_candles: int = None, session_filter: str = None) -> list:
+                     max_hold_candles: int = None, session_filter: str = None,
+                     regimes: list = None) -> list:
     vpp = EPIC_CONFIG[symbol.upper()]["value_per_point"]
     spread_cost = SPREAD_COSTS.get(symbol.upper(), 0.75)
     trades = []
@@ -195,6 +208,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                         "pnl":           round(pnl, 2),
                         "duration_mins": max(0, dur),
                         "exit_reason":   "tp_hit",
+                        "regime":        open_trade.get("regime"),
                     })
                     open_trade = None
                     continue
@@ -218,6 +232,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                     "pnl":           -RISK_PER_TRADE - spread_cost,
                     "duration_mins": max(0, dur),
                     "exit_reason":   "sl_stop",
+                    "regime":        open_trade.get("regime"),
                 })
                 open_trade = None
                 continue  # don't re-open on same SL bar
@@ -249,6 +264,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                     "pnl":           round(pnl, 2),
                     "duration_mins": max(0, dur),
                     "exit_reason":   exit_reason,
+                    "regime":        open_trade.get("regime"),
                 })
                 open_trade = None
 
@@ -273,6 +289,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                 "size":             size,
                 "sl_price":         sl_price,
                 "tp_price":         sig.get("tp_price"),
+                "regime":           regimes[i] if regimes else None,
             }
 
     return trades
@@ -340,7 +357,10 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
         all_signals  = strategy.generate_signals(combined_candles)
         test_signals = all_signals[len(train_candles):]
 
-        trades = _simulate_trades(test_candles, test_signals, symbol, max_hold_candles, session_filter)
+        combined_regimes = classify_regimes(combined_candles)
+        test_regimes = combined_regimes[len(train_candles):]
+
+        trades = _simulate_trades(test_candles, test_signals, symbol, max_hold_candles, session_filter, test_regimes)
         combined_trades.extend(trades)
         window_results.append({
             "train_start": tr_start, "train_end": tr_end, "test_end": te_end,

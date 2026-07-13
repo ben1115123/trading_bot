@@ -16,13 +16,15 @@ from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 from bot.notifier import send_telegram
 from bot.candle_stream import get_candles as get_stream_candles
+from backend.backtesting.regime import classify_regimes
 
-SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD"]
+SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD", "USDCAD"]
 
 CANDLE_SOURCE = os.getenv("CANDLE_SOURCE", "yfinance").lower()  # 'yfinance' (default,
                                                                  # unchanged) | 'ig_stream'
 _PIP_SIZE = {
     "EURUSD": 0.0001, "GBPUSD": 0.0001, "AUDUSD": 0.0001, "EURGBP": 0.0001,
+    "USDCAD": 0.0001,
     "USDJPY": 0.01,
     "US500": 1.0, "US100": 1.0, "DAX": 1.0,
 }
@@ -37,7 +39,7 @@ MARKET_CLOSE = {
 TIMEFRAME_SECONDS: dict[str, int] = {"5MIN": 300, "15MIN": 900, "HOUR": 3600, "DAY": 86400}
 
 _SYMBOL_DECIMALS: dict[str, int] = {
-    "EURUSD": 5, "GBPUSD": 5, "EURGBP": 5, "AUDUSD": 5,
+    "EURUSD": 5, "GBPUSD": 5, "EURGBP": 5, "AUDUSD": 5, "USDCAD": 5,
     "USDJPY": 3,
     "US500": 2, "US100": 2, "DAX": 2,
     "XAUUSD": 2,
@@ -48,6 +50,7 @@ _MIN_SL_DIST: dict[str, float] = {
     "GBPUSD": 0.00060,
     "AUDUSD": 0.00050,
     "EURGBP": 0.00050,
+    "USDCAD": 0.00050,
     "USDJPY": 0.050,
     "US500":  3.0,
     "US100":  4.0,
@@ -362,6 +365,11 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
     candle_time = str(candle.get("time", ""))
     dedup_key   = f"{symbol}_{signal}_{candle_time}"
 
+    try:
+        regime = classify_regimes(candles)[-2]
+    except Exception:
+        regime = None
+
     log_data["signal"]      = signal
     log_data["candle_time"] = candle_time
 
@@ -393,6 +401,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
                     "outcome":       "PENDING",
                     "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
                     "notes":         f"SHADOW: filtered by {sig.get('shadow_reason')}",
+                    "regime":        regime,
                 })
                 print(f"[signal_loop] [{symbol}/{timeframe}/{strategy_name}] SHADOW {shadow_signal} "
                       f"logged (filtered by {sig.get('shadow_reason')})")
@@ -470,6 +479,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
                 "session":       _gate_sess,
                 "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
                 "notes":         f"SHADOW: blocked by session filter ({_gate_sess})",
+                "regime":        regime,
             })
             print(
                 f"[signal_loop] [{symbol}/{timeframe}/{strategy_name}] "
@@ -496,6 +506,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
             "outcome":       "PENDING",
             "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
             "session":       _get_session(_paper_now.hour),
+            "regime":        regime,
         })
         log_signal_check(log_data)
         print(f"[signal_loop] [{symbol}/{timeframe}] PAPER {signal} logged — not executed")
@@ -509,6 +520,7 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         "day_of_week":  _now_utc.weekday(),
         "session":      _get_session(_now_utc.hour),
         "spread":       None,
+        "regime":       regime,
     }
     try:
         _ema, _pve = _get_ema200(symbol)

@@ -30,6 +30,7 @@ EPIC_CONFIG = {
     "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
     "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
     "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
+    "USDCAD": {"epic": "CS.D.USDCAD.MINI.IP",    "value_per_point": 10000},
 }
 
 # -------------------------
@@ -102,20 +103,21 @@ recreate_session()
 _MIN_SL_DIST: dict[str, float] = {
     "EURUSD": 0.00050,
     "GBPUSD": 0.00060,
+    "USDCAD": 0.00050,
     "US500":  3.0,
     "US100":  4.0,
     "DAX":    5.0,
 }
 
 _SYMBOL_DECIMALS: dict[str, int] = {
-    "EURUSD": 5, "GBPUSD": 5,
+    "EURUSD": 5, "GBPUSD": 5, "USDCAD": 5,
     "US500": 2, "US100": 2, "DAX": 2,
 }
 
 # 1 pip per symbol — used only to gate [SL DRIFT] log/Telegram noise on the
 # always-reanchor path (sub-pip corrections aren't worth alerting on).
 _PIP_SIZE: dict[str, float] = {
-    "EURUSD": 0.0001, "GBPUSD": 0.0001,
+    "EURUSD": 0.0001, "GBPUSD": 0.0001, "USDCAD": 0.0001,
     "US500": 1.0, "US100": 1.0, "DAX": 1.0,
 }
 

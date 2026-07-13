@@ -543,11 +543,11 @@ def log_paper_trade(data: dict) -> None:
             INSERT INTO paper_trades
                 (checked_at, symbol, strategy_name, timeframe,
                  candle_time, signal, entry_price, sl, tp,
-                 simulated_pnl, outcome, params_json, notes, session)
+                 simulated_pnl, outcome, params_json, notes, session, regime)
             VALUES
                 (:checked_at, :symbol, :strategy_name, :timeframe,
                  :candle_time, :signal, :entry_price, :sl, :tp,
-                 :simulated_pnl, :outcome, :params_json, :notes, :session)
+                 :simulated_pnl, :outcome, :params_json, :notes, :session, :regime)
         """, {
             "checked_at":    data.get("checked_at", datetime.now(timezone.utc).isoformat()),
             "symbol":        data["symbol"],
@@ -563,6 +563,7 @@ def log_paper_trade(data: dict) -> None:
             "params_json":   data.get("params_json"),
             "notes":         data.get("notes"),
             "session":       data.get("session"),
+            "regime":        data.get("regime"),
         })
         conn.commit()
     finally:
@@ -710,7 +711,8 @@ def update_trade_context(symbol: str, source: str, context: dict) -> None:
                 price_vs_ema200 = :price_vs_ema200,
                 atr_at_entry    = :atr_at_entry,
                 day_of_week     = :day_of_week,
-                session         = :session
+                session         = :session,
+                regime          = :regime
             WHERE id = (
                 SELECT id FROM trades
                 WHERE symbol = :symbol AND source = :source AND status = 'OPEN'
@@ -726,6 +728,7 @@ def update_trade_context(symbol: str, source: str, context: dict) -> None:
             "atr_at_entry":    context.get("atr_at_entry"),
             "day_of_week":     context.get("day_of_week"),
             "session":         context.get("session"),
+            "regime":          context.get("regime"),
         })
         conn.commit()
     except Exception:

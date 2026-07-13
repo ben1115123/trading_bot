@@ -141,6 +141,7 @@ def init_db():
         "ALTER TABLE trades ADD COLUMN atr_at_entry REAL",
         "ALTER TABLE trades ADD COLUMN day_of_week INTEGER",
         "ALTER TABLE trades ADD COLUMN session TEXT",
+        "ALTER TABLE trades ADD COLUMN regime TEXT",
     ]:
         try:
             cursor.execute(stmt)
@@ -304,6 +305,12 @@ def init_db():
     # Migrate paper_trades: add notes column for shadow-logging (existing DBs)
     try:
         cursor.execute("ALTER TABLE paper_trades ADD COLUMN notes TEXT")
+    except Exception:
+        pass
+
+    # Migrate paper_trades: add regime column (entry-time ADX/ATR bucket tag)
+    try:
+        cursor.execute("ALTER TABLE paper_trades ADD COLUMN regime TEXT")
     except Exception:
         pass
 
