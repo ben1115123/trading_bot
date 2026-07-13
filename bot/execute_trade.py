@@ -112,6 +112,13 @@ _SYMBOL_DECIMALS: dict[str, int] = {
     "US500": 2, "US100": 2, "DAX": 2,
 }
 
+# 1 pip per symbol — used only to gate [SL DRIFT] log/Telegram noise on the
+# always-reanchor path (sub-pip corrections aren't worth alerting on).
+_PIP_SIZE: dict[str, float] = {
+    "EURUSD": 0.0001, "GBPUSD": 0.0001,
+    "US500": 1.0, "US100": 1.0, "DAX": 1.0,
+}
+
 # IG API rejection reason codes indicating a capacity/margin constraint.
 # Shadow-log these: the signal was valid but the broker had no room.
 # Other codes (e.g. ATTACHED_ORDER_LEVEL_ERROR) are bad-order errors —
@@ -273,20 +280,47 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
 
         print(f"Entry Price: {entry_price}")
 
-        # Guard: SL may be too close to IG live price due to yfinance data lag.
-        # If yf_entry (yfinance candle close) is supplied, use it to reconstruct
-        # the exact intended sl_dist and R:R ratio. Otherwise fall back to 2:1.
+        # yfinance candle close (yf_entry, signal-loop trades) always lags the
+        # live IG quote by some amount — sub-floor drift used to pass through
+        # uncorrected and silently degrade RR (e.g. trade 517: 1.44 vs
+        # intended 2.0). Signal-loop trades now always reanchor sl/tp to the
+        # live entry price, preserving the intended RR computed from
+        # yf_entry/sl/tp. The floor remains a secondary guard on the
+        # reanchored distance. Webhook trades (yf_entry=None) are unaffected —
+        # swiftalgo sets its own sl/tp by design and keeps the old
+        # floor-breach-only fallback.
         _min_dist = _MIN_SL_DIST.get(symbol)
-        if _min_dist is not None and abs(entry_price - sl) < _min_dist:
-            if yf_entry is not None and abs(yf_entry - sl) > 0:
-                _orig_sl_dist = abs(yf_entry - sl)
-                _orig_tp_dist = abs(tp - yf_entry)
-                _rr = _orig_tp_dist / _orig_sl_dist
+        _pip = _PIP_SIZE.get(symbol, _min_dist or 0.0001)
+        _log_threshold = 0.5 * _pip
+        _prec = _SYMBOL_DECIMALS.get(symbol, 5)
+
+        if yf_entry is not None and abs(yf_entry - sl) > 0:
+            _orig_sl_dist = abs(yf_entry - sl)
+            _orig_tp_dist = abs(tp - yf_entry)
+            _rr = _orig_tp_dist / _orig_sl_dist
+            _intended_sl_dist = max(_orig_sl_dist, _min_dist) if _min_dist is not None else _orig_sl_dist
+            if direction == "BUY":
+                sl = round(entry_price - _intended_sl_dist, _prec)
+                tp = round(entry_price + _rr * _intended_sl_dist, _prec)
             else:
-                _orig_sl_dist = abs(tp - sl) / 3  # fallback: assume 2:1
-                _rr = 2.0
+                sl = round(entry_price + _intended_sl_dist, _prec)
+                tp = round(entry_price - _rr * _intended_sl_dist, _prec)
+            _adjustment = abs(entry_price - yf_entry)
+            if _adjustment > _log_threshold:
+                print(
+                    f"[SL DRIFT] {symbol} reanchored to live price "
+                    f"(adj={_adjustment:.5f}). yf_entry={yf_entry} rr={_rr:.2f} "
+                    f"new_sl={sl} new_tp={tp}"
+                )
+                from bot.notifier import send_telegram
+                send_telegram(
+                    f"SL DRIFT {symbol} — reanchored to live price (adj={_adjustment:.5f})",
+                    level="WARN",
+                )
+        elif _min_dist is not None and abs(entry_price - sl) < _min_dist:
+            _orig_sl_dist = abs(tp - sl) / 3  # fallback: assume 2:1
+            _rr = 2.0
             _intended_sl_dist = max(_orig_sl_dist, _min_dist)
-            _prec = _SYMBOL_DECIMALS.get(symbol, 5)
             if direction == "BUY":
                 sl = round(entry_price - _intended_sl_dist, _prec)
                 tp = round(entry_price + _rr * _intended_sl_dist, _prec)
@@ -295,7 +329,7 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
                 tp = round(entry_price - _rr * _intended_sl_dist, _prec)
             print(
                 f"[SL DRIFT] {symbol} sl_dist was below min={_min_dist:.5f} — "
-                f"reanchored to live price. yf_entry={yf_entry} rr={_rr:.2f} "
+                f"reanchored to live price. rr={_rr:.2f} "
                 f"new_sl={sl} new_tp={tp}"
             )
             from bot.notifier import send_telegram

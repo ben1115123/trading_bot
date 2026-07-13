@@ -679,8 +679,10 @@ should run the bot.
 - live_signal_loop: dedup via last_fired[(symbol,timeframe)]
 - live_signal_loop: per-symbol try/except — one bad symbol
   won't kill the loop
-- SL/TP in signal loop: ATR-based absolute prices
-  (1.5× SL, 2.5× TP from candle high-low range)
+- SL/TP in signal loop: candle-range absolute prices
+  (flat 1× SL, 2× TP from candle high-low range, floored
+  per-symbol via _MIN_SL_DIST — NOT 1.5×/2.5×, corrected
+  2026-07-13, second doc drift on this exact item)
 - candles[-2] used (not [-1]) — avoids in-progress candle
 - PAPER_TRADE_SYMBOLS env var controls paper mode
   format: "DAX,US100_5MIN,BTC"
