@@ -397,6 +397,31 @@ def init_db():
         )
     """)
 
+    # Create walkforward_runs table — persists every walk-forward/stability-map/
+    # monte-carlo/permutation run so verdicts are auditable after the fact
+    # (fixes the unrecoverable-verdict gap found in the EURUSD discrepancy —
+    # walk-forward output used to be console-only, never stored anywhere).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS walkforward_runs (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_type          TEXT NOT NULL,
+            strategy_name     TEXT NOT NULL,
+            symbol            TEXT NOT NULL,
+            timeframe         TEXT,
+            params_json       TEXT,
+            cache_file        TEXT,
+            cache_candle_count INTEGER,
+            cache_date_start  TEXT,
+            cache_date_end    TEXT,
+            windows_json      TEXT,
+            verdict           TEXT,
+            median_pf         REAL,
+            pct_profitable    REAL,
+            extra_json        TEXT,
+            created_at        TEXT NOT NULL
+        )
+    """)
+
     # Commit changes and close connection
     conn.commit()
     conn.close()

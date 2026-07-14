@@ -971,3 +971,43 @@ def get_webhook_filter_stats(days: int = 7) -> list:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def insert_walkforward_run(data: dict) -> int:
+    """Persist one walk-forward/stability-map/monte-carlo/permutation run.
+    cache_file/cache_candle_count/cache_date_start/cache_date_end are the
+    fingerprint of the exact candle set used — the piece that was missing
+    when the EURUSD REJECT-vs-MARGINAL discrepancy turned out unrecoverable."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO walkforward_runs
+                (run_type, strategy_name, symbol, timeframe, params_json,
+                 cache_file, cache_candle_count, cache_date_start, cache_date_end,
+                 windows_json, verdict, median_pf, pct_profitable, extra_json, created_at)
+            VALUES
+                (:run_type, :strategy_name, :symbol, :timeframe, :params_json,
+                 :cache_file, :cache_candle_count, :cache_date_start, :cache_date_end,
+                 :windows_json, :verdict, :median_pf, :pct_profitable, :extra_json, :created_at)
+        """, {
+            "run_type":           data["run_type"],
+            "strategy_name":      data["strategy_name"],
+            "symbol":             data["symbol"],
+            "timeframe":          data.get("timeframe"),
+            "params_json":        data.get("params_json"),
+            "cache_file":         data.get("cache_file"),
+            "cache_candle_count": data.get("cache_candle_count"),
+            "cache_date_start":   data.get("cache_date_start"),
+            "cache_date_end":     data.get("cache_date_end"),
+            "windows_json":       data.get("windows_json"),
+            "verdict":            data.get("verdict"),
+            "median_pf":          data.get("median_pf"),
+            "pct_profitable":     data.get("pct_profitable"),
+            "extra_json":         data.get("extra_json"),
+            "created_at":         data.get("created_at", datetime.now(timezone.utc).isoformat()),
+        })
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()

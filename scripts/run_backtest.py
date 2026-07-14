@@ -107,12 +107,16 @@ load_dotenv()
 from trading_ig import IGService
 
 from ig_env import get_ig_credentials
+import backend.backtesting.engine as engine_mod
 from backend.backtesting.engine import (
-    fetch_candles, run_backtest, run_parameter_sweep, run_walk_forward,
+    fetch_candles, run_backtest, run_parameter_sweep, run_walk_forward, run_stability_map,
     WF_TRAIN_MONTHS, WF_MIN_WINDOWS,
 )
 from backend.backtesting.metrics import (
     calc_win_rate, calc_max_drawdown, calc_sharpe_ratio, calc_total_profit, calc_profit_factor,
+)
+from backend.backtesting.robustness import (
+    compute_plateau_metrics, find_clusters, bootstrap_mc, permutation_test,
 )
 from backend.strategies.rsi import RSIStrategy
 from backend.strategies.supertrend import SuperTrendStrategy
@@ -137,7 +141,18 @@ from backend.strategies.silver_bullet import SilverBulletStrategy
 from backend.strategies.ny_session_momentum import NYSessionMomentumStrategy
 from backend.strategies.ema_pullback import EMAPullbackStrategy
 from backend.strategies.rsi_divergence_session import RSIDivergenceSessionStrategy
-from database.models import insert_backtest_result, insert_backtest_trades
+from backend.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
+from backend.strategies.macd_crossover import MACDCrossoverStrategy
+from backend.strategies.donchian_breakout import DonchianBreakoutStrategy
+from backend.strategies.inside_bar_breakout import InsideBarBreakoutStrategy
+from backend.strategies.engulfing_candle import EngulfingCandleStrategy
+from backend.strategies.regime_adaptive import RegimeAdaptiveStrategy
+from backend.strategies.market_structure_break import MarketStructureBreakStrategy
+from backend.strategies.kama_crossover import KAMACrossoverStrategy
+from backend.strategies.ema_ribbon_pullback import EMARibbonPullbackStrategy
+from backend.strategies.hull_momentum import HullMomentumStrategy
+from backend.strategies.supertrend_ema_filter import SupertrendEMAFilterStrategy
+from database.models import insert_backtest_result, insert_backtest_trades, insert_walkforward_run
 
 STRATEGIES = {
     "rsi":        RSIStrategy,
@@ -163,6 +178,17 @@ STRATEGIES = {
     "ny_session_momentum":  NYSessionMomentumStrategy,
     "ema_pullback":         EMAPullbackStrategy,
     "rsi_divergence_session": RSIDivergenceSessionStrategy,
+    "rsi_mean_reversion":   RSIMeanReversionStrategy,
+    "macd_crossover":       MACDCrossoverStrategy,
+    "donchian_breakout":    DonchianBreakoutStrategy,
+    "inside_bar_breakout":  InsideBarBreakoutStrategy,
+    "engulfing_candle":        EngulfingCandleStrategy,
+    "regime_adaptive":         RegimeAdaptiveStrategy,
+    "market_structure_break":  MarketStructureBreakStrategy,
+    "kama_crossover":          KAMACrossoverStrategy,
+    "ema_ribbon_pullback":     EMARibbonPullbackStrategy,
+    "hull_momentum":           HullMomentumStrategy,
+    "supertrend_ema_filter":   SupertrendEMAFilterStrategy,
 }
 
 PARAM_GRIDS = {
@@ -310,6 +336,36 @@ PARAM_GRIDS = {
         "sl_atr_mult":     [1.0, 1.5],
         "tp_atr_mult":     [2.0, 2.5],
     },
+    "regime_adaptive": {
+        "ema_fast":        [8, 13],
+        "ema_slow":        [21, 50],
+        "atr_trend_mult":  [1.0, 1.2, 1.5],
+        "bb_std":          [1.5, 2.0],
+        "sl_atr_mult":     [1.0, 1.5],
+        "tp_atr_mult":     [2.0, 2.5, 3.0],
+    },
+    "market_structure_break": {
+        "swing_bars":   [8, 10, 15, 20],
+        "sl_atr_mult":  [1.0, 1.5],
+        "tp_atr_mult":  [2.0, 2.5, 3.0],
+    },
+    "kama_crossover": {
+        "period":        [8, 10, 14],
+        "slope_window":  [2, 3, 5],
+        "atr_min_filter": [0.00030],
+        "min_sl_dist":    [0.00050],
+    },
+}
+
+# Grids for --stability-map (full walk-forward per cell, not single-split).
+# Deliberately separate from PARAM_GRIDS (single-split sweep) — stability
+# maps are much more expensive per cell so grids here should stay coarse.
+STABILITY_GRIDS = {
+    "williams_r": {
+        "period":     [8, 10, 12, 14, 16, 18, 21],
+        "oversold":   [-95, -90, -85, -80],
+        "overbought": [-20, -15, -10],
+    },
 }
 
 
@@ -391,7 +447,121 @@ def _print_walk_forward(strategy_name, symbol, timeframe, wf, params):
     print()
 
 
+def _cache_fingerprint(candles: list, cache_file: str) -> dict:
+    return {
+        "cache_file":         cache_file,
+        "cache_candle_count": len(candles),
+        "cache_date_start":   str(candles[0]["time"]) if candles else None,
+        "cache_date_end":     str(candles[-1]["time"]) if candles else None,
+    }
+
+
+def _persist_wf_run(run_type, strategy_name, symbol, timeframe, params, fingerprint,
+                    windows=None, verdict=None, median_pf=None, pct_profitable=None,
+                    extra=None) -> int:
+    return insert_walkforward_run({
+        "run_type":       run_type,
+        "strategy_name":  strategy_name,
+        "symbol":         symbol,
+        "timeframe":      timeframe,
+        "params_json":    json.dumps(params),
+        "windows_json":   json.dumps(windows, default=str) if windows is not None else None,
+        "verdict":        verdict,
+        "median_pf":      median_pf,
+        "pct_profitable": pct_profitable,
+        "extra_json":     json.dumps(extra, default=str) if extra is not None else None,
+        **fingerprint,
+    })
+
+
+def _pf_block(pf: float) -> str:
+    if pf >= 1.2:
+        return "██"
+    if pf >= 1.0:
+        return "▓▓"
+    return "░░"
+
+
+def _print_stability_heatmaps(stability: dict) -> None:
+    keys = stability["keys"]  # e.g. ["period", "oversold", "overbought"]
+    grid = stability["grid"]
+    if keys != ["period", "oversold", "overbought"]:
+        # Generic fallback — flat cell list, no heatmap layout assumed.
+        for cell in stability["cells"]:
+            print(f"  {cell['params']}  PF={cell['median_pf']}  {cell['pct_profitable']}% windows")
+        return
+
+    periods = grid["period"]
+    by_key = {(c["params"]["period"], c["params"]["oversold"], c["params"]["overbought"]): c
+              for c in stability["cells"]}
+
+    print(f"\n  Legend: ██ PF>=1.2   ▓▓ PF 1.0-1.2   ░░ PF<1.0\n")
+    for overbought in grid["overbought"]:
+        for oversold in grid["oversold"]:
+            print(f"  overbought={overbought}  oversold={oversold}")
+            print(f"  period:   " + "".join(f"{p:>6}" for p in periods))
+            row_pf  = "  PF:      "
+            row_win = "  windows: "
+            for p in periods:
+                cell = by_key[(p, oversold, overbought)]
+                row_pf  += f"  {_pf_block(cell['median_pf'])}  "
+                row_win += f"{cell['pct_profitable']:>5.0f}%"
+            print(row_pf)
+            print(row_win)
+            print()
+
+
+def _print_plateau_report(plateau: dict) -> None:
+    bc, bp = plateau["best_cell"], plateau["best_plateau"]
+    print(f"  Best single cell:  {bc['params']}  PF={bc['median_pf']}  "
+          f"neighbor_avg={bc['neighbor_avg_pf']}")
+    if bp:
+        print(f"  Best PLATEAU:      {bp['params']}  PF={bp['median_pf']}  "
+              f"neighbor_avg={bp['neighbor_avg_pf']}  <- recommended over best single cell")
+    if plateau["spike_flag"]:
+        print(f"  ⚠️  SPIKE flag: best cell's neighbors average PF < 1.0 — "
+              f"isolated result, overfit signature")
+    print()
+
+
+def _print_clusters(clusters: list) -> None:
+    if not clusters:
+        print("  No contiguous region with median PF >= threshold found.\n")
+        return
+    print(f"  {len(clusters)} region(s) found (largest first):")
+    for i, c in enumerate(clusters, 1):
+        print(f"  Region {i}: size={c['size']} cells, center={c['center_params']}, "
+              f"center PF={c['center_cell']['median_pf']}")
+    print()
+
+
+def _print_mc(mc: dict) -> None:
+    if "error" in mc:
+        print(f"  MC error: {mc['error']}\n")
+        return
+    print(f"  Bootstrap MC: {mc['n_iter']} iterations, {mc['n_trades']} trades/path, "
+          f"${mc['account']:.0f} account, ${mc['risk_per_trade']:.0f} risk/trade")
+    print(f"  P&L    p5={mc['pnl_p5']:.2f}  p25={mc['pnl_p25']:.2f}  median={mc['pnl_median']:.2f}  "
+          f"p75={mc['pnl_p75']:.2f}  p95={mc['pnl_p95']:.2f}")
+    print(f"  MaxDD  p5={mc['dd_p5']:.2f}  p25={mc['dd_p25']:.2f}  median={mc['dd_median']:.2f}  "
+          f"p75={mc['dd_p75']:.2f}  p95={mc['dd_p95']:.2f}")
+    print(f"  RISK OF RUIN (drawdown > ${mc['ruin_threshold_dollars']:.0f}): {mc['risk_of_ruin_pct']}%")
+    print()
+
+
+def _print_permutation(perm: dict) -> None:
+    print(f"  Real median PF: {perm['real_median_pf']}  ({perm['real_verdict']})")
+    print(f"  Synthetic (noise) median PF, {perm['n_iter']} runs: {perm['synthetic_pf_median']}")
+    print(f"  Real result percentile vs synthetic distribution: {perm['percentile']}%")
+    verdict = "EDGE CONFIRMED (>95th percentile)" if perm["edge_confirmed"] else "NOT DISTINGUISHABLE FROM NOISE (<=95th percentile)"
+    print(f"  {verdict}")
+    print()
+
+
 def main():
+    from database.db import init_db
+    init_db()  # idempotent — ensures walkforward_runs (and any other pending migration) exists
+
     parser = argparse.ArgumentParser(description="Run strategy backtest against IG historical data.")
     parser.add_argument("--symbol",    required=True,       help="US500 | US100 | BTC")
     parser.add_argument("--timeframe", required=True,       help="MINUTE | HOUR | DAY")
@@ -411,6 +581,22 @@ def main():
     parser.add_argument("--walk-forward",   action="store_true",
                         help="Rolling walk-forward validation (train=6mo/test=1mo/step=1mo, "
                              "shrinks to 4mo train if <4 windows) instead of the 80/20 split")
+    parser.add_argument("--stability-map",  action="store_true",
+                        help="Full walk-forward across a parameter grid (STABILITY_GRIDS) instead "
+                             "of a single param set — per-cell PF/window%%, plateau/spike analysis, "
+                             "contiguous-region clusters")
+    parser.add_argument("--monte-carlo",    action="store_true",
+                        help="Bootstrap trade-sequence resampling. Standalone: strategy's default "
+                             "params. Combined with --stability-map: auto-applies to top-N plateau cells")
+    parser.add_argument("--permutation",    action="store_true",
+                        help="Masters-method permutation test — shuffle log returns to destroy price "
+                             "structure, compare real result's percentile vs the synthetic distribution")
+    parser.add_argument("--mc-iter",   type=int, default=1000, help="Monte Carlo iterations (default 1000)")
+    parser.add_argument("--perm-iter", type=int, default=200,  help="Permutation test iterations (default 200)")
+    parser.add_argument("--cluster-threshold", type=float, default=1.1,
+                        help="Min median PF for a stability-map cell to count toward cluster regions")
+    parser.add_argument("--top-n", type=int, default=5,
+                        help="Top plateau cells to auto-MC when --stability-map + --monte-carlo")
     args = parser.parse_args()
 
     strategy_key = args.strategy.lower()
@@ -450,6 +636,82 @@ def main():
             print(f"Saved to cache.")
     print()
 
+    cache_file_name = {
+        "alphavantage": f"{args.symbol.upper()}_{args.timeframe.upper()}_AV.json",
+        "ig_cache":     f"{args.symbol.upper()}_{args.timeframe.upper()}_IG.json",
+    }.get(args.source, _cache_path(args.symbol, args.timeframe, args.count, args.source).name)
+    fingerprint = _cache_fingerprint(candles, cache_file_name)
+
+    if args.stability_map:
+        engine_mod.RISK_PER_TRADE = 10.0  # match the $10-risk account used by MC downstream
+        if strategy_key not in STABILITY_GRIDS:
+            print(f"No STABILITY_GRIDS entry for '{strategy_key}'. Available: {list(STABILITY_GRIDS)}")
+            sys.exit(1)
+        grid = STABILITY_GRIDS[strategy_key]
+        combos = 1
+        for v in grid.values():
+            combos *= len(v)
+        print(f"Sweep size: {combos} cells x full walk-forward each — {strategy_key} {args.symbol} {args.timeframe}")
+        print(f"Grid: {grid}\n")
+
+        stability = run_stability_map(strategy_class, candles, args.symbol, grid,
+                                      max_hold_candles=args.max_hold, session_filter=args.session_filter)
+        _print_stability_heatmaps(stability)
+
+        plateau = compute_plateau_metrics(stability)
+        _print_plateau_report(plateau)
+
+        clusters = find_clusters(stability, threshold=args.cluster_threshold)
+        _print_clusters(clusters)
+
+        for cell in stability["cells"]:
+            _persist_wf_run("stability_map", strategy_class.name, args.symbol, args.timeframe,
+                            cell["params"], fingerprint,
+                            verdict=cell["verdict"], median_pf=cell["median_pf"],
+                            pct_profitable=cell["pct_profitable"],
+                            extra={"neighbor_avg_pf": cell.get("neighbor_avg_pf")})
+        print(f"Persisted {len(stability['cells'])} cells to walkforward_runs.")
+
+        if args.monte_carlo:
+            ranked = sorted((c for c in stability["cells"] if c.get("neighbor_avg_pf") is not None),
+                            key=lambda c: c["neighbor_avg_pf"], reverse=True)[:args.top_n]
+            print(f"\nAuto Monte Carlo on top-{len(ranked)} plateau cells "
+                  f"(MC every parameter set, not just one):\n")
+            for cell in ranked:
+                print(f"  {cell['params']}  (plateau neighbor_avg={cell['neighbor_avg_pf']})")
+                mc = bootstrap_mc(cell["combined_trades"], n_iter=args.mc_iter)
+                _print_mc(mc)
+                _persist_wf_run("monte_carlo", strategy_class.name, args.symbol, args.timeframe,
+                                cell["params"], fingerprint, extra=mc)
+        return
+
+    if args.monte_carlo and not args.walk_forward:
+        engine_mod.RISK_PER_TRADE = 10.0
+        strategy = strategy_class()
+        params   = strategy.params
+        wf = run_walk_forward(strategy_class, candles, args.symbol, params=params,
+                              max_hold_candles=args.max_hold, session_filter=args.session_filter)
+        print(f"Base walk-forward: median PF={wf['median_pf']}  verdict={wf['verdict']}\n")
+        mc = bootstrap_mc(wf["combined_trades"], n_iter=args.mc_iter)
+        _print_mc(mc)
+        _persist_wf_run("monte_carlo", strategy_class.name, args.symbol, args.timeframe,
+                        params, fingerprint, verdict=wf["verdict"], median_pf=wf["median_pf"],
+                        pct_profitable=wf["pct_profitable"], extra=mc)
+        if not args.permutation:
+            return
+
+    if args.permutation:
+        strategy = strategy_class()
+        params   = strategy.params
+        print(f"Permutation test ({args.perm_iter} synthetic runs)...\n")
+        perm = permutation_test(strategy_class, candles, args.symbol, params, n_iter=args.perm_iter,
+                                max_hold_candles=args.max_hold, session_filter=args.session_filter)
+        _print_permutation(perm)
+        _persist_wf_run("permutation", strategy_class.name, args.symbol, args.timeframe,
+                        params, fingerprint, verdict=perm["real_verdict"],
+                        median_pf=perm["real_median_pf"], extra=perm)
+        return
+
     if args.walk_forward:
         if args.sweep:
             param_grid = PARAM_GRIDS[strategy_key]
@@ -463,6 +725,9 @@ def main():
                 wf = run_walk_forward(strategy_class, candles, args.symbol, params=params,
                                       max_hold_candles=args.max_hold, session_filter=args.session_filter)
                 _print_walk_forward(strategy_class.name, args.symbol, args.timeframe, wf, params)
+                _persist_wf_run("walk_forward", strategy_class.name, args.symbol, args.timeframe,
+                                params, fingerprint, windows=wf["windows"], verdict=wf["verdict"],
+                                median_pf=wf["median_pf"], pct_profitable=wf["pct_profitable"])
             print(f"Overfitting reminder: {combos} parameter combinations were walk-forward "
                   f"tested. Even walk-forward results can overfit across a wide sweep — "
                   f"treat top results as candidates, not conclusions.")
@@ -472,6 +737,9 @@ def main():
             wf = run_walk_forward(strategy_class, candles, args.symbol, params=params,
                                   max_hold_candles=args.max_hold, session_filter=args.session_filter)
             _print_walk_forward(strategy_class.name, args.symbol, args.timeframe, wf, params)
+            _persist_wf_run("walk_forward", strategy_class.name, args.symbol, args.timeframe,
+                            params, fingerprint, windows=wf["windows"], verdict=wf["verdict"],
+                            median_pf=wf["median_pf"], pct_profitable=wf["pct_profitable"])
         return
 
     if args.sweep:

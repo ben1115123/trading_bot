@@ -399,3 +399,27 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
         "combined_trades": combined_trades, "combined_pnl": combined_pnl,
         "verdict": verdict, "verdict_reason": verdict_reason,
     }
+
+
+def run_stability_map(strategy_class, candles: list, symbol: str, param_grid: dict,
+                      max_hold_candles: int = None, session_filter: str = None) -> dict:
+    """Full walk-forward (not single 80/20 split) across every cell of param_grid.
+    One cell = one full run_walk_forward call. Returns the grid plus one result
+    dict per cell — plateau/spike/cluster analysis happens in robustness.py,
+    this function only runs the sweep and reports raw per-cell numbers."""
+    keys = list(param_grid.keys())
+    cells = []
+    for combo in itertools.product(*param_grid.values()):
+        params = dict(zip(keys, combo))
+        wf = run_walk_forward(strategy_class, candles, symbol, params=params,
+                              max_hold_candles=max_hold_candles, session_filter=session_filter)
+        cells.append({
+            "params":          params,
+            "median_pf":       wf["median_pf"],
+            "pct_profitable":  wf["pct_profitable"],
+            "verdict":         wf["verdict"],
+            "windows":         len(wf["windows"]),
+            "combined_pnl":    wf["combined_pnl"],
+            "combined_trades": wf["combined_trades"],
+        })
+    return {"keys": keys, "grid": param_grid, "cells": cells}
