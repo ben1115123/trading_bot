@@ -540,6 +540,53 @@ Weekend close: auto-closes US500/US100/DAX at 20:40 UTC Friday
   IG historical API: 10,000 points/week — reserved for
   live execution only, never for backtesting
 
+### CANDLE_SOURCE flip: yfinance → ig_stream (2026-07-15)
+Live signal-loop candle source flipped from yfinance to ig_stream in
+.env (all symbols). Justified by candle_source_compare data (2,845
+cycles, 2026-07-08→07-15):
+- Indices (US500/US100, 15MIN+HOUR): yfinance genuinely stale
+  off-session — median real lag 6.5–11.5h vs stream, HOUR timeframe
+  0% timestamp agreement ever. Matches the mechanism behind a lost
+  MINIMUM_ORDER_SIZE_ERROR incident (raw logs unrecoverable — container
+  recreate wiped them before they could be pulled; see min-deal-size
+  guard below, added independently of that incident's specific detail).
+- FX (AUDUSD/EURUSD/GBPUSD, 15MIN): deltas real but small (median
+  0.4–3.9 pips), disagreement direction ambiguous-to-opposite (stream
+  sometimes the lagging side, median ≈ −900s in mismatches) — flipped
+  anyway per explicit instruction (stream "strictly better"), holds
+  the comparison-logger open one more week to confirm.
+
+**Post-flip incidents caught same-day, both patched**:
+1. Index Lightstreamer topics (US500/US100) confirmed subscribed+
+   connected but stopped delivering ticks — stream buffer silently
+   froze 6+ hours while REST snapshot showed the market actively
+   TRADEABLE and moving. Root cause not yet diagnosed (subscription
+   format vs demo-environment Lightstreamer coverage vs aggregation
+   failure — three live hypotheses, undetermined).
+2. Comparison logger (`_log_candle_comparison`) was only ever called
+   from the yfinance-primary branch — flipping silently killed the
+   exact dataset needed for post-flip verification. Now also called
+   from the ig_stream branch (inverted: stream primary, yfinance
+   reference), kept running for the one-week confirmation window.
+
+**Mitigation deployed**: stream-staleness guard in `_check_symbol`
+(`bot/live_signal_loop.py`) — if the stream's latest candle is older
+than 3x the timeframe: FX falls back to yfinance for that fetch
+(rate-limited Telegram WARN, once/6h/symbol); indices skip the check
+entirely with no yfinance fallback (off-session yfinance staleness is
+the exact failure this flip was meant to fix, so an untrusted-stale
+source is worse than skipping).
+
+**Known open item**: 15MIN index candles (client-side-aggregated from
+3x5MIN, per the Lightstreamer commit) showed one future-dated timestamp
+(`2026-07-15T10:30:00+00:00` when actual time was 02:32 UTC) — HOUR
+timeframe (native IG resolution, no aggregation) was correct at the
+same moment. Single data point, not yet confirmed persistent. The
+staleness guard does NOT catch future-dated timestamps (age computes
+negative, passes the "not stale" check) — needs either a sanity bound
+on both directions or root-causing the aggregator. Follow-up, not yet
+fixed.
+
 ## Paper Trading System
 - paper_trades table in DB — logs every paper signal
 - outcome: PENDING → WIN/LOSS (resolved each loop cycle)
