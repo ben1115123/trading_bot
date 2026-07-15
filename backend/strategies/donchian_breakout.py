@@ -1,0 +1,90 @@
+from backend.strategies.base import Strategy
+
+
+class DonchianBreakoutStrategy(Strategy):
+    name = "donchian_breakout"
+
+    def __init__(self, params: dict = None):
+        defaults = {
+            "donchian_period": 20,
+            "atr_period":      14,
+            "atr_avg_period":  20,
+            "ema_period":      50,
+        }
+        super().__init__({**defaults, **(params or {})})
+
+    def generate_signals(self, candles: list) -> list:
+        donchian_period = self.params["donchian_period"]
+        atr_period      = self.params["atr_period"]
+        atr_avg_period  = self.params["atr_avg_period"]
+        ema_period      = self.params["ema_period"]
+
+        closes = [c["close"] for c in candles]
+        n = len(candles)
+
+        atr      = self._calc_atr(candles, atr_period)
+        atr_avg  = self._calc_sma(atr, atr_avg_period)
+        ema      = self._calc_ema(closes, ema_period)
+
+        signals = []
+        for i in range(n):
+            if i < donchian_period or atr[i] is None or atr_avg[i] is None or ema[i] is None:
+                signals.append({"index": i, "signal": "NONE"})
+                continue
+
+            window = candles[i - donchian_period:i]
+            upper  = max(c["high"] for c in window)
+            lower  = min(c["low"] for c in window)
+            close  = closes[i]
+
+            breakout_up   = close > upper
+            breakout_down = close < lower
+            vol_expanding = atr[i] > atr_avg[i]
+
+            if breakout_up and vol_expanding and close > ema[i]:
+                signals.append({"index": i, "signal": "BUY"})
+            elif breakout_down and vol_expanding and close < ema[i]:
+                signals.append({"index": i, "signal": "SELL"})
+            else:
+                signals.append({"index": i, "signal": "NONE"})
+
+        return signals
+
+    def _calc_atr(self, candles: list, period: int) -> list:
+        n = len(candles)
+        trs = [0.0] * n
+        for i in range(n):
+            c = candles[i]
+            if i == 0:
+                trs[i] = c["high"] - c["low"]
+            else:
+                pc = candles[i - 1]["close"]
+                trs[i] = max(c["high"] - c["low"], abs(c["high"] - pc), abs(c["low"] - pc))
+
+        atrs = [None] * n
+        if n >= period:
+            atrs[period - 1] = sum(trs[:period]) / period
+            for i in range(period, n):
+                atrs[i] = (atrs[i - 1] * (period - 1) + trs[i]) / period
+        return atrs
+
+    def _calc_sma(self, values: list, period: int) -> list:
+        n = len(values)
+        out = [None] * n
+        for i in range(period - 1, n):
+            window = values[i - period + 1:i + 1]
+            if any(v is None for v in window):
+                continue
+            out[i] = sum(window) / period
+        return out
+
+    def _calc_ema(self, closes: list, period: int) -> list:
+        n = len(closes)
+        out = [None] * n
+        if n < period:
+            return out
+        out[period - 1] = sum(closes[:period]) / period
+        k = 2.0 / (period + 1)
+        for i in range(period, n):
+            out[i] = closes[i] * k + out[i - 1] * (1 - k)
+        return out
