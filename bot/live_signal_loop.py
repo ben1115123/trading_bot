@@ -245,9 +245,12 @@ def _is_paper_trade(symbol: str, timeframe: str) -> bool:
 
 
 def _log_candle_comparison(symbol: str, timeframe: str, yf_candles: list) -> None:
-    """Parallel validation: yfinance vs IG stream latest-close delta. Only
-    called while CANDLE_SOURCE is still 'yfinance' -- never blocks or
-    affects the actual trading fetch path above it.
+    """Parallel validation: yfinance vs IG stream latest-close delta. Called
+    from both branches regardless of which source is CANDLE_SOURCE-primary
+    (pre-flip: yfinance drives trades, this validates against stream;
+    post-flip: stream drives trades, this validates against yfinance as a
+    one-week confirmation window) -- never blocks or affects the actual
+    trading fetch path above it.
     yf_candles[-2] matches this file's existing convention (candles[-1] is
     the in-progress current candle). The stream buffer, by contrast, only
     ever contains genuinely completed candles (CONS_END-gated / REST is
@@ -325,6 +328,21 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         if CANDLE_SOURCE == "ig_stream":
             candles = get_stream_candles(symbol, timeframe)
             fetch_err = None if candles is not None else "ig_stream buffer not warm yet"
+            if candles:
+                print(f"[signal_loop] [{symbol}/{timeframe}] candle source: ig_stream "
+                      f"({len(candles)} candles, latest={candles[-1].get('time')})")
+                # Post-flip verification window: comparison logger keeps running
+                # inverted (stream now authoritative, yfinance the secondary/
+                # reference series) — same candle_source_compare table, same
+                # _log_candle_comparison function, just called from this branch
+                # too now. Best-effort: yfinance fetch failure here must never
+                # block the live (stream-driven) trading path above it.
+                try:
+                    yf_candles = _fetch_yfinance_candles(symbol, timeframe, 500)
+                    if yf_candles:
+                        _log_candle_comparison(symbol, timeframe, yf_candles)
+                except Exception as e:
+                    print(f"[signal_loop] [{symbol}] post-flip comparison log failed: {e}")
         else:
             try:
                 candles   = _fetch_yfinance_candles(symbol, timeframe, 500)
