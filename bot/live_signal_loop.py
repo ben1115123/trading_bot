@@ -568,7 +568,7 @@ _EPIC_VALUE_PER_POINT = {
     "US500": 1.0, "US100": 1.0, "DAX": 1.0, "BTC": 0.1,
     "EURUSD": 10000.0,  # CS.D.EURUSD.MINI.IP: $1/pip, 0.0001 pip, contract=10k
     "GBPUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — same as EURUSD
-    "AUDUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — paper only, no IG epic yet
+    "AUDUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — CS.D.AUDUSD.MINI.IP
 }
 
 

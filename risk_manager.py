@@ -7,6 +7,7 @@ RISK_PER_TRADE_OVERRIDE = {
     "EURUSD": 10.0,
     "GBPUSD": 10.0,
     "USDCAD": 10.0,
+    "AUDUSD": 10.0,
 }
 
 

@@ -293,6 +293,7 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $1.50 risk (halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades), no session blocks. Review at the 2026-07-21 gate alongside stoch_rsi US500 HOUR |
 | EURUSD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — promoted for regime-tagged execution data. Walk-forward status: original 2026-07-07 run REJECT (median PF 0.92, 42.9% windows), corrected 2026-07-14 rerun with rostered params (period=10, oversold=-90, overbought=-20) MARGINAL (median PF 1.08, 85.7% windows, 442 test trades) — verdict boundary-sensitive, NOT an edge promotion. Discrepancy investigated: same cache (predates the original run), same params (verified via active_strategy id=22 timestamp), same window count (7=7) ruling out a --count difference, no engine/strategy code changed since — root cause irreproducible because walk-forward runs were never persisted (no DB row, no saved output); likely a --session-filter or --max-hold CLI flag difference in the original invocation. $10 risk |
 | USDCAD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — never backtested before this batch. Walk-forward: REJECT (median PF 0.99, 50% windows, 410 test trades, default params period=14/oversold=-85/overbought=-15 — no prior rostered config existed). NOT an edge promotion — running live on demo purely for regime-tagged execution data. Epic CS.D.USDCAD.MINI.IP verified clean decimal scale (bid=1.41468, TRADEABLE) on demo (Z67Y2C) 2026-07-14; newly registered in ig_scale.py and execute_trade.py EPIC_CONFIG. $10 risk |
+| AUDUSD | 15MIN | williams_r | Live | loop   | **Phase-3 lead candidate** (2026-07-15) — promoted paper→demo-live on full-stack validation, NOT a data-collection instance: walk-forward ROBUST (median PF 1.285, 83.3% windows profitable, 6 windows — corrected for the plateau-center params below; the original -15 config's 100%-windows/MARGINAL number was a different cell), stability-map plateau (23 contiguous cells at PF>=1.1, not a spike), permutation test 96th percentile vs synthetic noise, Monte Carlo positive at every percentile (p5=$707 to p95=$2621 on $500/$10-risk, 1000 paths). Params corrected period=14/oversold=-85/**overbought=-20** (was -15 — the rostered row predated the stability map; -20 is the plateau center). Epic CS.D.AUDUSD.MINI.IP verified clean decimal scale (bid=0.6987, TRADEABLE) on demo (Z67Y2C) 2026-07-15; newly registered in ig_scale.py/execute_trade.py EPIC_CONFIG (was paper-only). $10 risk (demo — no bankroll to protect; live sizing per the MC ruin table below comes at Phase 5) |
 
 ### Paper
 | Symbol | TF    | Strategy   | Mode  | Source | Notes                          |
@@ -306,7 +307,6 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50. Walk-forward (2026-07-09): FRAGILE — median PF 1.03, 53.8% windows profitable, 171 trades across 13 windows |
 | US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best. Walk-forward (2026-07-09): FRAGILE — median PF 1.12, 69.2% windows profitable (one window short of ROBUST's 70% bar), 70 trades across 13 windows. The PF 3.17 sweep result did not survive — overfit |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
-| AUDUSD | 15MIN | williams_r           | Paper | loop | Added 2026-07-07 — walk-forward MARGINAL (median PF 1.15, 100% windows profitable, best consistency of all candidates). No IG epic yet — paper only |
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -451,7 +451,30 @@ deleted. Re-apply the scaling plan above when reverting to LIVE.
 | EURUSD | $10        | Demo validation phase (2026-07-08) |
 | GBPUSD | $10        | Demo validation phase — FRAGILE-verdict half-risk suspended, not deleted |
 | US500  | $10        | Demo validation phase (2026-07-08) |
+| USDCAD | $10        | Data-collection instance (2026-07-14) |
+| AUDUSD | $10        | Demo — no bankroll to protect. Phase-3 lead candidate (2026-07-15); real sizing per the ruin table below at Phase 5 |
 | All    | $10        | Default                       |
+
+### Phase-5 Sizing Reference — Monte Carlo Risk-of-Ruin (2026-07-15)
+Bootstrap MC (5000 paths, shared resampled paths across configs, seed=42)
+on williams_r AUDUSD 15MIN (period=14/oversold=-85/overbought=-20, the
+promoted plateau-center params), $500 account:
+
+| Risk/trade | Risk-of-ruin | Risk/trade | Risk-of-ruin |
+|-----------|--------------|-----------|--------------|
+| $2        | 0.00%        | $5        | 5.58%        |
+| $3        | 0.18%        | $5.50     | 9.56%        |
+| $4        | 1.52%        | $6        | 15.24%       |
+| $4.75     | 4.54%        | $7.50     | 37.44%       |
+
+**Headline: 1% risk-of-account ≈ 5.6% ruin probability** ($5/$500 or
+equivalently $10/$1000 — confirmed identical by the model, since ruin
+depends only on risk-as-fraction-of-account). Largest size under 10%
+ruin: $5.50/$500 (9.56%). Largest under 5%: $4.75/$500 (4.54%). Full
+sweep (16 configs incl. $10 risk on $1000/$2000/$5000 accounts) persisted
+in `walkforward_runs` (run_type='monte_carlo'). This is a reference for
+Phase 5 live-account sizing — demo currently runs flat $10 regardless
+(no bankroll at risk).
 
 ### Paper Trade Risk Override (added 2026-06-12)
 Paper trades always use $10 risk regardless of symbol (RISK_PER_TRADE
