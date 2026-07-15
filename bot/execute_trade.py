@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from risk_manager import calculate_position_size
+from risk_manager import calculate_position_size, get_risk_per_trade
 from database.models import log_trade, log_paper_trade
 from ig_env import get_ig_credentials
 import ig_scale
@@ -344,6 +344,69 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         if size is None:
             print("Position sizing failed — aborting")
             return False
+
+        # Guard against IG's real minDealSize being above our calculated size —
+        # this is a distinct floor from risk_manager's own hardcoded MIN_LOT_SIZE
+        # (0.1), which can be BELOW what IG actually requires per instrument
+        # (e.g. US100 minDealSize=0.2) and is exactly what produced the
+        # MINIMUM_ORDER_SIZE_ERROR rejections: the bot clamped to its own
+        # 0.1 floor, which IG then rejected as too small.
+        _ig_min_deal_size = (
+            market.get("dealingRules", {}).get("minDealSize", {}).get("value")
+        )
+        intended_risk = get_risk_per_trade(symbol)
+        if _ig_min_deal_size is not None and size < _ig_min_deal_size:
+            implied_risk = _ig_min_deal_size * abs(entry_price - sl) * value_per_point
+            if implied_risk > 1.3 * intended_risk:
+                print(
+                    f"[MIN DEAL SIZE] {symbol} calculated size {size} is below IG's "
+                    f"minDealSize={_ig_min_deal_size} — clamping would imply risk "
+                    f"${implied_risk:.2f} vs ${intended_risk:.2f} intended (>1.3x) — skipping"
+                )
+                try:
+                    _now = datetime.now(timezone.utc)
+                    _h   = _now.hour
+                    _session = (
+                        "LONDON"    if 7  <= _h < 12 else
+                        "NY_OPEN"   if 13 <= _h < 15 else
+                        "NY_MID"    if 15 <= _h < 18 else
+                        "OFF_HOURS"
+                    )
+                    log_paper_trade({
+                        "checked_at":    _now.isoformat(),
+                        "symbol":        symbol,
+                        "strategy_name": strategy_name,
+                        "timeframe":     timeframe,
+                        "candle_time":   _now.isoformat(),
+                        "signal":        f"SHADOW_{direction}",
+                        "entry_price":   entry_price,
+                        "sl":            sl,
+                        "tp":            tp,
+                        "outcome":       "PENDING",
+                        "params_json":   "{}",
+                        "session":       _session,
+                        "notes":         (
+                            f"SHADOW: skipped — min deal size would oversize risk to "
+                            f"${implied_risk:.2f} vs ${intended_risk:.2f} intended"
+                        ),
+                    })
+                    print(f"[MIN DEAL SIZE] {symbol} {direction} shadow-logged")
+                except Exception as _shadow_err:
+                    print(f"[MIN DEAL SIZE] shadow log failed: {_shadow_err}")
+                from bot.notifier import send_telegram
+                send_telegram(
+                    f"MIN DEAL SIZE SKIP {symbol} {direction} — clamped risk "
+                    f"${implied_risk:.2f} vs ${intended_risk:.2f} intended (>1.3x)",
+                    level="WARN",
+                )
+                return False
+            else:
+                print(
+                    f"[MIN DEAL SIZE] {symbol} size clamped {size} -> {_ig_min_deal_size} "
+                    f"(IG minDealSize), implied risk ${implied_risk:.2f} vs "
+                    f"${intended_risk:.2f} intended (within 1.3x) — proceeding"
+                )
+                size = _ig_min_deal_size
 
         expected_risk = size * abs(entry_price - sl) * value_per_point
         print(f"[TEST] Expected risk: ${expected_risk:.2f}")
