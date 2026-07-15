@@ -23,7 +23,7 @@ accumulating even while yfinance still drives real trades.
 """
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from trading_ig import IGService
 from trading_ig.stream import IGStreamService, Subscription, ClientListener
@@ -81,6 +81,14 @@ _partial_15min: dict[str, dict] = {}      # symbol -> {"bucket_start": iso, "bar
 _disconnected = threading.Event()
 _disconnected.set()  # starts "disconnected" until first successful connect
 
+# IG's REST snapshotTime is in the ACCOUNT'S configured timezone, not UTC
+# (confirmed via session creation's timezoneOffset field, e.g. 8 for this
+# account/MYT) -- despite looking like a naive UTC string. Caught live
+# 2026-07-15: a 15MIN REST-warmed candle stamped 8h into the future.
+# Captured once at session creation (account timezone is a static setting,
+# doesn't change mid-session) and reused by every _normalize_rest_time call.
+_ACCOUNT_TZ_OFFSET_HOURS: int | None = None
+
 
 def get_candles(symbol: str, timeframe: str) -> list | None:
     """Public read accessor for live_signal_loop.py. None = buffer not warm
@@ -88,6 +96,17 @@ def get_candles(symbol: str, timeframe: str) -> list | None:
     with _lock:
         buf = _buffers.get((symbol, timeframe))
         return list(buf) if buf and len(buf) >= 20 else None
+
+
+def debug_buffer_tail(symbol: str, timeframe: str, n: int = 10) -> list:
+    """Diagnostic accessor — bypasses get_candles' 20-candle warm threshold
+    and returns the raw buffer tail regardless of trustworthiness. Never
+    called from the trading path; exists so buffer contents can be
+    inspected from outside the process (module state isn't visible to a
+    separate `docker exec` python invocation)."""
+    with _lock:
+        buf = _buffers.get((symbol, timeframe), [])
+        return list(buf[-n:])
 
 
 # -------------------------
@@ -138,12 +157,17 @@ def _rest_fetch(ig_service: IGService, symbol: str, timeframe: str, count: int) 
 
 
 def _normalize_rest_time(raw: str) -> str:
-    """IG REST snapshotTime is 'yyyy/MM/dd HH:mm:ss' — normalize to ISO so it
-    parses the same way as every other candle source in this codebase
-    (datetime.fromisoformat is used throughout live_signal_loop.py)."""
+    """IG REST snapshotTime is 'yyyy/MM/dd HH:mm:ss' in the account's
+    configured timezone (_ACCOUNT_TZ_OFFSET_HOURS), NOT UTC — subtract the
+    offset before labeling UTC, or REST-sourced candles get mislabeled
+    hours into the future/past. Falls back to offset=0 (old, wrong
+    behavior) only if the offset was never captured — better than crashing,
+    but every session creation should set it before this is ever called."""
     try:
         dt = datetime.strptime(str(raw), "%Y/%m/%d %H:%M:%S")
-        return dt.replace(tzinfo=timezone.utc).isoformat()
+        offset_hours = _ACCOUNT_TZ_OFFSET_HOURS if _ACCOUNT_TZ_OFFSET_HOURS is not None else 0
+        dt_utc = dt - timedelta(hours=offset_hours)
+        return dt_utc.replace(tzinfo=timezone.utc).isoformat()
     except Exception:
         return str(raw)
 
@@ -459,6 +483,21 @@ def _connect_and_subscribe(pairs: list) -> tuple:
     username, password, api_key, acc_type = get_ig_credentials()
     ig_service = IGService(username, password, api_key, acc_type=acc_type,
                            return_dataframe=False)
+
+    # IGStreamService.create_session() below calls ig_service.create_session()
+    # internally but discards the response dict, so timezoneOffset would be
+    # unreachable afterward — call it here first to capture it (this makes
+    # IGStreamService.create_session() log in a second time; harmless at
+    # reconnect frequency — 5-300s backoff, not a hot path — and each login
+    # simply supersedes the last). Every reconnect refreshes the offset,
+    # not just the initial connect, in case it's ever wrong or unset.
+    global _ACCOUNT_TZ_OFFSET_HOURS
+    try:
+        _session_resp = ig_service.create_session()
+        _ACCOUNT_TZ_OFFSET_HOURS = _session_resp.get("timezoneOffset", _ACCOUNT_TZ_OFFSET_HOURS)
+    except Exception as e:
+        print(f"[candle_stream] could not capture account timezoneOffset: {e}")
+
     stream_service = IGStreamService(ig_service)
     stream_service.create_session()  # raises or sys.exit(1) on failure — caller catches both
     stream_service.add_client_listener(_ConnectionListener())
@@ -543,7 +582,9 @@ def start_candle_stream() -> None:
             warmup_service = IGService(username, password, api_key, acc_type=acc_type,
                                        return_dataframe=False)
             try:
-                warmup_service.create_session()
+                global _ACCOUNT_TZ_OFFSET_HOURS
+                _session_resp = warmup_service.create_session()
+                _ACCOUNT_TZ_OFFSET_HOURS = _session_resp.get("timezoneOffset", _ACCOUNT_TZ_OFFSET_HOURS)
                 ig_scale.init_price_scales(warmup_service, EPIC_MAP, force=False)
                 _warm_up(warmup_service, pairs)
             except (Exception, SystemExit) as e:

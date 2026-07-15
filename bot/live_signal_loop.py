@@ -341,7 +341,13 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
                 _age_secs = (datetime.now(timezone.utc) - _candle_dt(candles[-1])).total_seconds()
                 _stale_threshold = STREAM_STALE_MULTIPLIER * TIMEFRAME_SECONDS.get(timeframe, 3600)
 
-                if _age_secs > _stale_threshold:
+                # A closed candle can never be timestamped in the future — any
+                # negative age is invalid data, not freshness. Caught live
+                # 2026-07-15: a REST-warmed candle mislabeled 8h ahead of real
+                # UTC (account-timezone bug in candle_stream.py, now fixed)
+                # sailed through this guard as "fresh" because age was negative,
+                # not > threshold. Treat negative age as stale unconditionally.
+                if _age_secs > _stale_threshold or _age_secs < 0:
                     # Subscribed+connected does not guarantee fresh ticks — caught
                     # live 2026-07-15: index Lightstreamer topics stopped delivering
                     # CONS_END items while FX topics kept updating normally, and the
