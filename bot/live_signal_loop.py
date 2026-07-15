@@ -3,7 +3,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -74,6 +74,14 @@ _last_shadow_signal: dict[str, str] = {}
 _last_checked: dict[str, datetime] = {}
 _last_daily_loss_alert_date: str | None = None
 _ema200_cache: dict = {}  # symbol → (ema200, price_vs_ema200, cached_hour_key)
+
+# Stream-staleness guard (CANDLE_SOURCE=ig_stream path only): subscribed+
+# connected does not guarantee fresh ticks — a buffer can silently freeze.
+# Indices get no yfinance fallback (off-session yfinance staleness is the
+# exact failure mode this whole flip was meant to fix) — they skip instead.
+STREAM_STALE_MULTIPLIER = 3
+_INDEX_SYMBOLS = {"US500", "US100", "DAX"}
+_last_stale_stream_alert: dict[str, datetime] = {}
 
 # Per-strategy session blocks: (strategy_name, symbol, timeframe) → set of sessions to block
 # Blocked signals are shadow-logged to paper_trades for outcome tracking.
@@ -328,9 +336,54 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         if CANDLE_SOURCE == "ig_stream":
             candles = get_stream_candles(symbol, timeframe)
             fetch_err = None if candles is not None else "ig_stream buffer not warm yet"
+
             if candles:
-                print(f"[signal_loop] [{symbol}/{timeframe}] candle source: ig_stream "
-                      f"({len(candles)} candles, latest={candles[-1].get('time')})")
+                _age_secs = (datetime.now(timezone.utc) - _candle_dt(candles[-1])).total_seconds()
+                _stale_threshold = STREAM_STALE_MULTIPLIER * TIMEFRAME_SECONDS.get(timeframe, 3600)
+
+                if _age_secs > _stale_threshold:
+                    # Subscribed+connected does not guarantee fresh ticks — caught
+                    # live 2026-07-15: index Lightstreamer topics stopped delivering
+                    # CONS_END items while FX topics kept updating normally, and the
+                    # stream buffer silently served a >6h-stale candle with no
+                    # self-correction. Indices don't get a yfinance fallback here —
+                    # off-session yfinance staleness is the exact failure mode that
+                    # produced the min-deal-size incident, so an untrusted-stale
+                    # source is worse than skipping the symbol outright.
+                    _now_alert  = datetime.now(timezone.utc)
+                    _last_alert = _last_stale_stream_alert.get(symbol)
+                    _should_alert = _last_alert is None or (_now_alert - _last_alert) > timedelta(hours=6)
+
+                    if symbol in _INDEX_SYMBOLS:
+                        print(f"[signal_loop] [{symbol}/{timeframe}] STREAM STALE "
+                              f"(age={_age_secs/60:.0f}min > {_stale_threshold/60:.0f}min) — "
+                              f"index, yfinance untrusted off-session — skipping symbol this cycle")
+                        if _should_alert:
+                            _last_stale_stream_alert[symbol] = _now_alert
+                            send_telegram(
+                                f"{symbol}/{timeframe} signals paused — stream stale, yfinance untrusted",
+                                level="WARN",
+                            )
+                        candles = None
+                        fetch_err = f"stream stale (age={_age_secs/60:.0f}min) — index, skipped"
+                    else:
+                        print(f"[signal_loop] [{symbol}/{timeframe}] STREAM STALE "
+                              f"(age={_age_secs/60:.0f}min > {_stale_threshold/60:.0f}min) — "
+                              f"FX, falling back to yfinance for this fetch")
+                        if _should_alert:
+                            _last_stale_stream_alert[symbol] = _now_alert
+                            send_telegram(f"{symbol}/{timeframe} stream stale — falling back to yfinance", level="WARN")
+                        try:
+                            candles   = _fetch_yfinance_candles(symbol, timeframe, 500)
+                            fetch_err = None
+                        except Exception as e:
+                            candles   = None
+                            fetch_err = f"stream stale AND yfinance fallback failed: {e}"
+                else:
+                    print(f"[signal_loop] [{symbol}/{timeframe}] candle source: ig_stream "
+                          f"({len(candles)} candles, latest={candles[-1].get('time')})")
+
+            if candles:
                 # Post-flip verification window: comparison logger keeps running
                 # inverted (stream now authoritative, yfinance the secondary/
                 # reference series) — same candle_source_compare table, same
