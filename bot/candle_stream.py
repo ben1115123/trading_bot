@@ -204,17 +204,31 @@ class _QuotaExceeded(Exception):
     pass
 
 
-def _normalize_yf_time(raw: str) -> str:
-    """yfinance candle time is str(pandas.Timestamp) -- 'YYYY-MM-DD HH:MM:SS+00:00',
-    space-separated rather than 'T'-separated. Normalize the same way
-    _normalize_rest_time does so both sources parse identically downstream."""
+def _normalize_yf_time(raw: str) -> str | None:
+    """yfinance candle time is str(pandas.Timestamp). Despite the old
+    assumption that it's always 'YYYY-MM-DD HH:MM:SS+00:00', yfinance
+    intraday data can come back tz-aware in the EXCHANGE's local zone
+    (e.g. Europe/London, BST=+01:00 in summer) -- found live 2026-07-16
+    via mixed +00:00/+01:00 offsets in the same GBPUSD buffer. Convert to
+    true UTC instead of blindly relabeling; only assume-UTC for genuinely
+    naive timestamps. Same future-dated guard as the REST snapshotTime fix
+    (2026-07-15): a bad conversion here would otherwise silently poison the
+    buffer with a future candle. Returns None (caller drops it) if rejected
+    or unparseable."""
     try:
         dt = datetime.fromisoformat(str(raw).replace(" ", "T", 1))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.isoformat()
+        else:
+            dt = dt.astimezone(timezone.utc)
     except Exception:
-        return str(raw)
+        print(f"[candle_stream] yfinance timestamp unparseable, dropping candle: {raw!r}")
+        return None
+    if dt > datetime.now(timezone.utc) + timedelta(minutes=1):
+        print(f"[candle_stream] yfinance candle rejected -- future-dated after "
+              f"UTC conversion: raw={raw!r} -> {dt.isoformat()}")
+        return None
+    return dt.isoformat()
 
 
 def _yfinance_fallback(symbol: str, timeframe: str, count: int) -> list | None:
@@ -226,10 +240,16 @@ def _yfinance_fallback(symbol: str, timeframe: str, count: int) -> list | None:
     except Exception as e:
         print(f"[candle_stream] yfinance fallback failed {symbol}/{timeframe}: {e}")
         return None
-    return [{
-        "time": _normalize_yf_time(c["time"]),
-        "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"],
-    } for c in raw]
+    candles = []
+    for c in raw:
+        t = _normalize_yf_time(c["time"])
+        if t is None:
+            continue
+        candles.append({
+            "time": t,
+            "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"],
+        })
+    return candles
 
 
 def _needed_pairs() -> list:
