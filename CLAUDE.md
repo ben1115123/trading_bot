@@ -4,6 +4,7 @@
 Webhook-driven algorithmic trading bot. Pipeline:
 TradingView alert → webhook → Python bot → IG Markets API.
 Current focus: Phase 7 — Risk Management & Stability.
+Forward development plan: see ROADMAP.md
 
 ## Architecture
 main.py                     FastAPI entry point
