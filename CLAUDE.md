@@ -601,6 +601,73 @@ entirely with no yfinance fallback (off-session yfinance staleness is
 the exact failure this flip was meant to fix, so an untrusted-stale
 source is worse than skipping).
 
+### Post-flip Tier 1 maintenance (2026-07-16)
+
+**Quota-fallback Telegram dedup (deployed)**: the "IG historical-data
+quota exceeded — fell back to yfinance" WARN fired on every warm-up AND
+every gap-backfill during an exhausted-quota window, several times/hour.
+Now deduped to once/6h per condition-type (`warmup` vs `backfill`),
+state file `/tmp/candle_stream_fallback_state.json` (same anti-spam
+pattern as `scripts/watchdog.py`'s state file). Logs (`print`) stay
+unconditional — only `send_telegram` gates on the cooldown, so analysis
+still sees every occurrence. Verified live: a real quota exhaustion hit
+5 pairs in one warm-up pass, all 5 logged, only 1 Telegram alert fired.
+
+**yfinance-fallback timezone bug (found + fixed)** — third occurrence of
+this bug class (Phase 2B positions_poller timezone fix → 2026-07-15 REST
+`snapshotTime` account-local/MYT+8 fix → this one). Recurring pattern:
+**any timestamp handed to us by an external data source may be
+localized, not UTC, regardless of what it looks like or what the field
+name implies — force-convert, never assume.** This time: `_normalize_yf_time`
+only stamped `tzinfo=utc` when the source was naive, so it silently kept
+yfinance's real offset when tz-aware — yfinance intraday data returns
+exchange-local time (Europe/London, BST=+01:00 in summer), not UTC as
+the old docstring assumed. Found live via mixed +00:00/+01:00 timestamps
+in the GBPUSD buffer after a quota fallback (seasonal bug — invisible
+in GMT months, live now in BST). Fixed: `_normalize_yf_time` now
+converts tz-aware timestamps via `astimezone(timezone.utc)` instead of
+relabeling, and rejects (drops, logs) any candle landing in the future
+after conversion — same future-dated guard as the REST fix. Verified
+post-deploy: GBPUSD buffer after a live fallback event showed uniform
+`+00:00` offsets, correctly ordered, zero rejections needed.
+
+**Drift investigation conclusion — NOT a regression, migration is
+sound.** SL DRIFT reanchor adjustments looked ~2-3x larger post-flip
+than the pre-flip baseline (GBPUSD mean 1.71→3.92 pips, EURUSD
+1.16→3.35 pips), which read as the migration having made things worse.
+Investigated per-event (11 post-flip reanchors, full log context) and
+found two structural, pre-existing causes, not a stream bug:
+  (a) **Decision-to-execution lag, 25-55min** — `candles[-2]` dedup +
+      per-symbol `_is_due()` cadence means the candle price used for
+      SL/TP math can be 25-55min stale by the time the trade actually
+      executes. Confirmed on all 11 events (e.g. the GBPUSD 12.1-pip
+      outlier: ~40min gap, ordinary London/NY-session movement, not a
+      bad tick). This mechanism is unchanged by the candle-source flip.
+  (b) **Mid-vs-dealing-price comparison artifact** — the stream candle
+      close is `(BID_CLOSE+OFR_CLOSE)/2` (mid, `_mid_ohlc` in
+      `bot/candle_stream.py`), but live execution fills at
+      `offer`/`bid` (dealing price, `execute_trade.py`). Every reanchor
+      comparison injects ~half-spread of phantom "drift" that isn't
+      real slippage — matches EURUSD's numbers almost exactly
+      (`NORMAL_SPREADS` 0.0008 → half-spread 4 pips ≈ observed mean
+      3.35). Sign of the drift correlated with trade direction in 8/11
+      events (spread-driven, as expected); the other 3 were real
+      market movement over the lag window big enough to flip the sign
+      — ordinary noise, not a bug. Does NOT explain index drift (US500
+      half-spread is only 0.3pt vs 6.18pt observed mean) — that's (a).
+
+**Two items left OPEN:**
+- **Change 1 (SL DRIFT alert threshold, 3 pips FX / 1.5pt index) — HELD.**
+  Diff was written and reviewed but not deployed. Reason: raising the
+  threshold now would suppress visibility into exactly the drift
+  mechanism above while (b) is still uncorrected — re-open once the
+  mid-vs-dealing fix (below) lands and drift is measurable cleanly
+  without the phantom half-spread component.
+- **Mid-vs-dealing-price comparison fix — DEFERRED.** Cosmetic/
+  measurement-accuracy issue, not urgent (doesn't affect real SL/TP
+  math or execution, only the drift-metric's apparent size). Batch
+  with the next reanchor-logic review rather than a one-off patch.
+
 ## Paper Trading System
 - paper_trades table in DB — logs every paper signal
 - outcome: PENDING → WIN/LOSS (resolved each loop cycle)
