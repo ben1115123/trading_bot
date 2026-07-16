@@ -21,9 +21,11 @@ Always started regardless of CANDLE_SOURCE (see live_signal_loop.py) —
 parallel validation mode needs the stream running and comparison data
 accumulating even while yfinance still drives real trades.
 """
+import json
 import threading
 import time
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 from trading_ig import IGService
 from trading_ig.stream import IGStreamService, Subscription, ClientListener
@@ -62,6 +64,32 @@ WARMUP_COUNT = 200   # 4x the longest active lookback (ema_pullback ema_slow=50)
                      # cheap since it's a one-shot REST call, cost only matters
                      # pre-dedup and this runs once at startup / per reconnect gap
 MAX_BUFFER = 500
+
+# Quota-fallback Telegram dedup: same anti-spam pattern as scripts/watchdog.py's
+# state file, keyed per condition-type (warm-up vs gap-backfill) since they're
+# raised from different call sites with different frequency characteristics.
+_FALLBACK_STATE_PATH = Path("/tmp/candle_stream_fallback_state.json")
+_FALLBACK_ALERT_COOLDOWN_SEC = 6 * 3600
+
+
+def _should_alert_fallback(condition: str) -> bool:
+    try:
+        state = json.loads(_FALLBACK_STATE_PATH.read_text())
+    except Exception:
+        state = {}
+    last = state.get(condition)
+    if last:
+        try:
+            if (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() < _FALLBACK_ALERT_COOLDOWN_SEC:
+                return False
+        except Exception:
+            pass
+    state[condition] = datetime.now(timezone.utc).isoformat()
+    try:
+        _FALLBACK_STATE_PATH.write_text(json.dumps(state))
+    except Exception as e:
+        print(f"[candle_stream] fallback state write failed: {e}")
+    return True
 
 CHART_FIELDS = [
     "UTM",
@@ -248,7 +276,7 @@ def _warm_up(ig_service: IGService, pairs: list) -> None:
         with _lock:
             _buffers[(symbol, timeframe)] = candles[-MAX_BUFFER:]
         print(f"[candle_stream] warm-up {symbol}/{timeframe}: {len(candles)} candles (source={source})")
-    if fallback_used:
+    if fallback_used and _should_alert_fallback("warmup"):
         send_telegram(
             "candle_stream: IG historical-data quota exceeded -- warm-up "
             "fell back to yfinance for one or more pairs", level="WARN")
@@ -546,7 +574,7 @@ def _reconnect_supervisor() -> None:
             for symbol, timeframe in pairs:
                 if _backfill_gap(ig_service, symbol, timeframe):
                     backfill_fallback = True
-            if backfill_fallback:
+            if backfill_fallback and _should_alert_fallback("backfill"):
                 send_telegram(
                     "candle_stream: IG historical-data quota exceeded -- gap "
                     "backfill fell back to yfinance for one or more pairs", level="WARN")
