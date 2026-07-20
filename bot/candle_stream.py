@@ -35,6 +35,7 @@ import ig_scale
 from database.models import get_active_strategies, upsert_heartbeat
 from scripts.run_backtest import STRATEGIES, _fetch_yfinance_candles
 from bot.notifier import send_telegram
+from symbols import SYMBOLS
 
 # -------------------------
 # Config
@@ -46,9 +47,11 @@ EPIC_MAP = {
     "EURUSD": "CS.D.EURUSD.MINI.IP",
     "GBPUSD": "CS.D.GBPUSD.MINI.IP",
     "AUDUSD": "CS.D.AUDUSD.MINI.IP",
+    "USDCAD": "CS.D.USDCAD.MINI.IP",
 }
-SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD"]  # mirrors
-                                                                          # live_signal_loop.SYMBOLS
+# SYMBOLS imported from symbols.py -- single source of truth shared with
+# live_signal_loop.py (see symbols.py docstring for why USDCAD silently
+# never traded for 7 days when this used to be a second hardcoded copy).
 
 # IG's raw REST resolution enum values. conv_resol() (which translates
 # pandas-offset strings like "15Min" -> "MINUTE_15") is only invoked by

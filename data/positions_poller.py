@@ -5,6 +5,23 @@ from datetime import datetime, timezone, timedelta
 
 import ig_scale
 
+# IG transaction-history instrumentName -> our symbol. Used to require an
+# exact-symbol match in _fetch_close_data's time-proximity fallback — without
+# this, the fallback could (and did: trades id=583/596/604) return a
+# DIFFERENT symbol's transaction row when two trades opened within the same
+# 60s window, silently swapping close_price AND pnl between them. Confirmed
+# live against this account 2026-07-20 (fetch_market_by_epic per symbol).
+INSTRUMENT_TO_SYMBOL = {
+    "US 500 Cash ($1)":      "US500",
+    "US Tech 100 Cash ($1)": "US100",
+    "Germany 40 Cash ($1)":  "DAX",
+    "Bitcoin ($0.1)":        "BTC",
+    "EUR/USD Mini":          "EURUSD",
+    "GBP/USD Mini":          "GBPUSD",
+    "AUD/USD Mini":          "AUDUSD",
+    "USD/CAD Mini":          "USDCAD",
+}
+
 
 def _parse_pnl(raw) -> float | None:
     """Parse IG profitAndLoss string e.g. '+$15.23' or '-$4.50' to float."""
@@ -51,19 +68,32 @@ def _fetch_close_data(ig_service, deal_id: str, deal_reference: str = None, entr
                 match = transactions[transactions["reference"] == deal_reference]
 
             if (match is None or match.empty) and entry_time and "openDateUtc" in transactions.columns:
-                try:
-                    entry_dt = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
-                    def _near_entry(val):
-                        try:
-                            dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            return abs((dt - entry_dt).total_seconds()) < 60
-                        except Exception:
-                            return False
-                    match = transactions[transactions["openDateUtc"].apply(_near_entry)]
-                except Exception as e:
-                    print(f"Positions poller: entry_time match failed for {deal_id}: {e}")
+                # Symbol filter is mandatory here, not optional: this fallback
+                # matches purely on open-time proximity across the WHOLE
+                # multi-instrument transaction history, so without a symbol
+                # gate it can (and did) return a sibling trade's row when two
+                # deals opened within the same 60s window. If we can't verify
+                # the candidate's symbol, we must not use it — better to
+                # retry/return None than risk a cross-symbol value swap.
+                if not symbol or symbol not in INSTRUMENT_TO_SYMBOL.values() or "instrumentName" not in transactions.columns:
+                    print(f"Positions poller: cannot safely symbol-filter fallback match for "
+                          f"{deal_id} (symbol={symbol!r}) — skipping fallback, no cross-symbol guess")
+                else:
+                    try:
+                        entry_dt = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+                        def _near_entry(val):
+                            try:
+                                dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                return abs((dt - entry_dt).total_seconds()) < 60
+                            except Exception:
+                                return False
+                        candidates = transactions[transactions["openDateUtc"].apply(_near_entry)]
+                        same_symbol = candidates["instrumentName"].map(INSTRUMENT_TO_SYMBOL) == symbol
+                        match = candidates[same_symbol]
+                    except Exception as e:
+                        print(f"Positions poller: entry_time match failed for {deal_id}: {e}")
 
             if match is not None and not match.empty:
                 row = match.iloc[0]

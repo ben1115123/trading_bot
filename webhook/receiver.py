@@ -267,14 +267,33 @@ async def webhook_endpoint(request: Request):
 
         result = place_trade_from_alert(data)
         print("✅ Trade function returned:", result)
-        deal_ref = result.get("deal_reference") if isinstance(result, dict) else None
-        _log_wh(ts, symbol, direction, strategy_name, raw_payload, "EXECUTED",
-                deal_reference=deal_ref)
-        threading.Thread(
-            target=_collect_context_bg,
-            args=(symbol, "tradingview_webhook", current_spread),
-            daemon=True,
-        ).start()
+
+        # place_trade_from_alert returns False on every non-exception failure
+        # branch (cooldown, missing SL/TP, counter-trend filter, IG REJECTED,
+        # sizing failure, etc.) -- only a dict with status=="OPEN" means
+        # log_trade actually ran and a real IG position exists. Logging
+        # EXECUTED on anything else produced 5 ghost webhook_log rows with no
+        # matching trades row (found 2026-07-19 audit) -- verified against
+        # real IG transaction history that no position was ever opened for
+        # any of them. Also fixes deal_reference: IG/execute_trade.py use
+        # camelCase "dealReference", not "deal_reference" -- the old key read
+        # here always returned None, even on genuine fills.
+        if isinstance(result, dict) and result.get("status") == "OPEN":
+            deal_ref = result.get("dealReference")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "EXECUTED",
+                    deal_reference=deal_ref)
+            threading.Thread(
+                target=_collect_context_bg,
+                args=(symbol, "tradingview_webhook", current_spread),
+                daemon=True,
+            ).start()
+        else:
+            if isinstance(result, dict):
+                block_reason = f"unexpected_status_{result.get('status', 'unknown')}"
+            else:
+                block_reason = "trade_rejected"
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "REJECTED",
+                    block_reason)
 
     except Exception as e:
         print("❌ Trade execution error:", e)

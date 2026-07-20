@@ -17,8 +17,7 @@ from risk_manager import get_risk_per_trade
 from bot.notifier import send_telegram
 from bot.candle_stream import get_candles as get_stream_candles
 from backend.backtesting.regime import classify_regimes
-
-SYMBOLS = ["US500", "US100", "DAX", "BTC", "EURUSD", "GBPUSD", "AUDUSD", "USDCAD"]
+from symbols import SYMBOLS
 
 CANDLE_SOURCE = os.getenv("CANDLE_SOURCE", "yfinance").lower()  # 'yfinance' (default,
                                                                  # unchanged) | 'ig_stream'
