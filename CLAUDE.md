@@ -669,6 +669,85 @@ found two structural, pre-existing causes, not a stream bug:
   math or execution, only the drift-metric's apparent size). Batch
   with the next reanchor-logic review rather than a one-off patch.
 
+### Three production bugs found + fixed (2026-07-20)
+
+Diagnosed via read-only VPS audit (webhook_log/trades cross-check + real
+IG transaction history), then fixed same day. All three deployed and
+verified live.
+
+**Bug 1 — webhook "EXECUTED" ghost log rows.** `webhook/receiver.py` wrote
+`result="EXECUTED"` to `webhook_log` unconditionally whenever
+`place_trade_from_alert()` returned without raising — but that function
+returns `False` on many non-exception branches (cooldown, missing SL/TP,
+counter-trend filter, IG `REJECTED`, sizing failure) that never place a
+real order. Found 5 EXECUTED rows (4 EURUSD swiftalgo + 1 US500,
+2026-07-15→17) with no matching `trades` row; confirmed against real IG
+transaction history that no position was ever opened for any of them —
+false logging, not an untracked ghost position. Fixed: EXECUTED now
+gated strictly on `isinstance(result, dict) and result.get("status") ==
+"OPEN"`; everything else logs `REJECTED`. Also fixed a dead
+`deal_reference` column — the old code read `result.get("deal_reference")`
+but IG/execute_trade.py use camelCase `dealReference`, so the column was
+always `NULL` even on genuine fills (this also weakens Bug 3's primary
+match, see below).
+
+**Bug 2 — USDCAD 15MIN williams_r never traded.** Active in
+`active_strategy` since 2026-07-13, but `bot/candle_stream.py`'s
+`EPIC_MAP`/`SYMBOLS` (a second, independently-hardcoded copy of the
+symbol list, despite a comment claiming it "mirrors
+`live_signal_loop.SYMBOLS`") never got USDCAD added. Its `(USDCAD,
+15MIN)` candle buffer was therefore never created — not stale, never
+populated — producing "ig_stream buffer not warm yet" on every single
+signal_loop cycle for 7 straight days. `scripts/run_backtest.py`'s
+`YF_SYMBOLS` was missing USDCAD too (would have broken the FX
+yfinance-fallback path as well). Fixed: added USDCAD to both maps, and
+— to kill the class of bug, not just this instance — replaced both
+`candle_stream.py`'s and `live_signal_loop.py`'s independent `SYMBOLS`
+lists with a single shared import (`symbols.py`, project root). A direct
+import between the two modules would be circular (`live_signal_loop`
+already imports `candle_stream`), so `symbols.py` has zero imports/side
+effects and both depend on it safely.
+
+**Bug 3 — `positions_poller.py` cross-symbol close_price/pnl
+contamination.** `_fetch_close_data()`'s fallback matcher (used whenever
+the primary `deal_reference` lookup misses — which the dead
+`deal_reference` column above made more likely to happen) searched IG's
+*entire* multi-instrument transaction history for any row within 60s of
+the trade's own entry_time, with **no symbol filter**. `live_signal_loop`
+routinely opens EURUSD/GBPUSD/AUDUSD within single-digit seconds of each
+other, so the fallback could — and did — return a sibling trade's
+transaction row: right symbol's scale divisor applied to the *wrong*
+symbol's `closeLevel`. Confirmed 3 instances this way (ids 583/596/604,
+2026-07-16→17).
+
+**Correction to this file's own earlier assumption:** the original
+finding assumed `pnl` was unaffected ("corruption confined to the
+close_price column"). That was wrong. `_fetch_close_data()` returns
+`close_price` **and** `realised_pnl` from the same matched row, so a
+wrong-symbol match contaminates both identically — confirmed by
+diffing against the sibling trade's own stored pnl (exact matches, not
+coincidental). It only read as "sane" because every trade here risks
+~$10 with similar R:R, so a swapped pnl still landed in a plausible
+dollar range for a win or a loss. Fixed: the fallback now requires the
+candidate row's `instrumentName` (mapped via a confirmed
+IG-instrument-name → symbol table, verified live via
+`fetch_market_by_epic` per symbol) to match the trade's own symbol
+before accepting it; no same-symbol candidate → returns `None`, leaving
+the trade for the next poll rather than borrowing.
+
+**Ledger re-audit** (`scripts/reaudit_close_prices.py`, dry-run by
+default, `--confirm` to apply): cross-checked every CLOSED trade since
+the 2026-07-08 demo switch against real IG transaction history. Found
+**8** contaminated rows (ids 548, 566, 568, 581, 583, 596, 604, 619) —
+deeper than the 3 originally spotted by the read-only audit that
+triggered this investigation. DB backed up before correction
+(`database/trades.bak-20260720T012352Z.db`); full before/after values
+logged to `logs/ledger_reaudit_20260720T012352Z.jsonl`. One trade
+(id=500, GBPUSD) has no matching IG transaction in history at all and
+was left uncorrected — flagged, not explained. Re-run the script
+periodically or after any future poller/ig_scale change; it's
+read-only against IG and idempotent (dry-run reports zero once clean).
+
 ## Paper Trading System
 - paper_trades table in DB — logs every paper signal
 - outcome: PENDING → WIN/LOSS (resolved each loop cycle)
