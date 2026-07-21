@@ -1,5 +1,5 @@
 # TRADING BOT — DEVELOPMENT ROADMAP
-Last updated: 2026-07-16
+Last updated: 2026-07-21
 Rule: this file is updated whenever a tier item 
 completes or a gate decision resolves.
 
@@ -70,11 +70,51 @@ REJECTed because the pool was weak, not the switching)
   across the real edge inventory; portfolio itself 
   must pass walk-forward as a unit)
 - [ ] AI regime-detector: LLM market-structure read 
-  as challenger classifier vs ADX baseline. 
-  Shadow-logged 100+ signals, promoted to sizing 
-  input only if it beats baseline. NEVER wired 
-  directly to execution. Human-gated ticket pattern 
-  if any discretionary overlay is ever built.
+  as challenger classifier vs ADX(14) baseline.
+  INPUT SPEC: raw recent candle sequence as 
+  structured text — [{t,o,h,l,c}] x ~50 candles + 
+  session/VIX context. NOT chart images: our candles 
+  exist as exact OHLC numbers; rendering to pixels 
+  and vision-reading them is a lossy round-trip. 
+  Charts are for humans, numbers are for the AI.
+  OUTPUT: structure-aware regime label (e.g. 
+  RANGE-EXHAUSTION, LATE-TREND, COMPRESSION) — 
+  richer than the 3 ADX buckets, specifically 
+  targeting ADX's known lag/maturity blindspot 
+  (leading hypothesis for the mean-reversion-wins-
+  in-TREND anomaly).
+  EVALUATION: shadow-logged alongside ADX's bucket 
+  on every signal, 100+ outcomes required, promoted 
+  to a sizing input only if its labels separate 
+  winners/losers better than ADX baseline. 
+  NEVER wired to execution.
+- [ ] AI strategy-generation front-end (post-Tier-3, 
+  requires certified ruler + deflated Sharpe gate 
+  in place): LLM generates gauntlet-ready strategy 
+  files from two sources, in priority order:
+  (a) PRIORITY — hypotheses mined from our own 
+  regime-tagged trade ledger ("Version 3"): feed the 
+  LLM structured anomalies (per-regime/session WR, 
+  entry-context candle sequences around winners vs 
+  losers) and have it generate competing testable 
+  explanations + strategy/filter variants for each. 
+  First work orders queued: (1) the mean-reversion-
+  wins-in-TREND regime anomaly, (2) GBPUSD's 
+  NEUTRAL-bucket loss concentration, (3) losing-
+  entry post-mortem pattern mining.
+  (b) SECONDARY — academic/library concepts 
+  (Quantpedia etc.) translated to engine format.
+  INVARIANTS: AI proposes, gauntlet disposes 
+  (walk-forward → stability → permutation → MC → 
+  deflated Sharpe), human gates every promotion, 
+  auto-deploy never. Expect the standard ~93-98% 
+  candidate failure rate — generation raises 
+  throughput, not the pass rate.
+  EXPLICITLY OUT OF SCOPE: discretionary market-
+  analysis agents producing opinions/conviction 
+  scores (the "AI hedge fund desk" pattern) — 
+  unfalsifiable, philosophically opposed to this 
+  system.
 
 ## TIER 5 — LIVE RETURN (Branch A only)
 One strategy at a time, 2 weeks apart. Sizing from 
@@ -99,6 +139,12 @@ at session start, replacing hardcoded values).
 - TradingView/Pine: signal-source-only via webhooks 
   (swiftalgo pattern). Never candles, never 
   backtesting — different price universe than IG.
+- Regime-column integrity: 12 of 99 post-07-11 
+  trades have NULL regime (tagging gap, cause 
+  undiagnosed). The regime column is the AI layer's 
+  primary fuel — diagnose the missing code path, 
+  fix, and backfill the 12 from stored candle 
+  history before Tier 4 work begins.
 
 ## PAPER ENGINE REALISM PASS (optional, low priority)
 Only if paper screening becomes a bottleneck: 
