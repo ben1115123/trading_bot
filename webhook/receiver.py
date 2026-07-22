@@ -191,8 +191,8 @@ async def webhook_endpoint(request: Request):
 
         # --- daily loss limit ---
         from risk.daily_loss import is_daily_loss_limit_breached, DAILY_LOSS_LIMIT_USD
-        if is_daily_loss_limit_breached():
-            print(f"[webhook] Daily loss limit hit (limit ${DAILY_LOSS_LIMIT_USD}) — blocking")
+        if is_daily_loss_limit_breached(symbol=symbol, strategy_name=strategy_name):
+            print(f"[webhook] Daily loss limit hit for {symbol}/{strategy_name} (limit ${DAILY_LOSS_LIMIT_USD}) — blocking")
             _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "daily_loss_limit")
             return {"status": "blocked", "reason": "daily_loss_limit"}
 

@@ -107,6 +107,21 @@ def init_db():
         )
     """)
 
+    # Correlation cluster observations — report-only (2026-07-22), NOT a
+    # trading gate. Logs when 3+ same-strategy positions open same-direction
+    # across USD pairs simultaneously, to measure frequency before deciding
+    # whether to gate it (ROADMAP.md Tier 4 correlation/exposure limits).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS correlation_events (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            checked_at    TEXT NOT NULL,
+            strategy_name TEXT NOT NULL,
+            direction     TEXT NOT NULL,
+            symbols       TEXT NOT NULL,
+            count         INTEGER NOT NULL
+        )
+    """)
+
     # Create positions table (live open positions, refreshed by poller)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS positions (

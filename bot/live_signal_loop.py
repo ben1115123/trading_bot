@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
 from database.models import get_active_strategies, log_signal_check, log_paper_trade, \
     get_pending_paper_trades, resolve_paper_trade, update_trade_context, upsert_heartbeat, \
-    log_candle_source_compare
+    log_candle_source_compare, log_correlation_event
+from database.db import get_connection
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 from bot.notifier import send_telegram
@@ -71,7 +72,7 @@ MAX_TRADES_PER_SYMBOL = 6      # bug catcher only
 _last_signal: dict[str, str] = {}
 _last_shadow_signal: dict[str, str] = {}
 _last_checked: dict[str, datetime] = {}
-_last_daily_loss_alert_date: str | None = None
+_last_daily_loss_alert: dict[tuple, str] = {}  # (symbol, strategy_name) -> date fired
 _ema200_cache: dict = {}  # symbol → (ema200, price_vs_ema200, cached_hour_key)
 
 # Stream-staleness guard (CANDLE_SOURCE=ig_stream path only): subscribed+
@@ -227,14 +228,58 @@ def _get_daily_stats() -> dict:
         conn.close()
 
 
+_CORRELATION_WATCH_SYMBOLS = {"EURUSD", "GBPUSD", "AUDUSD", "USDCAD"}
+_CORRELATION_MIN_COUNT = 3
+
+
+def _check_correlation_cluster(strategy_name: str = "williams_r") -> None:
+    """Report-only (2026-07-22): flag 3+ same-strategy OPEN positions, same
+    direction, across USD pairs at once. NOT a gate — logs to
+    correlation_events so frequency can be measured before deciding whether
+    to gate it (ROADMAP.md Tier 4 correlation/exposure limits). Direction is
+    the raw BUY/SELL signal per symbol, not USD-exposure-normalized (e.g.
+    USDCAD SELL is actually long USD, opposite of EURUSD/GBPUSD/AUDUSD SELL)
+    — fine for counting literal same-direction clusters like today's
+    incident, but report-only is as far as raw-direction counting goes.
+
+    TODO before any BLOCKING logic is built on this table: normalize to net
+    USD exposure direction first. Raw same-direction across mixed base/quote
+    USD pairs (USDCAD is USD-as-base, the other three are USD-as-quote) is
+    not the same underlying bet — gating on the unnormalized signal would be
+    wrong.
+    """
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(_CORRELATION_WATCH_SYMBOLS))
+        rows = conn.execute(f"""
+            SELECT symbol, direction FROM trades
+            WHERE status = 'OPEN' AND strategy_name = ?
+            AND symbol IN ({placeholders})
+        """, [strategy_name, *_CORRELATION_WATCH_SYMBOLS]).fetchall()
+    finally:
+        conn.close()
+
+    by_direction: dict[str, list[str]] = {}
+    for row in rows:
+        by_direction.setdefault(row["direction"], []).append(row["symbol"])
+
+    for direction, symbols in by_direction.items():
+        if len(symbols) >= _CORRELATION_MIN_COUNT:
+            msg = (f"CORRELATION CLUSTER: {len(symbols)}x {strategy_name} "
+                   f"{direction} open together ({', '.join(symbols)})")
+            print(f"[signal_loop] {msg}")
+            log_correlation_event(strategy_name, direction, symbols)
+            send_telegram(msg, level="INFO")
+
+
 def _risk_check(symbol: str, stats: dict, strategy_name: str | None = None) -> str | None:
     """Returns reason string if blocked, None if ok to trade.
     Loss limit is the real guardrail.
     Trade counts are safety nets for runaway signals only.
     """
     from risk.daily_loss import is_daily_loss_limit_breached, DAILY_LOSS_LIMIT_USD
-    if is_daily_loss_limit_breached():
-        return f"daily loss limit hit (all sources combined, limit ${DAILY_LOSS_LIMIT_USD})"
+    if is_daily_loss_limit_breached(symbol=symbol, strategy_name=strategy_name):
+        return f"daily loss limit hit ({symbol}/{strategy_name}, limit ${DAILY_LOSS_LIMIT_USD})"
 
     if stats["total_trades"] >= MAX_TRADES_PER_DAY:
         return f"max daily trades reached ({MAX_TRADES_PER_DAY})"
@@ -311,12 +356,13 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         if risk_reason:
             print(f"[signal_loop] [{symbol}] risk limit: {risk_reason}")
             if risk_reason.startswith("daily loss limit hit"):
-                global _last_daily_loss_alert_date
+                global _last_daily_loss_alert
                 _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                if _last_daily_loss_alert_date != _today:
-                    _last_daily_loss_alert_date = _today
+                _key = (symbol, strategy_name)
+                if _last_daily_loss_alert.get(_key) != _today:
+                    _last_daily_loss_alert[_key] = _today
                     send_telegram(
-                        "DAILY LOSS LIMIT HIT — live trading paused until midnight UTC",
+                        f"DAILY LOSS LIMIT HIT — {symbol}/{strategy_name} paused until midnight UTC",
                         level="ERROR")
             log_data["signal"] = "BLOCKED"
             log_data["error"]  = f"risk limit: {risk_reason}"
@@ -765,6 +811,11 @@ def _loop() -> None:
 
         print(f"[signal_loop] Checked this cycle ({len(_checked_this_cycle)}): {_checked_this_cycle}")
         print(f"[signal_loop] Candle fetches this cycle: {len(_candle_cache)} unique (symbol,timeframe) pairs")
+
+        try:
+            _check_correlation_cluster()
+        except Exception as e:
+            print(f"[signal_loop] correlation cluster check failed: {e}")
 
         try:
             upsert_heartbeat("signal_loop", f"{len(_checked_this_cycle)} strategies checked")

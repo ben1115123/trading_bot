@@ -116,11 +116,21 @@ _SYMBOL_DECIMALS: dict[str, int] = {
     "US500": 2, "US100": 2, "DAX": 2,
 }
 
-# 1 pip per symbol — used only to gate [SL DRIFT] log/Telegram noise on the
-# always-reanchor path (sub-pip corrections aren't worth alerting on).
+# 1 pip per symbol — used for SL DRIFT log formatting.
 _PIP_SIZE: dict[str, float] = {
     "EURUSD": 0.0001, "GBPUSD": 0.0001, "USDCAD": 0.0001, "AUDUSD": 0.0001,
     "US500": 1.0, "US100": 1.0, "DAX": 1.0,
+}
+
+# SL DRIFT Telegram alert gate — raised 2026-07-22 from 0.5 pip/pt to 3 pip
+# (FX) / 1.5 pt (index) per the drift investigation: the post-flip increase
+# was a mid-vs-dealing-price measurement artifact, not a regression (see
+# ROADMAP.md Tier 1). Console [SL DRIFT] log stays unconditional below —
+# only the Telegram send gates on this, so sub-threshold noise no longer
+# buries real ERROR alerts (e.g. daily-loss-limit) in the same channel.
+_ALERT_THRESHOLD: dict[str, float] = {
+    "EURUSD": 0.0003, "GBPUSD": 0.0003, "USDCAD": 0.0003, "AUDUSD": 0.0003,
+    "US500": 1.5, "US100": 1.5, "DAX": 1.5,
 }
 
 # IG API rejection reason codes indicating a capacity/margin constraint.
@@ -295,7 +305,7 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         # floor-breach-only fallback.
         _min_dist = _MIN_SL_DIST.get(symbol)
         _pip = _PIP_SIZE.get(symbol, _min_dist or 0.0001)
-        _log_threshold = 0.5 * _pip
+        _alert_threshold = _ALERT_THRESHOLD.get(symbol, 3 * _pip)
         _prec = _SYMBOL_DECIMALS.get(symbol, 5)
 
         if yf_entry is not None and abs(yf_entry - sl) > 0:
@@ -310,12 +320,12 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
                 sl = round(entry_price + _intended_sl_dist, _prec)
                 tp = round(entry_price - _rr * _intended_sl_dist, _prec)
             _adjustment = abs(entry_price - yf_entry)
-            if _adjustment > _log_threshold:
-                print(
-                    f"[SL DRIFT] {symbol} reanchored to live price "
-                    f"(adj={_adjustment:.5f}). yf_entry={yf_entry} rr={_rr:.2f} "
-                    f"new_sl={sl} new_tp={tp}"
-                )
+            print(
+                f"[SL DRIFT] {symbol} reanchored to live price "
+                f"(adj={_adjustment:.5f}). yf_entry={yf_entry} rr={_rr:.2f} "
+                f"new_sl={sl} new_tp={tp}"
+            )
+            if _adjustment > _alert_threshold:
                 from bot.notifier import send_telegram
                 send_telegram(
                     f"SL DRIFT {symbol} — reanchored to live price (adj={_adjustment:.5f})",

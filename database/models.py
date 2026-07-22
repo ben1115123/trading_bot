@@ -495,6 +495,35 @@ def get_webhook_strategy(symbol: str, strategy_name: str) -> dict | None:
         conn.close()
 
 
+def log_correlation_event(strategy_name: str, direction: str, symbols: list) -> None:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO correlation_events
+                (checked_at, strategy_name, direction, symbols, count)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            datetime.now(timezone.utc).isoformat(),
+            strategy_name, direction, ",".join(symbols), len(symbols),
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_correlation_events(limit: int = 100) -> list:
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM correlation_events ORDER BY checked_at DESC LIMIT ?",
+            (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def log_signal_check(data: dict) -> None:
     conn = get_connection()
     try:
