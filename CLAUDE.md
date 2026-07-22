@@ -488,10 +488,20 @@ VPS .env has RISK_PER_TRADE=5 — NOT read by any code. risk_manager.py
 hardcodes RISK_PER_TRADE=10 as default. Don't trust this env var.
 
 ### Daily Loss Limits
-| Source              | Limit | Behaviour when hit        |
-|---------------------|-------|---------------------------|
-| signal_loop         | $75   | Stops firing new trades   |
-| tradingview_webhook | $75   | Blocks incoming webhooks  |
+Keyed per (symbol, strategy_name) as of 2026-07-22 — each instance gets its
+own $75 budget, not one combined pool. Fixed because a FRAGILE strategy's
+bad day (e.g. GBPUSD williams_r) was blocking an unrelated instance (e.g.
+AUDUSD williams_r) even though they share a strategy_name — same-strategy
+symbols still isolate from each other. `risk/daily_loss.py`
+`is_daily_loss_limit_breached(symbol=..., strategy_name=...)`; call sites
+`webhook/receiver.py` and `bot/live_signal_loop.py::_risk_check`. Telegram
+alert dedup also moved from one global per-day flag to per (symbol,
+strategy_name).
+
+| Source              | Limit         | Behaviour when hit                    |
+|---------------------|---------------|----------------------------------------|
+| signal_loop          | $75/instance | Stops firing new trades for that (symbol, strategy_name) only |
+| tradingview_webhook  | $75/instance | Blocks incoming webhooks for that (symbol, strategy_name) only |
 
 ### Trade Count Limits (bug catchers only)
 MAX_TRADES_PER_DAY       = 20  (across all symbols)
@@ -657,14 +667,18 @@ found two structural, pre-existing causes, not a stream bug:
       — ordinary noise, not a bug. Does NOT explain index drift (US500
       half-spread is only 0.3pt vs 6.18pt observed mean) — that's (a).
 
-**Two items left OPEN:**
-- **Change 1 (SL DRIFT alert threshold, 3 pips FX / 1.5pt index) — HELD.**
-  Diff was written and reviewed but not deployed. Reason: raising the
-  threshold now would suppress visibility into exactly the drift
-  mechanism above while (b) is still uncorrected — re-open once the
-  mid-vs-dealing fix (below) lands and drift is measurable cleanly
-  without the phantom half-spread component.
-- **Mid-vs-dealing-price comparison fix — DEFERRED.** Cosmetic/
+**One item left OPEN, one DEPLOYED:**
+- **Change 1 (SL DRIFT alert threshold, 3 pips FX / 1.5pt index) —
+  DEPLOYED 2026-07-22.** Un-held: the drift investigation above concluded
+  the post-flip increase was the mid-vs-dealing measurement artifact, not
+  a regression — the reason to keep watching at 0.5-pip resolution had
+  passed. Un-holding forced by a live incident the same day: 0.5-pip
+  yellow-alert spam buried a real daily-loss-limit red alert for 8 hours.
+  `_ALERT_THRESHOLD` in `bot/execute_trade.py`; console `[SL DRIFT]` log
+  stays unconditional (still full-resolution for diagnostics), only the
+  Telegram send gates on the new threshold. Floor-breach branch (webhook
+  path) left unconditional — not the noise source, out of scope.
+- **Mid-vs-dealing-price comparison fix — still DEFERRED.** Cosmetic/
   measurement-accuracy issue, not urgent (doesn't affect real SL/TP
   math or execution, only the drift-metric's apparent size). Batch
   with the next reanchor-logic review rather than a one-off patch.
@@ -747,6 +761,42 @@ logged to `logs/ledger_reaudit_20260720T012352Z.jsonl`. One trade
 was left uncorrected — flagged, not explained. Re-run the script
 periodically or after any future poller/ig_scale change; it's
 read-only against IG and idempotent (dry-run reports zero once clean).
+
+### Correlation cluster logging + per-instance daily loss limit (2026-07-22)
+
+**Trigger incident:** all 3 williams_r USD-pair instances (GBPUSD, EURUSD,
+AUDUSD) went SELL together same day and all lost — the multi-symbol
+correlated-exposure scenario Tier 4's "Correlation/exposure limits" roadmap
+item existed to anticipate, now observed live rather than hypothetical.
+
+**Daily loss limit fix (see also Daily Loss Limits above):** was one
+$75 pool summed across every symbol+strategy — the correlated williams_r
+loss blew the combined limit and would have also halted unrelated,
+uncorrelated instances (US500 stoch_rsi, EURUSD swiftalgo) for the rest
+of the day, despite them having nothing to do with the loss. Now keyed
+per (symbol, strategy_name): confirmed via simulated GBPUSD-breach test
+that AUDUSD (same strategy_name, different symbol) is unaffected.
+
+**Correlation cluster logging — report-only, added same day:**
+`bot/live_signal_loop.py::_check_correlation_cluster()`, runs once per
+signal_loop cycle (not per-symbol — needs the full open-position picture).
+Flags 3+ OPEN williams_r positions, same direction, across
+{EURUSD, GBPUSD, AUDUSD, USDCAD} — logs to new `correlation_events` table
+(`database/models.py::log_correlation_event`/`get_correlation_events`) and
+sends an INFO Telegram alert. NOT a trading gate — purely measuring
+frequency before deciding whether to build blocking logic (Tier 4
+prerequisite). Triggers on distinct-pair count, not raw open-position
+count — found live on the very first post-deploy cycle that williams_r can
+hold 2 concurrent positions on the same symbol (re-entry across signal
+cycles isn't deduped), which would otherwise inflate the cluster size
+without adding real cross-pair diversification risk.
+
+Direction is the raw per-symbol BUY/SELL signal, not USD-exposure
+normalized — USDCAD is USD-as-base while the other three are
+USD-as-quote, so a USDCAD SELL is not the same underlying bet as a
+EURUSD/GBPUSD/AUDUSD SELL. Fine for report-only counting; **any future
+blocking logic built on this table must normalize to net USD exposure
+direction first**, per explicit instruction when this was built.
 
 ## Paper Trading System
 - paper_trades table in DB — logs every paper signal

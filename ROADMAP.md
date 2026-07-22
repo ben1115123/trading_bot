@@ -1,5 +1,5 @@
 # TRADING BOT — DEVELOPMENT ROADMAP
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 Rule: this file is updated whenever a tier item 
 completes or a gate decision resolves.
 
@@ -65,7 +65,18 @@ REJECTed because the pool was weak, not the switching)
 - [ ] Volatility-targeted sizing (position ∝ 1/ATR, 
   constant risk across vol regimes)
 - [ ] Correlation/exposure limits (EURUSD+GBPUSD+
-  AUDUSD long = one USD bet; hard gate before live)
+  AUDUSD long = one USD bet; hard gate before live).
+  LIVE EVIDENCE 2026-07-22: all 3 williams_r USD-pair
+  instances (GBPUSD/EURUSD/AUDUSD) went SELL same day,
+  all lost together — no longer hypothetical. Report-
+  only cluster logging shipped same day
+  (correlation_events table, bot/live_signal_loop.py
+  _check_correlation_cluster, 3+ distinct pairs same
+  direction) to measure frequency before gating.
+  Direction is raw per-symbol signal, NOT USD-exposure
+  normalized (USDCAD is USD-as-base, opposite polarity
+  from the other three) — normalize before any
+  blocking logic is built on this data.
 - [ ] Regime portfolio v2 (regime-multiplier sizing 
   across the real edge inventory; portfolio itself 
   must pass walk-forward as a unit)
