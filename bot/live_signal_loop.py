@@ -264,11 +264,17 @@ def _check_correlation_cluster(strategy_name: str = "williams_r") -> None:
         by_direction.setdefault(row["direction"], []).append(row["symbol"])
 
     for direction, symbols in by_direction.items():
-        if len(symbols) >= _CORRELATION_MIN_COUNT:
-            msg = (f"CORRELATION CLUSTER: {len(symbols)}x {strategy_name} "
-                   f"{direction} open together ({', '.join(symbols)})")
+        unique_symbols = sorted(set(symbols))
+        # Trigger on distinct pairs, not raw position count — 2 open EURUSD
+        # positions isn't the diversification-across-pairs risk this exists
+        # to catch (found live 2026-07-22: dedup key allows re-entry on the
+        # same symbol across signal cycles, so raw counts double up).
+        if len(unique_symbols) >= _CORRELATION_MIN_COUNT:
+            msg = (f"CORRELATION CLUSTER: {len(unique_symbols)} pairs / "
+                   f"{len(symbols)} positions — {strategy_name} {direction} "
+                   f"open together ({', '.join(unique_symbols)})")
             print(f"[signal_loop] {msg}")
-            log_correlation_event(strategy_name, direction, symbols)
+            log_correlation_event(strategy_name, direction, unique_symbols)
             send_telegram(msg, level="INFO")
 
 
