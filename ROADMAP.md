@@ -27,10 +27,24 @@ DEFERRED: mid-vs-dealing comparison fix (cosmetic;
 batch with future reanchor review).
 
 ## TIER 2 — THE FORK (running now)
-- [ ] AUDUSD reconciliation read (trigger: 40+ clean 
-  trades; prompt spec exists in session notes — 
-  realized vs backtest WR/expectancy/RR/regime, plus 
-  post-flip entry-gap "after" number)
+- [ ] AUDUSD reconciliation read (trigger: ~30 clean
+  SINGLE-position trades, ~2 weeks post-cap; prompt
+  spec exists in session notes — realized vs backtest
+  WR/expectancy/RR/regime, plus post-flip entry-gap
+  "after" number). Clock reset 2026-07-25: max
+  concurrent-positions-per-symbol cap deployed
+  (`risk/concurrent_positions.py`, cap=1) after a
+  stacking-profitability analysis found concurrent
+  williams_r stacking cost -$219.63 vs first-entry-only
+  across 32 episodes — the pre-cap AUDUSD sample (49
+  closed trades, 37 stacked) does not match the
+  backtest's one-position-at-a-time model and does not
+  count toward the 40-trade bar. Only single-position
+  trades placed after this deploy count. Plan: initial
+  read at ~30 clean trades as a directional
+  certification (does demo track backtest direction,
+  yes/no), full statistical read upgrading as the
+  sample grows past 40+.
 - [ ] July 21: GBPUSD + stoch_rsi FRAGILE review 
   gate (demo performance vs walk-forward profiles)
 

@@ -29,6 +29,9 @@ bot/notifier.py             ✅ send_telegram() — see Alerting section
 scripts/watchdog.py         ✅ Host cron, heartbeat/duplicate/container checks
 scripts/daily_summary.py    ✅ Host cron 23:00 UTC, one summary message
 risk_manager.py             Lot size ($10 USD fixed risk, see Risk Management)
+risk/daily_loss.py          ✅ Per-(symbol,strategy_name) $75 daily loss limit
+risk/concurrent_positions.py ✅ Max concurrent positions per symbol (cap=1),
+                             signal_loop live path only, see Risk Management
 ig_env.py                   ✅ get_ig_credentials() — DEMO/LIVE switch, see Broker section
 filters/rule_filters.py     Trend filter (disabled)
 filters/vix_filter.py       VIX filter — blocks swing entries >= 18
@@ -271,6 +274,28 @@ apples), `sync_ig_trades.py` (openLevel/closeLevel from transaction
 history). Everything else in the codebase (SL/TP math, DB storage,
 dashboards, webhooks) stays decimal, unchanged.
 
+### Deal currency quirk — ig_scale.get_currency_code() (fixed 2026-07-25)
+Third per-instrument-assumption bug (after `scalingFactor` above and the
+REST `snapshotTime` account-timezone bug, see CANDLE_SOURCE section) — IG
+instrument properties are NOT uniform across epics; always derive per-epic,
+never hardcode one value for "all FX pairs." `create_open_position` had
+`currency_code="USD"` hardcoded for every symbol. USDCAD is the one FX pair
+in the roster where USD is the base, not the quote — its instrument's
+`currencies` list only contains `CAD`, no `USD` entry (confirmed via
+`fetch_market_by_epic`; EURUSD/GBPUSD/AUDUSD all list `USD`). Sending
+`currency_code="USD"` on that epic is an invalid param IG rejects with an
+unclassified `reason: 'UNKNOWN'` (not a structured margin/size code) — this
+was the root cause of every USDCAD live-trade rejection since its
+2026-07-14 activation (10/10 rejections, 100% failure rate, zero USDCAD
+trades ever placed).
+
+Fix: `ig_scale.get_currency_code(symbol)` — deal currency cached per-epic
+alongside the price-scale map, same lock, same lifecycle (`init_price_scales`
+fetches both from the one `fetch_market_by_epic` call, re-init on session
+recreate / account switch). Falls back to `'USD'` only if the lookup never
+resolved for that symbol, logged loudly (`[ig_scale] currency_code fallback
+to USD for {symbol}`) so a wrong-currency order is never sent silently.
+
 ## Supported Assets (Live)
 | Symbol | Epic                   | yfinance | Value/Point |
 |--------|------------------------|----------|-------------|
@@ -502,6 +527,32 @@ strategy_name).
 |---------------------|---------------|----------------------------------------|
 | signal_loop          | $75/instance | Stops firing new trades for that (symbol, strategy_name) only |
 | tradingview_webhook  | $75/instance | Blocks incoming webhooks for that (symbol, strategy_name) only |
+
+### Max Concurrent Positions Per Symbol (2026-07-25)
+`risk/concurrent_positions.py` — `MAX_CONCURRENT_PER_SYMBOL = 1`. Before a
+signal_loop live trade, counts `trades.status='OPEN'` for that (symbol,
+strategy_name); at/over limit, skips the signal and shadow-logs to
+paper_trades (`notes: "SHADOW: skipped — concurrent position limit, would
+be Nth stack"`), logs `BLOCKED_CONCURRENT_<signal>` to signal_log. Read
+from DB state, not a live IG poll — same source `_check_correlation_cluster`
+already uses. Race window: count is read before place_trade's own IG
+round-trip; a different-timeframe signal on the same (symbol,
+strategy_name) landing mid-`place_trade()` could still stack past the
+limit — narrow, not fully closed. Webhook/swiftalgo path untouched (gate
+lives only in `live_signal_loop.py::_check_symbol`, not `execute_trade.py`
+or `webhook/receiver.py`).
+
+Reason: 2026-07-24 stacking-profitability analysis (backtest-vs-live
+reconciliation prep) found concurrent same-symbol williams_r stacking cost
+**-$219.63** vs a first-entry-only counterfactual across 32 episodes/78
+trades in the post-flip window — 21/32 episodes were ALL_SL together
+(correlated drawdown, not diversification), and deeper price-averaging did
+not correlate with better outcomes (mean-reversion "stronger snapback"
+thesis unsupported). The backtest engine models one position at a time;
+this aligns live execution to that model. **Reconciliation clean-singles
+clock starts at this deploy** — AUDUSD reconciliation now counts only
+single-position trades placed after this fix ships, not the pre-cap
+history.
 
 ### Trade Count Limits (bug catchers only)
 MAX_TRADES_PER_DAY       = 20  (across all symbols)
@@ -970,6 +1021,17 @@ should run the bot.
   format: "DAX,US100_5MIN,BTC"
 - sync_ig_trades: duplicate prevention via deal_reference
   + price/symbol/date secondary check
+- place_trade rejection reasons persist to signal_log.error (fixed
+  2026-07-25) — previously only `print()`'d, lost on every container
+  restart (lost real evidence twice, incl. the USDCAD UNKNOWN-reason
+  investigation). `execute_trade.last_reject_reason: dict[symbol->str]`
+  set at every `place_trade` failure return; `live_signal_loop.py`'s
+  `_check_symbol` reads it right after the call instead of hardcoding
+  "place_trade returned False". Module-level dict keyed by symbol, not
+  thread-safe — acceptable because "williams_r" only ever runs from the
+  single-threaded signal_loop and "swiftalgo" only from the webhook path,
+  so no realistic same-symbol collision. Webhook path (`place_trade_from_alert`
+  / `webhook_log`) untouched — it never consumed the old string either.
 - Overview alert banner triggers if signal_log silent 2h+
 - Cron status parsed from /app/logs/daily_run.log
 - Weekend close: _verify_closed_on_ig before marking CLOSED
@@ -1006,12 +1068,17 @@ PHASE 7 — Risk Management & Stability
 - Per-symbol cooldown in execute_trade.py (was global)
 - Paper trading system: paper_trades table, resolver,
   dashboard pages 07/08 updated
+- Max concurrent positions per symbol — DONE 2026-07-25, but scoped
+  differently than originally planned: cap is 1 (not 2) and per
+  (symbol, strategy_name) on the signal_loop live path only, driven by
+  the stacking-profitability finding (-$219.63 vs first-entry-only,
+  see Risk Management). Not a global concurrent-position cap across all
+  symbols — see `risk/concurrent_positions.py`.
 
 ### Still to build in Phase 7
 - Telegram alerts (trade placed, trade closed, risk limit hit)
 - Strategy stability rules:
     Don't switch if live win rate dropped < 40% last 7 days
-- Max concurrent open positions (max 2 at once)
 - Weekly performance report via Telegram
 - Confluence strategy (multi-condition entry)
   Planned: EMA(200) + RSI(14) + MACD crossover

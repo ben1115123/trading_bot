@@ -153,6 +153,14 @@ _MARGIN_REASONS: frozenset = frozenset({
 last_signal = None
 last_trade_time = {}  # keyed by symbol
 
+# Real rejection/failure reason per symbol, for callers that need more than
+# a bare False (signal_log.error was showing "place_trade returned False" —
+# the actual IG reason only ever hit stdout, lost on every container
+# restart). Keyed by symbol, not thread-safe, but place_trade is only ever
+# called for "williams_r" from the single-threaded signal_loop and for
+# "swiftalgo" from the webhook path — no realistic same-symbol collision.
+last_reject_reason: dict[str, str] = {}
+
 
 # -------------------------
 # Utils
@@ -282,6 +290,7 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         from bot.notifier import send_telegram
         send_telegram(f"REFUSED {symbol} {direction} — price scale unresolved, "
                       f"trading blocked until resolved", level="ERROR")
+        last_reject_reason[symbol] = "price scale unresolved"
         return False
 
     try:
@@ -353,6 +362,7 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
 
         if size is None:
             print("Position sizing failed — aborting")
+            last_reject_reason[symbol] = "position sizing failed"
             return False
 
         # Guard against IG's real minDealSize being above our calculated size —
@@ -409,6 +419,10 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
                     f"${implied_risk:.2f} vs ${intended_risk:.2f} intended (>1.3x)",
                     level="WARN",
                 )
+                last_reject_reason[symbol] = (
+                    f"min deal size would oversize risk to ${implied_risk:.2f} "
+                    f"vs ${intended_risk:.2f} intended"
+                )
                 return False
             else:
                 print(
@@ -422,7 +436,7 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         print(f"[TEST] Expected risk: ${expected_risk:.2f}")
 
         response = ig_service.create_open_position(
-            currency_code="USD",
+            currency_code=ig_scale.get_currency_code(symbol),
             direction=direction,
             epic=epic,
             expiry="-",
@@ -443,11 +457,13 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         print("IG Response:", response)
 
         if not response:
+            last_reject_reason[symbol] = "IG returned no response"
             return False
 
         if response.get("dealStatus") == "REJECTED":
             reason = response.get("reason", "UNKNOWN")
             print(f"Trade rejected: {reason}")
+            last_reject_reason[symbol] = f"IG rejected: {reason}"
             from bot.notifier import send_telegram
             send_telegram(f"REJECTED {symbol} {direction} — {reason}", level="ERROR")
             if reason in _MARGIN_REASONS:
@@ -524,5 +540,8 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
 
             except Exception as retry_error:
                 print("Retry failed:", retry_error)
+                last_reject_reason[symbol] = f"retry after session reset failed: {retry_error}"
+                return False
 
+        last_reject_reason[symbol] = f"exception: {e}"
         return False

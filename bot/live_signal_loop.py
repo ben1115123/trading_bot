@@ -640,6 +640,32 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         print(f"[signal_loop] [{symbol}/{timeframe}] PAPER {signal} logged — not executed")
         return
 
+    from risk.concurrent_positions import is_concurrent_limit_breached, get_open_position_count
+    if is_concurrent_limit_breached(symbol, strategy_name):
+        _stack_n = get_open_position_count(symbol, strategy_name) + 1
+        print(f"[signal_loop] [{symbol}/{strategy_name}] concurrent position limit hit — skipping {signal}")
+        _cap_now = datetime.now(timezone.utc)
+        log_paper_trade({
+            "checked_at":    _cap_now.isoformat(),
+            "symbol":        symbol,
+            "strategy_name": strategy_name,
+            "timeframe":     timeframe,
+            "candle_time":   candle_time,
+            "signal":        f"SHADOW_{signal}",
+            "entry_price":   entry,
+            "sl":            sl,
+            "tp":            tp,
+            "outcome":       "PENDING",
+            "params_json":   params_json if isinstance(params_json, str) else json.dumps(params_json),
+            "session":       _get_session(_cap_now.hour),
+            "notes":         f"SHADOW: skipped — concurrent position limit, would be {_stack_n}th stack",
+            "regime":        regime,
+        })
+        log_data["signal"] = f"BLOCKED_CONCURRENT_{signal}"
+        log_data["error"]  = f"concurrent position limit: {_stack_n}th stack on {symbol}/{strategy_name}"
+        log_signal_check(log_data)
+        return
+
     # Collect market context at signal time
     _now_utc = datetime.now(timezone.utc)
     _ctx: dict = {
@@ -658,9 +684,9 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         _ctx["ema200_daily"]    = None
         _ctx["price_vs_ema200"] = None
 
-    from bot.execute_trade import place_trade
+    import bot.execute_trade as execute_trade
     try:
-        result = place_trade(
+        result = execute_trade.place_trade(
             symbol, action, sl=sl, tp=tp,
             strategy_name=strategy_name,
             source="live_signal_loop",
@@ -670,7 +696,9 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         placed = 1 if result else 0
         log_data["trade_placed"] = placed
         if not result:
-            log_data["error"] = "place_trade returned False"
+            log_data["error"] = execute_trade.last_reject_reason.get(
+                symbol, "place_trade returned False"
+            )
         print(f"[signal_loop] [{symbol}] trade placed={placed}")
         if placed:
             try:

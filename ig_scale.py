@@ -42,6 +42,8 @@ _CANDIDATE_DIVISORS = (1.0, 10000.0)
 
 _lock = threading.Lock()
 _scale: dict[str, float] = {}  # symbol -> divisor; native / divisor = decimal
+_currency: dict[str, str] = {}  # symbol -> IG deal currency code (e.g. 'USD', 'CAD')
+_DEFAULT_CURRENCY = "USD"
 
 
 class PriceScaleAmbiguous(Exception):
@@ -82,6 +84,14 @@ def init_price_scales(ig_service, epic_map: dict[str, str], force: bool = False)
     for symbol, epic in targets:
         try:
             market = ig_service.fetch_market_by_epic(epic)
+        except Exception as e:
+            # Transient fetch failure -- do not cache and do not block trading
+            # outright the way a genuine ambiguous-price reading does. Next
+            # call (10min refresh / next reconnect) retries naturally.
+            print(f"[ig_scale] market fetch failed for {symbol}: {e}")
+            continue
+
+        try:
             bid = float(market["snapshot"]["bid"])
             divisor = _classify(symbol, bid)
             with _lock:
@@ -96,10 +106,26 @@ def init_price_scales(ig_service, epic_map: dict[str, str], force: bool = False)
                 level="ERROR",
             )
         except Exception as e:
-            # Transient fetch failure -- do not cache and do not block trading
-            # outright the way a genuine ambiguous-price reading does. Next
-            # call (10min refresh / next reconnect) retries naturally.
             print(f"[ig_scale] classification failed for {symbol}: {e}")
+
+        # Deal currency — same market object, no extra API call. IG instrument
+        # properties are NOT uniform per-epic (3rd such bug, after
+        # scalingFactor and snapshotTime timezone): USDCAD's only supported
+        # currency is CAD, not USD, since USD is the base there rather than
+        # the quote. Always derive per-epic, never assume.
+        try:
+            currencies = (market.get("instrument", {}) or {}).get("currencies") or []
+            code = currencies[0]["code"] if currencies else None
+            if code:
+                with _lock:
+                    _currency[symbol] = code
+                print(f"[ig_scale] {symbol} ({epic}) currency_code -> {code}")
+            else:
+                print(f"[ig_scale] {symbol} ({epic}) no currencies in instrument "
+                      f"metadata — falls back to {_DEFAULT_CURRENCY} if needed")
+        except Exception as e:
+            print(f"[ig_scale] currency_code lookup failed for {symbol}: {e} — "
+                  f"falls back to {_DEFAULT_CURRENCY} if needed")
 
 
 def is_resolved(symbol: str) -> bool:
@@ -107,6 +133,21 @@ def is_resolved(symbol: str) -> bool:
         return True
     with _lock:
         return symbol in _scale
+
+
+def get_currency_code(symbol: str) -> str:
+    """Deal currency for create_open_position's currency_code param, derived
+    per-epic (see init_price_scales) rather than assumed. Falls back to
+    'USD' only on lookup failure — logged loudly so a wrong-currency
+    order is never sent silently.
+    """
+    with _lock:
+        code = _currency.get(symbol)
+    if code is None:
+        print(f"[ig_scale] currency_code fallback to {_DEFAULT_CURRENCY} for "
+              f"{symbol} — no cached value, verify instrument metadata")
+        return _DEFAULT_CURRENCY
+    return code
 
 
 def to_decimal(symbol: str, native_value):
