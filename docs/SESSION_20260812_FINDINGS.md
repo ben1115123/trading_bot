@@ -51,10 +51,24 @@ wash, and *not* the main divergence.
 local), every score derived from them, and every promotion decision that
 used them — see finding 2 of Part 2 for the count.
 
-**Fixing requires:** decide whether TP is the strategy's responsibility
-(emit `tp_price`) or the engine's (apply a default R multiple); correct
-`RISK_PER_TRADE` to 10.0 and delete the false comment; then regenerate all
-affected evidence under an `engine_version` marker (see finding 11).
+**Fixing requires — scope decided 2026-08-12: fix the ENGINE CONTRACT, not
+the strategies.** This is not a `williams_r` bug; 21 of 34 strategies omit
+the same contract (finding 12). Two halves, **both required**:
+
+1. **A default TP rule when a strategy supplies none** — an R-multiple. The
+   multiple itself must be **decided against observed live behaviour, not
+   guessed**.
+2. **A hard failure when neither `sl_price` nor `tp_price` is present and no
+   default applies.** The silent `sig.get("tp_price")` returning `None` is
+   the actual defect. **A default alone makes the silence quieter rather
+   than fixing it** — the next strategy to omit the contract would still run
+   without anyone being told.
+
+Also required: correct `RISK_PER_TRADE` to 10.0 and delete the false
+comment; **audit the 13 emitting strategies' existing TP rules against live
+behaviour** — emitting something is not evidence of emitting the right
+thing, and those rules have never been checked; then regenerate all affected
+evidence under an `engine_version` marker (see finding 11).
 
 ---
 
@@ -155,10 +169,52 @@ misrepresenting 31 clean ones.
    the boundary conversion sites as `execute_trade.py`,
    `positions_poller.py`, `candle_stream.py`, `sync_ig_trades.py`. The paper
    logging path is not among them.
-2. The lot-floor breach is **no longer theoretical**. The same
-   `max(0.1, ...)` clamp exists on the live path, where SL > 100 pips would
-   silently push actual risk above the intended $10. id=824 is that
-   mechanism, already fired, in paper.
+2. **The clamp masks implausible `sl_distance` instead of rejecting it.**
+   See the correction and the full clamp survey immediately below.
+
+### Correction (2026-08-12) — the lot-floor breach has fired in PAPER only
+
+An earlier characterisation in this session called the lot-floor breach
+"no longer theoretical." That overstates it. Corrected:
+
+| Table | Rows scanned | Out-of-band prices | MAX clamp (lot>10, SL<1 pip) | MIN clamp (lot<0.1, SL>100 pips) |
+|---|---|---|---|---|
+| `paper_trades` | 1,447 | **1** (id=824) | **5** | **1** (id=824) |
+| `trades` (live) | 894 | **0** | **0** | **0** |
+
+**The live ledger is clean.** Zero scale-corrupted prices and zero clamp hits
+in either direction across 894 rows. **Live lot-floor risk remains
+theoretical.** The breach is real in paper, across 6 rows total.
+
+id=824 is also **unique**, not the largest of many — it is the only
+out-of-band price in either table.
+
+### The second distortion class — MAX-clamp under-risking (5 paper rows)
+
+Found by the same survey, opposite direction to id=824:
+
+```
+id=133  EURUSD  sl=0.88 pips  lot=11.33 -> clamped 10  pnl=-8.83
+id=218  EURUSD  sl=0.89 pips  lot=11.21 -> clamped 10  pnl=-8.92
+id=253  EURUSD  sl=0.40 pips  lot=24.92 -> clamped 10  pnl=-4.01
+id=334  EURUSD  sl=0.20 pips  lot=48.92 -> clamped 10  pnl=+2.04
+id=335  EURUSD  sl=0.20 pips  lot=48.92 -> clamped 10  pnl=+2.04
+```
+
+Sub-pip stops compute lot sizes of 11–49, clamped down to the 10.0 maximum.
+These trades are **under-risked**: they book ±$2–9 where the model intended
+±$10 / ±$20.
+
+**This contaminates a promotion criterion.** Compressing the P&L
+distribution reduces variance while leaving the mean roughly intact, which
+**inflates Sharpe** — and `Sharpe >= 0.08` is one of the four R:R-adjusted
+promotion criteria. The criterion is measured on data the clamp has
+artificially smoothed.
+
+**Consequence for the fix:** the `sl_distance` sanity bound must **reject at
+both ends**, not just the floor. A sub-pip stop is as implausible as a
+2.5-price-unit one, and clamping either is how both distortions got into the
+record silently.
 
 **Fixing requires:** quarantine id=824 (do not delete — it is the evidence);
 re-baseline every dependent summary; the conversion and sanity-bound work in
@@ -450,6 +506,31 @@ deliberately placed on the host.
 **Invalidates:** any assumption that a log-derived figure can be re-checked
 later on the machine.
 
+### Related hazard — the image contains frozen copies of host logs
+
+`Dockerfile:11` is `COPY . .`, so the build-time contents of `logs/` are
+baked into the image. The container therefore holds files with the **same
+names and formats** as the live host logs, frozen at build time:
+
+| File | Container copy | Host (live) |
+|---|---|---|
+| `watchdog.log` | 664,804 bytes, frozen **Jul 24 21:10** | 1,407,383 bytes, **Aug 12 17:30** |
+| `daily_summary.log` | 5,615 bytes, **Jul 23** | 12,795 bytes, **Aug 11** |
+| `watchdog_alerts.jsonl` | 668 bytes, Jul 20 | 668 bytes, Jul 20 |
+
+**Reading `/app/logs/watchdog.log` inside the container returns data ~3
+weeks stale that looks live.** This is the unverified-controls class
+(finding 9) in a new place: a source that appears authoritative and is not.
+
+**Corollary — `database/` is baked too.** `COPY . .` also copies the
+build-time `database/` directory (including `trades.db` and any `trades.bak-*`
+files) into the image, where it is hidden at runtime by the
+`./database:/app/database` volume mount. Two consequences: image bloat, and —
+**if the volume mount ever failed or were misconfigured, the container would
+silently run against a build-time database snapshot** rather than failing.
+
+Mitigation to consider: a `.dockerignore` excluding `logs/` and `database/`.
+
 ---
 
 ## 11. Local and VPS `backtest_results` are different corpora
@@ -485,18 +566,113 @@ at local ids or be `NULL`.
 
 ---
 
+## 12. 21 of 34 strategies omit the `sl_price`/`tp_price` contract
+
+**Broken:** the engine reads `sig.get("tp_price")` and silently accepts
+`None`. Most strategies never set it. There is no error — the strategy just
+runs with no take-profit.
+
+**This is the scope-defining finding for the engine fix.** It establishes
+that finding 1 is a contract violation across the codebase, not a
+`williams_r` bug.
+
+**21 emit neither `sl_price` nor `tp_price`:**
+
+`bb_squeeze`, `connors_rsi2`, `donchian_breakout`, `ema_cross_volume`,
+`ema_ribbon`, `fvg`, `ichimoku`, `keltner`, `macd_crossover`, `macd_rsi`,
+`orb`, `rsi`, `rsi_divergence`, `rsi_mean_reversion`, `smc`, `stoch_rsi`,
+`stoch_rsi_confluence`, `supertrend`, `vwap_ema`, `vwap_mean_reversion`,
+**`williams_r`**
+
+**13 emit both:**
+
+`ema_pullback`, `ema_ribbon_pullback`, `engulfing_candle`, `hull_momentum`,
+`inside_bar_breakout`, `kama_crossover`, `london_breakout`,
+`market_structure_break`, `ny_session_momentum`, `regime_adaptive`,
+`rsi_divergence_session`, `silver_bullet`, `supertrend_ema_filter`
+
+**Evidence** (verified as real emission, not comment matches):
+
+```python
+# ema_pullback.py:72 — emitter, initialises the keys up front
+signals = [{"index": i, "signal": "NONE", "sl_price": None, "tp_price": None} for i in range(n)]
+# ema_pullback.py:149-150
+"sl_price": round(sl_price, 6),
+"tp_price": round(tp_price, 6),
+
+# stoch_rsi.py:46-57 — non-emitter
+signals.append({"index": i, "signal": "BUY"})
+# supertrend.py:50-56 — non-emitter, identical shape
+```
+
+**Two generations.** The 21 non-emitters are essentially the original
+strategy set, written before the `sl_price`/`tp_price` signal-dict contract
+existed. The 13 emitters were written against it. Nothing enforces the
+contract, so the split is invisible at runtime.
+
+**Fixing requires:** the engine-contract fix scoped in finding 1 — default
+plus hard failure. Fixing 21 strategies individually would work once and
+invite the same omission on strategy 35.
+
+---
+
+## 13. The live roster's backtest provenance
+
+**Broken:** most live rows have no recorded backtest provenance, and every
+row that has some used a non-emitting strategy.
+
+**Evidence** — all 8 live `active_strategy` rows:
+
+| id | Symbol | TF | Strategy | backtest_id | Row exists | Emits tp_price? |
+|---|---|---|---|---|---|---|
+| 33 | US100 | HOUR | supertrend | 73401 | YES | **No** |
+| 2 | US500 | HOUR | stoch_rsi | 1705 | YES | **No** |
+| 34 | AUDUSD | 15MIN | williams_r | **NULL** | — | **No** |
+| 22 | EURUSD | 15MIN | williams_r | **NULL** | — | **No** |
+| 32 | GBPUSD | 15MIN | williams_r | **NULL** | — | **No** |
+| 36 | USDCAD | 15MIN | williams_r | **NULL** | — | **No** |
+| 11 | EURUSD | HOUR | swiftalgo | NULL | — | n/a (webhook, never backtested) |
+| 13 | US500 | HOUR | swiftalgo | NULL | — | n/a |
+
+**Only 2 of 8 live rows carry a `backtest_id`, and both use non-emitting
+strategies — so 100% of backtest-derived live promotions rest on evidence
+the engine could not have modelled correctly.**
+
+**The other 6 have `backtest_id = NULL`**, meaning the **four `williams_r` FX
+instances — the three highest-exposure ones among them — have no backtest
+provenance recorded at all.** Their justification exists only as CLAUDE.md
+prose plus the local `walkforward_runs` rows, which per finding 7 contain
+zero `walk_forward` rows for `williams_r`.
+
+**Across all 31 roster rows:** 17 (55%) have `backtest_id = NULL`; the 14
+that carry one all resolve to rows that still exist (no dangling
+references); **26 of 31 use a strategy that omits `tp_price`** (only 4
+`ema_pullback` rows and 1 `ny_session_momentum` row use emitters; the 2
+swiftalgo rows are webhook-driven and never backtested).
+
+**Invalidates:** the premise that the roster is backed by reproducible
+backtest evidence. For the williams_r FX instances there is no stored
+evidence to re-examine at all.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |
 |---|---|---|
 | `status` default fix (3 layers) | — | Independent; do first |
 | Cron writes `'paper'` only | status fix | Subsumes finding 5 |
-| Engine parity (finding 1) | — | Regenerates all evidence |
+| **Engine contract fix** (findings 1, 12) | — | Default TP **and** hard failure. Regenerates all evidence |
+| Audit the 13 emitters' TP rules | engine contract fix | Emitting ≠ emitting correctly; never checked |
 | Paper resolver (finding 2) | — | **Sibling to engine parity, not a subtask** |
+| `sl_distance` sanity bound | paper resolver | Must **reject at both ends** — floor and ceiling (finding 3 correction) |
 | `engine_version` marking | engine parity | See below |
 | Quarantine id=824, re-baseline | finding 2 | Includes correcting CLAUDE.md |
 | Gauntlet regeneration | engine parity + marking | Regeneration, not reproduction |
+| Promotion-time verdict check | `walkforward_runs` | Refuse to cite a verdict with no row — would have caught both EURUSD and AUDUSD (finding 7) |
 | `logs/` + `candle_cache/` volumes | — | Fold in with the `collect_candles` decision |
+| `/tmp` state files | volume work | `candle_stream_fallback_state.json`, `watchdog_state.json` lose alert-dedup cooldowns on restart |
+| `.dockerignore` for `logs/`, `database/` | — | Stops baking stale copies into the image (finding 10) |
 
 **`engine_version` marking scheme** (agreed, not yet implemented): a
 `NOT NULL DEFAULT 'pre-parity-v0'` column on `backtest_results`; semantic
