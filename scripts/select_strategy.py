@@ -45,6 +45,7 @@ STRATEGY_BLOCKLIST = {
     ("BTC",   "HOUR", "macd_rsi"),
 
     # US500 HOUR — failed backtests / not validated
+    ("US500", "HOUR", "stoch_rsi"),               # deactivated 2026-08-13 (id 2) — cron must not re-promote
     ("US500", "HOUR", "rsi"),
     ("US500", "HOUR", "macd_rsi"),
     ("US500", "HOUR", "vwap_ema"),
@@ -152,7 +153,17 @@ STRATEGY_BLOCKLIST = {
 }
 
 # Symbols blocked entirely — cron will not promote any strategy
-SYMBOL_BLOCKLIST = {"BTC"}
+# US100 added 2026-08-15: STRATEGY_BLOCKLIST is an allowlist by omission —
+#   ("US100","HOUR","supertrend") was never listed, so cron promoted it live
+#   unreviewed on 2026-06-16 despite CLAUDE.md claiming all US100 strategies
+#   were blocked since 2026-06-12. Symbol-wide block makes that claim true.
+# US500 added 2026-08-15: US500 HOUR now has no active row (id 2 deactivated
+#   2026-08-13), which arms select_strategy's first-activation branch — it has
+#   no score threshold and would promote a paper strategy straight to live.
+#   Five US500 HOUR names remain unblocked by tuple (williams_r,
+#   stoch_rsi_confluence, ema_pullback, fvg, smc); enumerating them is the same
+#   omission trap. See docs/SESSION_20260812_FINDINGS.md findings 5 and 6.
+SYMBOL_BLOCKLIST = {"BTC", "US100", "US500"}
 
 SEED_STRATEGIES = {
     "US100": {
