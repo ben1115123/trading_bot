@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from database.db import get_connection
 from engine_version import CURRENT_ENGINE_VERSION
 from spread_model import CURRENT_SPREAD_MODEL, spread_table_sha
+from paper_model import CURRENT_PAPER_MODEL
 
 
 def log_trade(trade_data: dict) -> int:
@@ -643,11 +644,13 @@ def log_paper_trade(data: dict) -> None:
             INSERT INTO paper_trades
                 (checked_at, symbol, strategy_name, timeframe,
                  candle_time, signal, entry_price, sl, tp,
-                 simulated_pnl, outcome, params_json, notes, session, regime)
+                 simulated_pnl, outcome, params_json, notes, session, regime,
+                 paper_model, spread_model, risk_per_trade)
             VALUES
                 (:checked_at, :symbol, :strategy_name, :timeframe,
                  :candle_time, :signal, :entry_price, :sl, :tp,
-                 :simulated_pnl, :outcome, :params_json, :notes, :session, :regime)
+                 :simulated_pnl, :outcome, :params_json, :notes, :session, :regime,
+                 :paper_model, :spread_model, :risk_per_trade)
         """, {
             "checked_at":    data.get("checked_at", datetime.now(timezone.utc).isoformat()),
             "symbol":        data["symbol"],
@@ -664,6 +667,14 @@ def log_paper_trade(data: dict) -> None:
             "notes":         data.get("notes"),
             "session":       data.get("session"),
             "regime":        data.get("regime"),
+            # Provenance of the resolver model that will compute this row's
+            # simulated_pnl. Stamped at WRITE time, not resolve time, so a row
+            # written under one model and resolved after a bump is still
+            # attributable — the resolver reads the stamp rather than assuming
+            # the current one. risk_per_trade stays NULL until the re-baseline.
+            "paper_model":    data.get("paper_model", CURRENT_PAPER_MODEL),
+            "spread_model":   data.get("spread_model", CURRENT_SPREAD_MODEL),
+            "risk_per_trade": data.get("risk_per_trade"),
         })
         conn.commit()
     finally:

@@ -362,7 +362,10 @@ def init_db():
             outcome       TEXT DEFAULT 'PENDING',
             params_json   TEXT,
             notes         TEXT,
-            session       TEXT
+            session       TEXT,
+            paper_model    TEXT NOT NULL DEFAULT 'pre-parity-v0',
+            spread_model   TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED',
+            risk_per_trade REAL
         )
     """)
 
@@ -388,6 +391,33 @@ def init_db():
         cursor.execute("ALTER TABLE paper_trades ADD COLUMN session TEXT")
     except Exception:
         pass
+
+    # Migrate paper_trades: resolver-model provenance. Same reasoning and same
+    # sequencing as engine_version on backtest_results — the stamp lands BEFORE
+    # any behaviour change, so no row can ever be written unmarked.
+    #
+    # paper_model is deliberately SEPARATE from engine_version: the paper
+    # resolver and the backtest engine are independent models (findings doc
+    # finding 2, "siblings, not subtask and parent") that change on different
+    # schedules. spread_model is REUSED from 36fac3b rather than duplicated —
+    # one spread model, stamped wherever it applies.
+    #
+    # risk_per_trade is NULL until the re-baseline populates it. Paper risk
+    # varied across FOUR regimes inside pre-parity-v0 alone (per-symbol
+    # overrides, then $15, then $3 from 2026-07-02, then $10 from 2026-07-08)
+    # and is currently recoverable only by algebra on simulated_pnl — cheap to
+    # store per row, expensive to re-derive forever. See paper_model.py.
+    #
+    # Placed AFTER the CREATE above, per finding 18.
+    for col, defn in [
+        ("paper_model",    "TEXT NOT NULL DEFAULT 'pre-parity-v0'"),
+        ("spread_model",   "TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED'"),
+        ("risk_per_trade", "REAL"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
 
     # Create webhook_log table
     cursor.execute("""
