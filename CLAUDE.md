@@ -620,7 +620,17 @@ Applied in order before any trade execution:
 2. Daily loss limit
 3. Session filter: symbol-specific UTC windows (webhook_filters.py SESSION_WINDOWS)
 4. Macro event filter: MACRO_EVENTS list — update every Sunday
-5. Spread filter: blocks if current_spread > 2× NORMAL_SPREADS[symbol]
+5. Spread filter: ⛔ **DEAD — has never blocked a single alert.** This line
+   claimed an active protection that does not exist. `receiver.py:216` reads
+   `data.get("spread")` from the inbound payload, and **0 of 382 stored
+   TradingView payloads have ever carried a `spread` key**, so
+   `should_block_spread` short-circuits on its `None` fail-open guard before
+   the threshold is consulted. All-time `spread_filter` blocks: **0**, against
+   session_filter 150, day_of_week 27, daily_loss_limit 15. Separately the
+   threshold itself is ~5× too wide (EURUSD `NORMAL_SPREADS` 0.0008 = 8 pips,
+   blocking at 16 pips, vs ~1.5 pips measured on a thin weekend book) — so
+   fixing the constant alone would change nothing. See findings doc finding 15.
+   Live trades are NOT protected against spread blowouts and never have been.
 6. Swiftalgo routing: checks active_strategy status for symbol+swiftalgo
    status=inactive → blocked | status=paper → logged to paper_trades
    No active_strategy row → falls through to place_trade_from_alert (live)
@@ -1289,6 +1299,110 @@ Both verified `integrity_check ok` with sha256 unchanged across the move.
 **Neither is disposable.** Take new ones with the SQLite online backup API
 (`Connection.backup()`), never `cp` — `cp` on a live DB with an open WAL can
 produce a torn copy.
+
+## Backtest Engine Parity — Stage 1 (2026-08-16)
+
+Four commits: `e0f51f8` marking → `14c3c17` sizing → `0fdbe7e` contract →
+`36fac3b` spread capture. Driven by the AUDUSD hard gate resolving Branch B:
+the backtest was modelling a different strategy from the one running live.
+
+### engine_version — three versions, what each means
+`engine_version.py` (repo root, zero imports). Versions the trade model's
+**structure**. Bump only if two runs of the same strategy over the same candles
+would produce different trades or different P&L. **Never commit SHAs.**
+
+| version | meaning |
+|---|---|
+| `pre-parity-v0` | Everything before 2026-08-16. No take-profit for 21 of 34 strategies, $15 risk vs live $10, no SL floor, SL exits booked at a flat `-RISK`. **History, never evidence.** All 268,117 VPS rows and 276 local `walkforward_runs` rows carry this. |
+| `parity-v1` | Sizing only. Floor applied, risk via `get_risk_per_trade`, clamp order matched to live, unsizeable trades aborted, SL booked from the actual stop price. **Half-fixed — still no TP. Generate no evidence at v1.** |
+| `parity-v2` | **Current.** The `sl_price`/`tp_price` contract. |
+
+`get_backtest_results()` filters to the current version by default;
+`engine_version=None` reads all (archive/inspection only — dashboard page 04).
+`score_strategies()` raises `MixedEngineVersionError` rather than ranking
+across models.
+
+### parity-v2 — what the engine now does
+- **Three-branch contract** mirroring `live_signal_loop.py:552`. Neither price
+  supplied → `DEFAULT_TP_R = 2.0` off the floored candle range (the *measured*
+  live rule, not a guess: 569 real williams_r trades span R:R 1.941–2.040,
+  median exactly 2.000). Both supplied → **passed through unchanged**, so the
+  13 emitters keep their own designs including the three that aren't
+  R-multiples. Exactly one → `EngineContractError`, raised not logged.
+- **`MIN_SL_DIST` floor** imported from `instrument_limits.py` — one source
+  shared with the live path, never a copy.
+- **Honest sizing**: `get_risk_per_trade(symbol)`, round-then-clamp, abort when
+  unsizeable.
+- **SL exits booked from the actual stop price**, `exit_price` recording
+  `sl_price`.
+- **Exit ladder**: `sl_stop`/`tp_hit` are intrabar and outrank
+  `max_hold`/`signal`, which are evaluated at the bar's close.
+  `intrabar_priority` default **`"sl"`** (pessimistic — and the more likely
+  resolution, since a 1R stop is nearer than a 2R target). `ambiguous_bars`
+  reported on every run: measured 0.0–1.8% of trades.
+- **`reversal_exit` default `False`**, matching live FX which has none.
+
+### ⚠️ The entanglement finding — why this hid for months
+**TP and reversal exit mask each other. Neither change alone explains the
+result**, so neither would have shown up in isolation. AUDUSD 15MIN:
+
+```
+v1 baseline: no TP, reversal ON     n=391  net=$512.46  PF=1.246  tp_hit=0
++TP only     (reversal still ON)    n=388  net=$476.69  PF=1.241  tp_hit=57
+reversal OFF only (still no TP)     n= 17  net=$122.59  PF=1.723  tp_hit=0
+v2: TP + reversal OFF               n=221  net=$124.45  PF=1.085  tp_hit=82
+```
+TP alone barely moves PF — the reversal exit was already closing positions
+before the target. Reversal-off alone is degenerate — without a TP a position
+has almost no way to close. **Only together do they resemble live.**
+
+### Where the numbers stand — converging, still flattering
+| | AUDUSD PF |
+|---|---|
+| Live demo actual (51 post-cap clean trades) | **0.71** |
+| `parity-v1` | 1.246 |
+| `parity-v2` | **1.085** |
+
+**Spread is the known remaining residual.** Still not promotion evidence.
+
+### Spread — capture live, model deliberately unchanged
+`trades.spread` was 906 NULLs from **one hardcoded `None`** in
+`live_signal_loop`; column, write path and aggregation query all existed.
+Now captured from two sources, both costing **zero extra IG calls**:
+`execute_trade.last_spread` (the quote `place_trade` already fetches) and
+`candle_stream.get_spread()` (BID/OFR already arrive on every tick and were
+being averaged away). Per-check sampling gives 96–480 observations/symbol/day
+vs ~1/symbol/day from trades alone.
+
+**The flat `SPREAD_COSTS` constant is deliberately LEFT IN PLACE and named,
+not deleted** — removing it would make every backtest look better while being
+no more correct. Every result row now carries `spread_model`
+(`flat-roundtrip-dollars-UNCALIBRATED`) and `spread_table_sha`, because
+`engine_version` versions structure while spread is a *parameter*, and a name
+can be kept while numbers change underneath it.
+
+Use `get_spread_samples()` to read samples — it collapses to one observation
+per `(symbol, minute)`. Raw `signal_log` rows carry ~1.75× duplication,
+unevenly (EURUSD 480 checks/day vs AUDUSD 96).
+
+### ❌ What is still NOT modelled after Stage 1
+Out of scope for the entire parity sequence, still divergent from live:
+
+| row | mechanic | live | engine |
+|---|---|---|---|
+| 1 | entry price | deals at `offer`/`bid` | candle close |
+| 2 | entry lag | fills 25–55 min after the signal candle | close of the signal bar |
+| 16 | weekend | blocks Sat, Sun until 23:00, Fri from 20:45 | only where data has gaps |
+| 17 | session window | per-strategy windows | one hardcoded 13:30–21:00 UTC |
+
+Plus spread until commit 5. **`parity-v2` is the first version that takes
+profit at all — it is not yet a faithful execution model.**
+
+### Uncalibrated-parameter findings (see docs/SESSION_20260812_FINDINGS.md)
+Three instances of the same pattern, all recorded and **none fixed**:
+`SPREAD_COSTS` (the engine constant), **finding 14 `MIN_SL_DIST`** (drives
+sizing on 45–55% of FX entries, IG's `minNormalStopOrLimitDistance` never read
+back), and **finding 15 `NORMAL_SPREADS`** (see the correction below).
 
 ## Engine parity work — caveats to carry forward (2026-08-16)
 

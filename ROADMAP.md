@@ -1,5 +1,5 @@
 # TRADING BOT — DEVELOPMENT ROADMAP
-Last updated: 2026-08-15
+Last updated: 2026-08-16
 Rule: this file is updated whenever a tier item 
 completes or a gate decision resolves.
 
@@ -97,40 +97,74 @@ paper-resolver sibling fix, a full gauntlet regeneration,
 and fresh comparison against live demo data collected 
 under the corrected model.
 
-## NEXT SESSION — fixed sequence
-Order is load-bearing; each step's output is the next 
-step's input.
+## STAGE 1 — ENGINE PARITY: COMPLETE except commit 5
+Landed 2026-08-16 in four commits.
 
-1. **Engine contract** (`backend/backtesting/engine.py`) — 
-   a default TP rule when a strategy supplies none (an 
-   R-multiple, chosen against observed live behaviour, not 
-   guessed) **AND** a hard failure when neither `sl_price` 
-   nor `tp_price` is present and no default applies. Both 
-   halves required: a default alone makes the silence 
-   quieter rather than fixing it. Correct `RISK_PER_TRADE` 
-   to 10.0 and delete the false "matches live bot" 
-   comment. NOTE: `engine.py` has uncommitted local 
-   changes adding `force_flat`/`session_close` exit 
-   support — same function, textual conflict, no semantic 
-   overlap with this fix.
-2. **Paper resolver** (`_resolve_pending_paper_trades`) — 
-   sibling to step 1, not a subtask. Deduct spread, route 
-   prices through `ig_scale.to_decimal()`, add an 
-   `sl_distance` sanity bound that **rejects at both ends** 
-   rather than clamping, quarantine `paper_trades` id=824.
-3. **`engine_version` marking** — `NOT NULL DEFAULT 
-   'pre-parity-v0'` on `backtest_results`; semantic 
-   versions, not commit SHAs; bump only when the trade 
-   model changes; `get_backtest_results()` filters to 
-   current by default; `score_strategies()` **raises** on 
-   a mixed set; `active_strategy.score` nulled or flagged 
-   at the boundary.
-4. **Re-validation** — regenerate the gauntlet under the 
+- [x] **e0f51f8 — engine_version marking.** Three-version progression: 
+  `pre-parity-v0` (all 268,117 existing rows, history not evidence) → 
+  `parity-v1` (sizing only, half-fixed) → `parity-v2` (current). 
+  `get_backtest_results()` filters to current; `score_strategies()` 
+  raises rather than ranking across models.
+- [x] **14c3c17 — sizing unit.** MIN_SL_DIST floor (shared via 
+  `instrument_limits.py`, not copied), risk via 
+  `get_risk_per_trade`, clamp order matched to live, unsizeable 
+  trades aborted, SL booked from the actual stop price. Also 
+  `.dockerignore` for `database/`+`logs/`, closing the 
+  failed-mount hazard.
+- [x] **0fdbe7e — the contract.** Three branches, `DEFAULT_TP_R = 
+  2.0` for non-emitters only, `EngineContractError` on a 
+  half-specified signal, explicit exit ladder, 
+  `intrabar_priority='sl'`, `reversal_exit=False`, 
+  `ambiguous_bars` reported every run. **tp_hit non-zero for the 
+  first time.**
+- [x] **36fac3b — spread capture.** Real observations flowing into 
+  `trades.spread` and `signal_log.spread` from two zero-extra-call 
+  sources. Flat constant deliberately retained and named, not 
+  deleted. No version bump — instrumentation, not a model change.
+
+- [ ] **COMMIT 5 — spread option B. GATED on ~2 days of WEEKDAY 
+  spread data** (capture started Sunday 2026-08-16 pre-open; those 
+  samples are real but not representative — EURUSD read ~1.5 pips 
+  on a thin book, GBPUSD ~14.6). Half-spread at entry, 
+  spread-shifted trigger levels, flat constant deleted. Bumps 
+  `engine_version` — changing how spread is applied IS structural. 
+  Also recalibrates `NORMAL_SPREADS` from the same measurements and 
+  re-derives the live filter threshold rather than inheriting `2x` 
+  (finding 15).
+
+**Result after Stage 1:** AUDUSD PF live 0.71 vs v1 1.246 vs v2 
+1.085. Converging, still flattering, spread the known residual. 
+**Still not promotion evidence.**
+
+**Key finding — TP and reversal exit are ENTANGLED.** Neither 
+change alone explains the result, which is why the missing 
+take-profit survived months of runs. See CLAUDE.md for the 
+isolation table.
+
+**Still NOT modelled after Stage 1** (out of scope for the whole 
+sequence): entry price (live deals at offer/bid, engine uses the 
+candle close), entry lag (25-55min), weekend handling, session 
+windows.
+
+## STAGE 2 — PAPER RESOLVER (next after commit 5)
+Sibling to engine parity, not a subtask — two independent 
+synthetic models feed promotion decisions and fixing one leaves 
+the other. Deduct spread (now measurable), route prices through 
+`ig_scale.to_decimal()`, add an `sl_distance` sanity bound that 
+**rejects at both ends**, quarantine `paper_trades` id=824. 
+See findings doc finding 2.
+
+## STAGE 3+ — after the paper resolver
+Steps 1-3 of the original sequence (engine contract, 
+`engine_version` marking, paper resolver) are Stage 1 and Stage 2 
+above. What remains, in order:
+
+1. **Re-validation** — regenerate the gauntlet under the 
    corrected engine. Audit the 13 emitting strategies' TP 
    rules while here: emitting something is not evidence of 
    emitting the right thing, and those rules have never 
    been checked.
-5. **Promotion gate** — advisory report for one full 
+2. **Promotion gate** — advisory report for one full 
    cycle, then hybrid: hard gate on numeric criteria, 
    advisory on correlation and judgement calls. Overrides 
    impossible to make silently; must record 

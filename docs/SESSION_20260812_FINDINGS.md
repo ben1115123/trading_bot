@@ -703,6 +703,78 @@ and bump `engine_version` when it lands.
 
 ---
 
+## 15. `NORMAL_SPREADS` — an uncalibrated constant behind a LIVE gate that has never fired
+*(added 2026-08-16 during spread-capture work — recorded, NOT fixed)*
+
+**Broken, on two independent levels.** The second is worse than the first.
+
+### Level 1 — the constant looks ~5x wrong
+First real measurement of EURUSD's dealing spread (2026-08-16, capture commit
+36fac3b) reads **~0.00015, i.e. ~1.5 pips — on a thin Sunday pre-open book,
+which is the WIDEST it should ever be.** `NORMAL_SPREADS["EURUSD"]` is
+`0.0008` = **8 pips**. Since `should_block_spread` blocks at `2x normal`, the
+effective EURUSD threshold is **~16 pips**, against a real spread that is
+roughly a tenth of that even at its worst.
+
+Like `MIN_SL_DIST` (finding 14) and the engine's `SPREAD_COSTS`, the table has
+**no provenance** — no measurement, no date, no source. It covers only 3
+symbols (`US500`, `EURUSD`, `DAX`) and none of GBPUSD/AUDUSD/USDCAD.
+
+**The error direction matters:** too wide makes the filter PERMISSIVE. A
+protective gate that is calibrated wrong in the permissive direction reports
+success by staying silent, which is indistinguishable from working.
+
+### Level 2 — the gate is structurally dead, not merely permissive
+`webhook/receiver.py:216` reads the spread from the **inbound payload**:
+
+```python
+current_spread = safe_float(data.get("spread"))
+if should_block_spread(symbol, current_spread):
+```
+
+and `should_block_spread` opens with `if current_spread is None: return False`
+("fails open if no spread data"). **The TradingView payload has never carried a
+`spread` field.** Verified against every stored alert:
+
+| Check | Result |
+|---|---|
+| `webhook_log` rows, all time | 382 |
+| payloads containing a `spread` key | **0** |
+| `spread_filter` blocks, all time | **0** |
+| `signal_log` rows mentioning spread (loop path has no spread gate at all) | **0 of 80,175** |
+
+Every other webhook filter has fired — `session_filter` 150, `day_of_week` 27,
+`daily_loss_limit` 15, `friday_block` 1, `strategy_inactive` 1. The spread
+filter is the only one with zero. It short-circuits on the `None` guard before
+the threshold is ever consulted, so **fixing the constant alone would change
+nothing.** This is documented in CLAUDE.md as an active protection ("5. Spread
+filter: blocks if current_spread > 2× NORMAL_SPREADS[symbol]").
+
+**Third instance of the pattern**, after spread (`SPREAD_COSTS`) and
+`MIN_SL_DIST`: a hand-set, unmeasured table trusted as if calibrated. And a
+fresh instance of the unverified-controls class (finding 9) — a control
+believed to be in place, never empirically confirmed, whose silence was read as
+"nothing to block."
+
+**Invalidates:** any claim that live trades are protected against spread
+blowouts. They are not, and have never been.
+
+**Fixing requires** (deliberately NOT during the parity sequence, same
+reasoning as finding 14 — changing a live gate mid-sequence confounds the
+before/after):
+1. Feed the gate a real spread. The webhook path must read the current quote
+   itself rather than trusting the payload; `execute_trade.last_spread` and
+   `candle_stream.get_spread()` (both added 36fac3b) now supply exactly this.
+2. **Re-derive the threshold from measured data rather than inheriting the
+   `2x` multiplier** — `2x` of a wrong baseline is arbitrary, and the right
+   form is probably a percentile of the observed distribution.
+3. Recalibrate `NORMAL_SPREADS` from the same measurements that produce the
+   engine's spread table in commit 5, so the backtest and the live gate cannot
+   disagree about what "normal" means.
+4. Extend to all rostered symbols, not 3.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |
