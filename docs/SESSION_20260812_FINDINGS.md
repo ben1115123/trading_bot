@@ -1052,6 +1052,57 @@ would hide the malformed rows instead of surfacing them.
 
 ---
 
+## 20. A fourth `_MIN_SL_DIST` copy — and why absence beats contradiction as a failure mode
+*(added 2026-08-16, Stage 2 — recorded, deliberately NOT fixed)*
+
+**Broken:** `bot/execute_trade.py:113` carries its own `_MIN_SL_DIST`, separate
+from the copy consolidated into `instrument_limits.py` at parity-v1. Reconciled
+cell by cell against the shared table: **no conflicts**, but it is **missing
+EURGBP, USDJPY and XAUUSD**.
+
+**Not fixed, and the reason is scope not oversight:** this table sits on the
+**live execution path** — it sets the stop distance actually sent to IG.
+Consolidating it changes live SL behaviour, which would confound the parity
+before/after the whole sequence exists to measure. Same reasoning as findings
+14 and 15. Fold it in after the gauntlet regenerates, and treat it as a live
+change with its own verification, not as housekeeping.
+
+### The general lesson — this is the important half
+
+Across **all four** instrument-table instances found so far
+(`EPIC_CONFIG`/`SYMBOLS` in `candle_stream.py`, `MIN_SL_DIST` in the live loop,
+`_EPIC_VALUE_PER_POINT` in the resolver, and this one):
+
+> **No cell has EVER contradicted another. Every single divergence was an
+> ABSENCE.**
+
+That asymmetry is the whole problem. A contradiction — the same symbol with two
+different values in two files — is caught the first time anyone diffs them, and
+it announces itself as obviously wrong. An absence announces nothing: the
+lookup succeeds, returns a plausible default, and the arithmetic proceeds
+confidently. Finding 16 is the clean example — USDCAD missing from one dict,
+`.get(symbol, 1.0)` returning `1.0`, and 97 paper rows silently booking
+1/2000th of their value for two months.
+
+**Standing rule, not a local fix: look instrument tables up by `[symbol]`,
+never `.get(symbol, default)`.** A `KeyError` on an unregistered symbol is
+correct behaviour — loud, immediate, at the first use. The default is what
+converts a missing key into wrong numbers that look right. Applied at
+paper-v1 to `VALUE_PER_POINT`; `MIN_SL_DIST` and the remaining tables should
+follow when they are next touched.
+
+### XAUUSD will now raise, and that is correct
+`XAUUSD` appears in `execute_trade`'s floor table and in
+`instrument_limits.MIN_SL_DIST`, but **not** in `VALUE_PER_POINT` — no epic is
+registered for it anywhere and it has never traded. If gold is ever enabled,
+the value-per-point lookup will **`KeyError` rather than silently size at
+1.0**. That is the intended behaviour of the standing rule above.
+**Do not read that KeyError as a regression** — it is the check working, and
+the fix is to register XAUUSD's real contract value, not to reinstate a
+default.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |

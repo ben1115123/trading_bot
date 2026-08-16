@@ -42,14 +42,40 @@ History:
                  re-baseline populates it.
 
                  Rows carrying this version are history, never evidence.
+
+  paper-v1       2026-08-16. THREE STRAIGHT BUGS plus a bracket rejection —
+                 all wrong under any model, none of them modelling choices:
+                   - value_per_point now read from instrument_limits.
+                     VALUE_PER_POINT by [symbol] rather than a third local copy
+                     via .get(symbol, 1.0). USDCAD was missing from that copy,
+                     so 97 rows booked ~1/2000th of their value (finding 16).
+                     USDJPY is 100, not 10000 — JPY pips are 0.01.
+                   - lot size rounded THEN clamped, matching risk_manager and
+                     the backtest engine. The resolver clamped without ever
+                     rounding, disagreeing with both at the boundaries.
+                   - a zero/negative stop distance ABORTS instead of booking at
+                     the 0.1 lot minimum, mirroring risk_manager:30-32.
+                   - malformed brackets (sl == tp, or levels on the wrong side
+                     of entry) are REFUSED, mirroring the backtest engine's
+                     EngineContractError. Rows 253/334/335 carried sl == tp and
+                     booked a LOSS with POSITIVE P&L; those same rows are
+                     finding 3's MAX-clamp entries and finding 19's win-basis
+                     disagreement. One defect, three symptoms.
+
+                 STILL DEFECTIVE at paper-v1, deliberately: no spread deducted,
+                 no ig_scale conversion on the paper write path, resolution
+                 still against yfinance regardless of CANDLE_SOURCE, no
+                 resolution timeout, and the 100-candle window can mis-resolve
+                 a stale trade. Those are model changes and land at paper-v2.
+
+                 The win-basis inconsistency (finding 19) is NOT fixed here.
+                 Rejection surfaces the malformed rows; changing the count
+                 would have hidden them.
 """
 
-CURRENT_PAPER_MODEL = "pre-parity-v0"
+CURRENT_PAPER_MODEL = "paper-v1"
 
-# Set deliberately to pre-parity-v0, NOT to a new version. This commit adds
-# the stamp and nothing else — the resolver is untouched and still produces
-# the defective model, so labelling new rows as anything else would be a lie.
-# Same reasoning, and the same sequencing, as engine_version's first commit:
-# the stamp lands BEFORE any behaviour change so that no row can ever be
-# written unmarked. The constant bumps in the commit that actually changes how
-# simulated_pnl is computed.
+# Bumped because simulated_pnl now computes differently for the same stored
+# signal: USDCAD by ~1,900x, boundary lots by the rounding change, and three
+# malformed rows are refused rather than monetised. pre-parity-v0 rows are not
+# comparable to paper-v1 rows.

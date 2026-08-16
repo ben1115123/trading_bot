@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timezone
 
+from instrument_limits import VALUE_PER_POINT
 from risk_manager import calculate_position_size, get_risk_per_trade
 from database.models import log_trade, log_paper_trade
 from ig_env import get_ig_credentials
@@ -23,15 +24,23 @@ ig_service = IGService(username, password, api_key, acc_type=IG_ACC_TYPE)
 # -------------------------
 # Asset configuration
 # -------------------------
+# Epic mapping only. value_per_point is DERIVED from instrument_limits.py so
+# the live path, the backtest engine and the paper resolver read ONE table.
+# The three former copies never contradicted each other but diverged by
+# omission, which cost 97 USDCAD paper rows (findings doc finding 16).
+_EPICS = {
+    "US500":  "IX.D.SPTRD.IFMM.IP",
+    "US100":  "IX.D.NASDAQ.IFMM.IP",
+    "BTC":    "CS.D.BITCOIN.CFBMU.IP",
+    "DAX":    "IX.D.DAX.IFMS.IP",
+    "EURUSD": "CS.D.EURUSD.MINI.IP",
+    "GBPUSD": "CS.D.GBPUSD.MINI.IP",
+    "USDCAD": "CS.D.USDCAD.MINI.IP",
+    "AUDUSD": "CS.D.AUDUSD.MINI.IP",
+}
 EPIC_CONFIG = {
-    "US500":  {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
-    "US100":  {"epic": "IX.D.NASDAQ.IFMM.IP",    "value_per_point": 1},
-    "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
-    "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
-    "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
-    "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
-    "USDCAD": {"epic": "CS.D.USDCAD.MINI.IP",    "value_per_point": 10000},
-    "AUDUSD": {"epic": "CS.D.AUDUSD.MINI.IP",    "value_per_point": 10000},
+    sym: {"epic": epic, "value_per_point": VALUE_PER_POINT[sym]}
+    for sym, epic in _EPICS.items()
 }
 
 # -------------------------

@@ -49,7 +49,7 @@ _SYMBOL_DECIMALS: dict[str, int] = {
 # same floor instead of a copy (engine.py cannot import this module — cycle via
 # scripts.run_backtest, plus bot.execute_trade opens an IG session on import).
 # Aliased to the old private name so every call site below is unchanged.
-from instrument_limits import MIN_SL_DIST as _MIN_SL_DIST
+from instrument_limits import MIN_SL_DIST as _MIN_SL_DIST, VALUE_PER_POINT
 
 
 def _round_precision(symbol: str) -> int:
@@ -731,12 +731,43 @@ def _candle_dt(candle: dict):
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-_EPIC_VALUE_PER_POINT = {
-    "US500": 1.0, "US100": 1.0, "DAX": 1.0, "BTC": 0.1,
-    "EURUSD": 10000.0,  # CS.D.EURUSD.MINI.IP: $1/pip, 0.0001 pip, contract=10k
-    "GBPUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — same as EURUSD
-    "AUDUSD": 10000.0,  # $1/pip, 0.0001 pip, contract=10k — CS.D.AUDUSD.MINI.IP
-}
+# _EPIC_VALUE_PER_POINT DELETED 2026-08-16 — it was a third copy of the
+# value-per-point table and it OMITTED USDCAD, so `.get(symbol, 1.0)` returned
+# 1.0 and every USDCAD paper trade booked ~1/2000th of its value across 97 rows
+# (findings doc finding 16). Now reads instrument_limits.VALUE_PER_POINT, the
+# single source shared with execute_trade and the backtest engine.
+
+
+def _bracket_error(signal: str, entry, sl, tp) -> str | None:
+    """Reject malformed SL/TP brackets, mirroring the backtest engine's
+    EngineContractError conditions (backend/backtesting/engine.py::_resolve_sl_tp).
+
+    Returns a reason string when the bracket is unusable, else None.
+
+    WHY: paper_trades ids 253, 334 and 335 carry sl == tp — a zero-width
+    bracket with both levels on the same side of entry. The resolver detected a
+    "LOSS" and then computed raw_pnl from the wrong side, booking a LOSS with
+    POSITIVE P&L (+$2.04). Those same rows are finding 3's MAX-clamp entries and
+    finding 19's win-basis disagreement: one defect, three symptoms. parity-v2
+    rejects this in the backtest engine; the resolver had no equivalent check,
+    so the same malformed signal was refused by one synthetic model and
+    monetised by the other.
+
+    This REFUSES rather than reinterprets. Fixing the win-basis count alone
+    would have hidden these rows instead of surfacing them (finding 19).
+    """
+    if entry is None or sl is None or tp is None:
+        return "missing entry/sl/tp"
+    side = "BUY" if "BUY" in (signal or "") else ("SELL" if "SELL" in (signal or "") else None)
+    if side is None:
+        return f"unrecognised signal {signal!r}"
+    if sl == tp:
+        return f"zero-width bracket (sl == tp == {sl})"
+    if side == "BUY" and not (sl < entry < tp):
+        return f"wrong-side BUY bracket (need sl < entry < tp, got {sl} / {entry} / {tp})"
+    if side == "SELL" and not (tp < entry < sl):
+        return f"wrong-side SELL bracket (need tp < entry < sl, got {tp} / {entry} / {sl})"
+    return None
 
 
 def _resolve_pending_paper_trades() -> None:
@@ -752,6 +783,13 @@ def _resolve_pending_paper_trades() -> None:
         sl        = trade["sl"]
         tp        = trade["tp"]
         if signal not in ("BUY", "SELL"):
+            continue
+        _bad = _bracket_error(trade.get("signal"), entry, sl, tp)
+        if _bad:
+            # Refuse, loudly. Left PENDING rather than resolved: a malformed
+            # row must not acquire a P&L, and must stay visible rather than be
+            # silently written off.
+            print(f"[resolver] [{symbol}] id={trade['id']} REFUSED — {_bad}")
             continue
         try:
             signal_dt = datetime.fromisoformat(
@@ -789,13 +827,24 @@ def _resolve_pending_paper_trades() -> None:
                 resolve_paper_trade(trade["id"], outcome, 0.0)
                 print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} (no entry_price, pnl=0)")
             else:
-                value_per_point = _EPIC_VALUE_PER_POINT.get(symbol, 1.0)
+                # [symbol], never .get(symbol, default) — a KeyError on an
+                # unregistered symbol is correct and would have caught the
+                # USDCAD omission on its first paper trade (finding 16).
+                value_per_point = VALUE_PER_POINT[symbol]
                 sl_distance = abs(entry - sl)
-                if sl_distance > 0:
-                    lot_size = get_risk_per_trade(symbol, is_paper=True) / (sl_distance * value_per_point)
-                    lot_size = max(0.1, min(10.0, lot_size))
-                else:
-                    lot_size = 0.1
+                if sl_distance <= 0:
+                    # Abort, mirroring risk_manager:30-32 which returns None and
+                    # makes place_trade refuse. The old code booked at the 0.1
+                    # minimum, inventing a position live would never have opened.
+                    print(f"[resolver] [{symbol}] id={trade['id']} REFUSED — "
+                          f"sl_distance={sl_distance} (entry={entry} sl={sl})")
+                    continue
+                lot_size = get_risk_per_trade(symbol, is_paper=True) / (sl_distance * value_per_point)
+                # Round THEN clamp, matching risk_manager:36-44 and the backtest
+                # engine. The resolver clamped without ever rounding, so its lot
+                # sizes disagreed with both other models at the boundaries.
+                lot_size = round(lot_size, 2)
+                lot_size = max(0.1, min(10.0, lot_size))
                 simulated_pnl = raw_pnl * lot_size * value_per_point
                 resolve_paper_trade(trade["id"], outcome, round(simulated_pnl, 4))
                 print(

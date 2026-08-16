@@ -7,6 +7,8 @@ from backend.backtesting.metrics import (
     calc_total_profit, calc_benchmark_return, calc_profit_factor,
 )
 from backend.backtesting.regime import classify_regimes
+from risk_manager import get_risk_per_trade
+from instrument_limits import MIN_SL_DIST, VALUE_PER_POINT
 
 WF_TRAIN_MONTHS        = 6
 WF_TEST_MONTHS         = 1
@@ -14,18 +16,25 @@ WF_STEP_MONTHS         = 1
 WF_MIN_WINDOWS         = 4
 WF_SHRUNK_TRAIN_MONTHS = 4
 
+# Epic mapping only. value_per_point is DERIVED from instrument_limits so the
+# live path, the engine and the paper resolver cannot drift apart again — the
+# three copies diverged by omission and cost 97 USDCAD paper rows (finding 16).
+_EPICS = {
+    "US500":  "IX.D.SPTRD.IFMM.IP",
+    "US100":  "IX.D.NASDAQ.IFMM.IP",
+    "BTC":    "CS.D.BITCOIN.CFBMU.IP",
+    "DAX":    "IX.D.DAX.IFMS.IP",
+    "EURUSD": "CS.D.EURUSD.MINI.IP",
+    "GBPUSD": "CS.D.GBPUSD.MINI.IP",
+    "USDJPY": "CS.D.USDJPY.MINI.IP",
+    "AUDUSD": "CS.D.AUDUSD.MINI.IP",
+    "USDCAD": "CS.D.USDCAD.MINI.IP",
+    "EURGBP": "CS.D.EURGBP.MINI.IP",
+    "NZDUSD": "CS.D.NZDUSD.MINI.IP",
+}
 EPIC_CONFIG = {
-    "US500":  {"epic": "IX.D.SPTRD.IFMM.IP",    "value_per_point": 1},
-    "US100":  {"epic": "IX.D.NASDAQ.IFMM.IP",    "value_per_point": 1},
-    "BTC":    {"epic": "CS.D.BITCOIN.CFBMU.IP",  "value_per_point": 0.1},
-    "DAX":    {"epic": "IX.D.DAX.IFMS.IP",       "value_per_point": 1},
-    "EURUSD": {"epic": "CS.D.EURUSD.MINI.IP",    "value_per_point": 10000},
-    "GBPUSD": {"epic": "CS.D.GBPUSD.MINI.IP",    "value_per_point": 10000},
-    "USDJPY": {"epic": "CS.D.USDJPY.MINI.IP",    "value_per_point": 100},
-    "AUDUSD": {"epic": "CS.D.AUDUSD.MINI.IP",    "value_per_point": 10000},
-    "USDCAD": {"epic": "CS.D.USDCAD.MINI.IP",    "value_per_point": 10000},
-    "EURGBP": {"epic": "CS.D.EURGBP.MINI.IP",    "value_per_point": 10000},
-    "NZDUSD": {"epic": "CS.D.NZDUSD.MINI.IP",    "value_per_point": 10000},
+    sym: {"epic": epic, "value_per_point": VALUE_PER_POINT[sym]}
+    for sym, epic in _EPICS.items()
 }
 
 # Risk per trade comes from the SAME source the live path uses
@@ -38,8 +47,6 @@ EPIC_CONFIG = {
 #
 # Accepted coupling: changing a live override now re-bases future backtests.
 # That is what engine_version exists to make visible.
-from risk_manager import get_risk_per_trade
-from instrument_limits import MIN_SL_DIST
 
 # Default take-profit, as a multiple of the stop distance (R). Applied ONLY
 # when a strategy supplies neither sl_price nor tp_price — never to a strategy
