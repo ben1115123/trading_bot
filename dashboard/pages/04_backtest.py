@@ -98,7 +98,12 @@ type_filter = st.sidebar.multiselect(
     "Strategy type", ["swing", "daytrading"], default=["swing", "daytrading"],
     key="type_filter")
 
-rows = get_backtest_results()
+# engine_version=None deliberately: this page is an archive/inspection surface,
+# not a promotion path. The default filters to CURRENT_ENGINE_VERSION, which
+# would silently hide every historical row the moment the engine version bumps.
+# Rows from different engine trade models are NOT comparable to each other —
+# read the engine_version column before comparing any two numbers here.
+rows = get_backtest_results(engine_version=None)
 if type_filter:
     rows = [r for r in rows if r.get("strategy_type", "swing") in type_filter]
 

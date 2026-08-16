@@ -20,9 +20,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from database.models import get_backtest_results
+from engine_version import CURRENT_ENGINE_VERSION
 
 
 INITIAL_CAPITAL = 1000.0
+
+
+class MixedEngineVersionError(RuntimeError):
+    """Raised when scoring is asked to rank rows from more than one engine
+    trade model. Scores from different models are not comparable — ranking
+    across them silently picks whichever model was most flattering, which is
+    the exact failure that put US100 supertrend live on 2026-06-16."""
 
 
 def score_strategies():
@@ -37,6 +45,28 @@ def score_strategies():
 
     if not results:
         return []
+
+    # NOT DEAD CODE — do not remove because "the filter already handles it".
+    #
+    # Two layers, deliberately:
+    #   filter (control)  get_backtest_results() defaults to
+    #                     CURRENT_ENGINE_VERSION, so the normal path can never
+    #                     assemble a mixed set and this branch never fires.
+    #   raise (backstop)  fires only when a caller defeats the filter by
+    #                     passing engine_version=None into a promotion path.
+    #                     That is the case worth catching, and it is invisible
+    #                     to the filter by construction.
+    #
+    # Raise rather than pick a subset: silently picking is how a score from an
+    # invalid trade model ends up ranking a live promotion. Verified reachable
+    # via the None path — see the commit that introduced engine_version.
+    versions = {row.get("engine_version") for row in results}
+    if len(versions) > 1:
+        raise MixedEngineVersionError(
+            f"backtest_results spans {len(versions)} engine versions: "
+            f"{sorted(str(v) for v in versions)}. Expected only "
+            f"{CURRENT_ENGINE_VERSION!r}. Refusing to score across trade models."
+        )
 
     eligible = []
 

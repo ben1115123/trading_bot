@@ -1215,6 +1215,60 @@ Broken pipe`) having shown zero build output; the build had in fact succeeded.
 The conclusion rested on end-state evidence — new image ID, new `StartedAt`,
 flipped crontab md5, cron executing — **not** on the exit code or the log.
 
+## engine_version marking (2026-08-16)
+
+`backtest_results` and `walkforward_runs` carry
+`engine_version TEXT NOT NULL DEFAULT 'pre-parity-v0'`. The constant lives in
+`engine_version.py` (repo root, zero imports — same safe-import contract as
+`symbols.py`). It versions the **trade model**, not the code: bump only when a
+change would make two runs of the same strategy on the same candles produce
+different trades or different P&L. **Never use commit SHAs** — a SHA changes on
+commits that cannot move a number, and the field exists to answer "are these two
+rows comparable?"
+
+- `get_backtest_results()` filters to `CURRENT_ENGINE_VERSION` by default.
+  `engine_version=None` reads everything and is for archive/inspection only
+  (dashboard page 04 passes it deliberately, and says so in a comment). **Never
+  pass `None` from anything feeding a promotion decision.**
+- `score_strategies()` raises `MixedEngineVersionError` rather than ranking
+  across models. With the filter in place this is defence in depth — it is
+  reachable only if a caller defeats the filter, which is exactly the case worth
+  catching.
+
+### ⛔ Do NOT null `active_strategy.score` as tidying
+It is tempting: every current score was produced by the pre-parity engine and is
+therefore invalid, so nulling looks like hygiene. **It is not. It is dangerous,
+and the reason is specific.**
+
+`_select_for_symbol` reads `get_active_strategy(symbol, "HOUR")`, and the
+`+0.05` improvement guard lives in the `else` branch — the one that only runs
+when an incumbent exists with a comparable score. Nulling every score puts the
+selector into the same state that produced the **2026-06-16 unreviewed promotion
+of US100 HOUR supertrend**: no usable incumbent score, therefore no threshold,
+therefore promote the top candidate unconditionally.
+
+Nulling is correct **only after** re-validation has produced replacement scores
+under the fixed engine. Sequence: engine fix → gauntlet regeneration → new
+scores written → then null/replace. Not before, and never as cleanup.
+
+The selector is inert at both layers right now (see Selector Disabled), which is
+what makes the deferral safe. That inertness is load-bearing until this is done.
+
+## ⛔ DAX candle cache — BLOCKER on any DAX work
+
+`scripts/candle_cache/DAX_15MIN_AV.json` has a **median 15-minute high-low range
+of 0.055 index points** across 10,270 candles. That is not the DAX — a real DAX
+15MIN range is tens of points. The cache is mis-scaled, or it is not DAX data.
+
+Consequences: the `_MIN_SL_DIST` floor of 5.0 binds on **100%** of its candles,
+and engine lot sizing hits the MAX clamp on **100%** of them. Any backtest run
+on this file produces numbers that mean nothing.
+
+**Do not run a gauntlet, sweep, or walk-forward on DAX until the cache is
+re-fetched and its scale verified against IG.** Diagnosed 2026-08-16 while
+measuring floor-bind frequency for the engine parity work; not investigated
+beyond establishing that the data is unusable.
+
 ## Monitoring Gaps (outstanding)
 
 - **`candle_stream` staleness is unmonitored.** `scripts/watchdog.py` alerts

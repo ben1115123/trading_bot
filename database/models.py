@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from database.db import get_connection
+from engine_version import CURRENT_ENGINE_VERSION
 
 
 def log_trade(trade_data: dict) -> int:
@@ -242,13 +243,16 @@ def insert_backtest_result(result: dict) -> int:
                 (strategy_name, symbol, timeframe, run_at,
                  candles_total, candles_train, candles_test,
                  total_trades, win_rate, total_profit, max_drawdown,
-                 sharpe_ratio, benchmark_return, params_json, strategy_type)
+                 sharpe_ratio, benchmark_return, params_json, strategy_type,
+                 engine_version)
             VALUES
                 (:strategy_name, :symbol, :timeframe, :run_at,
                  :candles_total, :candles_train, :candles_test,
                  :total_trades, :win_rate, :total_profit, :max_drawdown,
-                 :sharpe_ratio, :benchmark_return, :params_json, :strategy_type)
-        """, result)
+                 :sharpe_ratio, :benchmark_return, :params_json, :strategy_type,
+                 :engine_version)
+        """, {**result, "engine_version": result.get("engine_version",
+                                                     CURRENT_ENGINE_VERSION)})
         conn.commit()
         return cursor.lastrowid
     finally:
@@ -292,11 +296,29 @@ def insert_backtest_trades(trades: list) -> None:
         conn.close()
 
 
-def get_backtest_results() -> list:
+def get_backtest_results(engine_version: str | None = CURRENT_ENGINE_VERSION) -> list:
+    """Backtest results, filtered to one engine trade-model version.
+
+    Defaults to CURRENT_ENGINE_VERSION so that callers which rank, score or
+    promote can never silently mix models — a pre-parity row and a post-parity
+    row are not comparable numbers, and the whole point of the column is that
+    nobody has to remember that.
+
+    Pass engine_version=None to read every row regardless of version. That is
+    for archive/inspection only (dashboards showing history, migration audits).
+    Never pass None from anything that feeds a promotion decision.
+    """
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM backtest_results ORDER BY run_at DESC")
+        if engine_version is None:
+            cursor.execute("SELECT * FROM backtest_results ORDER BY run_at DESC")
+        else:
+            cursor.execute(
+                "SELECT * FROM backtest_results WHERE engine_version = ? "
+                "ORDER BY run_at DESC",
+                (engine_version,),
+            )
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
@@ -1014,11 +1036,13 @@ def insert_walkforward_run(data: dict) -> int:
             INSERT INTO walkforward_runs
                 (run_type, strategy_name, symbol, timeframe, params_json,
                  cache_file, cache_candle_count, cache_date_start, cache_date_end,
-                 windows_json, verdict, median_pf, pct_profitable, extra_json, created_at)
+                 windows_json, verdict, median_pf, pct_profitable, extra_json, created_at,
+                 engine_version)
             VALUES
                 (:run_type, :strategy_name, :symbol, :timeframe, :params_json,
                  :cache_file, :cache_candle_count, :cache_date_start, :cache_date_end,
-                 :windows_json, :verdict, :median_pf, :pct_profitable, :extra_json, :created_at)
+                 :windows_json, :verdict, :median_pf, :pct_profitable, :extra_json, :created_at,
+                 :engine_version)
         """, {
             "run_type":           data["run_type"],
             "strategy_name":      data["strategy_name"],
@@ -1035,6 +1059,7 @@ def insert_walkforward_run(data: dict) -> int:
             "pct_profitable":     data.get("pct_profitable"),
             "extra_json":         data.get("extra_json"),
             "created_at":         data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            "engine_version":     data.get("engine_version", CURRENT_ENGINE_VERSION),
         })
         conn.commit()
         return cursor.lastrowid

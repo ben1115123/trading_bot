@@ -76,7 +76,8 @@ def init_db():
             max_drawdown     REAL,
             sharpe_ratio     REAL,
             benchmark_return REAL,
-            params_json      TEXT
+            params_json      TEXT,
+            engine_version   TEXT NOT NULL DEFAULT 'pre-parity-v0'
         )
     """)
 
@@ -181,6 +182,21 @@ def init_db():
     # Migrate backtest_results: add strategy_type column
     try:
         cursor.execute("ALTER TABLE backtest_results ADD COLUMN strategy_type TEXT DEFAULT 'swing'")
+    except Exception:
+        pass
+
+    # Migrate backtest_results: add engine_version. Existing rows inherit
+    # 'pre-parity-v0' via the column default, which is exactly what they are —
+    # produced by the engine described in docs/SESSION_20260812_FINDINGS.md
+    # findings 1 and 12. See engine_version.py. NOT NULL + DEFAULT means an
+    # INSERT that forgets the column still lands marked rather than NULL;
+    # every write path sets it explicitly regardless.
+    # (walkforward_runs gets the same treatment below, after its CREATE.)
+    try:
+        cursor.execute(
+            "ALTER TABLE backtest_results ADD COLUMN "
+            "engine_version TEXT NOT NULL DEFAULT 'pre-parity-v0'"
+        )
     except Exception:
         pass
 
@@ -433,9 +449,22 @@ def init_db():
             median_pf         REAL,
             pct_profitable    REAL,
             extra_json        TEXT,
-            created_at        TEXT NOT NULL
+            created_at        TEXT NOT NULL,
+            engine_version    TEXT NOT NULL DEFAULT 'pre-parity-v0'
         )
     """)
+
+    # Migrate walkforward_runs: add engine_version for DBs created before this
+    # column existed (the 276 local rows predate it). Must run AFTER the CREATE
+    # above — on a fresh DB the table would not yet exist and the ALTER would
+    # be silently swallowed by the except, leaving the column missing.
+    try:
+        cursor.execute(
+            "ALTER TABLE walkforward_runs ADD COLUMN "
+            "engine_version TEXT NOT NULL DEFAULT 'pre-parity-v0'"
+        )
+    except Exception:
+        pass
 
     # Commit changes and close connection
     conn.commit()
