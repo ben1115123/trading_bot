@@ -3,3 +3,29 @@ __pycache__/
 .env
 venv/
 .git
+
+# --- Added 2026-08-16 (SESSION_20260812_FINDINGS.md finding 10) ---
+# Dockerfile:11 is `COPY . .`, so anything not excluded here is baked into
+# every image layer. Two problems that fixes:
+#   1. Size. database/ was 810MB — trades.db (305MB) plus two backups
+#      (504MB) — copied into every build and duplicated across cached
+#      layer sets. logs/ adds frozen copies of the live host logs.
+#   2. Correctness. At runtime docker-compose mounts ./database over
+#      /app/database, so the baked copy is invisible — until the mount
+#      fails or is misconfigured, at which point the container would
+#      silently run against a build-time DB snapshot instead of failing.
+#      Same class for logs/: reading /app/logs/watchdog.log inside the
+#      container used to return ~3-week-stale data that looked live.
+#
+# NOTE the granularity: exclude the DATA files, NOT the database/
+# directory. database/ is also the Python package (__init__.py, db.py,
+# models.py) — excluding it wholesale would strip those from the image and
+# leave the container importable only by grace of the bind mount.
+database/*.db
+database/*.db-shm
+database/*.db-wal
+database/*.bak-*
+
+# Container-local and recreated by Dockerfile's `mkdir -p /app/logs`.
+# Nothing reads these at build time; runtime writes recreate what it needs.
+logs/

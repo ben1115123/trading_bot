@@ -45,18 +45,11 @@ _SYMBOL_DECIMALS: dict[str, int] = {
     "XAUUSD": 2,
 }
 
-_MIN_SL_DIST: dict[str, float] = {
-    "EURUSD": 0.00050,
-    "GBPUSD": 0.00060,
-    "AUDUSD": 0.00050,
-    "EURGBP": 0.00050,
-    "USDCAD": 0.00050,
-    "USDJPY": 0.050,
-    "US500":  3.0,
-    "US100":  4.0,
-    "DAX":    5.0,
-    "XAUUSD": 1.50,
-}
+# Moved to instrument_limits.py 2026-08-16 so the backtest engine reads the
+# same floor instead of a copy (engine.py cannot import this module — cycle via
+# scripts.run_backtest, plus bot.execute_trade opens an IG session on import).
+# Aliased to the old private name so every call site below is unchanged.
+from instrument_limits import MIN_SL_DIST as _MIN_SL_DIST
 
 
 def _round_precision(symbol: str) -> int:

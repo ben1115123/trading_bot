@@ -27,7 +27,18 @@ EPIC_CONFIG = {
     "NZDUSD": {"epic": "CS.D.NZDUSD.MINI.IP",    "value_per_point": 10000},
 }
 
-RISK_PER_TRADE = 15.0  # USD, matches live bot
+# Risk per trade comes from the SAME source the live path uses
+# (risk_manager.get_risk_per_trade), per-symbol, so RISK_PER_TRADE_OVERRIDE
+# applies here too. There used to be a literal `RISK_PER_TRADE = 15.0` here
+# commented "# USD, matches live bot" — the comment was false for as long as it
+# existed: live sizes at $10 (risk_manager.RISK_PER_TRADE = 10, and every
+# override is also 10). Every backtest_results row written before parity-v1
+# was sized 50% heavier than the bot it claimed to model.
+#
+# Accepted coupling: changing a live override now re-bases future backtests.
+# That is what engine_version exists to make visible.
+from risk_manager import get_risk_per_trade
+from instrument_limits import MIN_SL_DIST
 
 SPREAD_COSTS = {
     "EURUSD": 1.05,   # ~1 pip x $10/pip per round trip
@@ -125,10 +136,23 @@ def _in_us_session(time_str: str) -> bool:
         return True  # don't filter on parse failure
 
 
-def _lot_size(sl_distance: float, value_per_point: float) -> float:
+def _lot_size(sl_distance: float, value_per_point: float, symbol: str) -> float | None:
+    """Mirror of risk_manager.calculate_position_size — same order, same guards.
+
+    Returns None when the trade cannot be sized, exactly as risk_manager does
+    at :30-32. The old version returned 0.1 on a zero stop distance, which
+    silently invented a position the live path would have refused to open.
+
+    Clamp order matters and is deliberately round-THEN-clamp, matching
+    risk_manager:36-44. The old version clamped then rounded; the two differ
+    only exactly at the 0.1/10.0 boundaries, but "only at the boundary" is
+    where a lot-limit bug lives.
+    """
     if sl_distance <= 0:
-        return 0.1
-    return round(max(0.1, min(10.0, RISK_PER_TRADE / (sl_distance * value_per_point))), 2)
+        return None
+    size = get_risk_per_trade(symbol) / (sl_distance * value_per_point)
+    size = round(size, 2)                       # round first...
+    return max(0.1, min(10.0, size))            # ...then clamp
 
 
 def _parse_candle_time(t) -> datetime:
@@ -223,13 +247,25 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                     dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
                 except Exception:
                     dur = 0
+                # Book the loss from the ACTUAL stop price, like every other
+                # exit path here and like the broker does live. The old version
+                # booked a flat `-RISK_PER_TRADE - spread_cost` regardless of
+                # size or stop price. That is self-consistent only while sizing
+                # is unclamped: whenever the lot clamp bound (4.5-8.9% of
+                # williams_r FX entries pre-floor) the real risk was smaller
+                # than RISK_PER_TRADE, yet the engine still booked the full
+                # amount and overstated those losses.
+                _ep, _d = open_trade["entry_price"], open_trade["direction"]
+                _slp    = open_trade["sl_price"]
+                _pnl    = (((_slp - _ep) if _d == "BUY" else (_ep - _slp))
+                           * open_trade["size"] * vpp) - spread_cost
                 trades.append({
                     "entry_time":    open_trade["entry_time"],
                     "exit_time":     candle["time"],
-                    "direction":     open_trade["direction"],
-                    "entry_price":   open_trade["entry_price"],
-                    "exit_price":    candle["close"],
-                    "pnl":           -RISK_PER_TRADE - spread_cost,
+                    "direction":     _d,
+                    "entry_price":   _ep,
+                    "exit_price":    _slp,
+                    "pnl":           round(_pnl, 2),
                     "duration_mins": max(0, dur),
                     "exit_reason":   "sl_stop",
                     "regime":        open_trade.get("regime"),
@@ -278,9 +314,22 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                 sl_price = custom_sl
                 sl_dist  = abs(entry - sl_price) or (candle["high"] - candle["low"])
             else:
-                sl_dist  = candle["high"] - candle["low"]
+                # _MIN_SL_DIST floor, mirroring live_signal_loop.py:566. The
+                # engine had no floor at all, so it sized off raw candle ranges
+                # the live path would never have traded: on williams_r FX
+                # entries the floor binds on 45-55% of signals. Strategy-supplied
+                # stops are left alone — that is the strategy's own design, and
+                # rewriting it is commit 3's question, not this one's.
+                sl_dist  = max(candle["high"] - candle["low"],
+                               MIN_SL_DIST.get(symbol.upper(), 0.0))
                 sl_price = (entry - sl_dist) if sig["signal"] == "BUY" else (entry + sl_dist)
-            size = _lot_size(sl_dist, vpp)
+            size = _lot_size(sl_dist, vpp, symbol.upper())
+            if size is None:
+                # Unsizeable (zero/negative stop distance). Live aborts here
+                # (risk_manager:30-32 returns None -> place_trade returns False),
+                # so the engine skips the signal rather than inventing a
+                # minimum-lot position that would never have been placed.
+                continue
             open_trade = {
                 "direction":        sig["signal"],
                 "entry_price":      entry,
