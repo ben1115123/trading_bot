@@ -216,15 +216,6 @@ def init_db():
         except Exception:
             pass
 
-    # Migrate signal_log: per-check spread sample. One REAL column on rows that
-    # already exist — no new rows — so the cost is ~9 bytes on ~1,100 rows/day,
-    # about 11KB/day against a 305MB database. A separate samples table would
-    # have cost ~6x more by adding rows and their btree overhead.
-    try:
-        cursor.execute("ALTER TABLE signal_log ADD COLUMN spread REAL")
-    except Exception:
-        pass
-
     # Migrate active_strategy: add Phase 5 columns
     for col, defn in [
         ("timeframe",     "TEXT"),
@@ -334,9 +325,25 @@ def init_db():
             candle_time   TEXT,
             signal        TEXT,
             trade_placed  INTEGER DEFAULT 0,
-            error         TEXT
+            error         TEXT,
+            spread        REAL
         )
     """)
+
+    # Migrate signal_log: per-check spread sample, for DBs created before the
+    # column existed. MUST run AFTER the CREATE above.
+    #
+    # BUG FIX. 36fac3b placed this ALTER ~100 lines earlier, BEFORE signal_log
+    # was created. On an existing database it worked; on a fresh one the table
+    # did not yet exist, the exception was swallowed by the bare except, the
+    # subsequent CREATE built signal_log without the column, and every
+    # log_signal_check() raised OperationalError. The same commit contains a
+    # comment on the walkforward_runs migration warning about exactly this
+    # ordering trap — written, then not applied one table over.
+    try:
+        cursor.execute("ALTER TABLE signal_log ADD COLUMN spread REAL")
+    except Exception:
+        pass
 
     # Create paper_trades table
     cursor.execute("""
@@ -354,7 +361,8 @@ def init_db():
             simulated_pnl REAL,
             outcome       TEXT DEFAULT 'PENDING',
             params_json   TEXT,
-            notes         TEXT
+            notes         TEXT,
+            session       TEXT
         )
     """)
 
@@ -367,6 +375,17 @@ def init_db():
     # Migrate paper_trades: add regime column (entry-time ADX/ATR bucket tag)
     try:
         cursor.execute("ALTER TABLE paper_trades ADD COLUMN regime TEXT")
+    except Exception:
+        pass
+
+    # Migrate paper_trades: add session column.
+    # BUG FIX, not a new feature — models.py::log_paper_trade has been
+    # INSERTing into `session` while db.py never created or migrated it
+    # anywhere. The VPS database has the column by historical accident, so
+    # live logging works there; any database built purely from init_db() does
+    # NOT have it, and every paper-trade write raises OperationalError.
+    try:
+        cursor.execute("ALTER TABLE paper_trades ADD COLUMN session TEXT")
     except Exception:
         pass
 

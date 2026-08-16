@@ -869,6 +869,102 @@ than opt out.
 
 ---
 
+## 18. `models.py` writes columns `db.py` never creates — a fresh DB cannot log
+*(added 2026-08-16, Stage 2 — FIXED in the same commit that records it)*
+
+**Broken:** two columns are written by `database/models.py` but never created
+by `database/db.py`. On the VPS both exist by historical accident, so live
+logging works. **Any database built purely from `init_db()` raises
+`OperationalError` on every write to them.**
+
+Reproduced by building a fresh DB from the pre-fix `db.py` and calling the
+writers directly:
+
+```
+log_signal_check: OperationalError: table signal_log has no column named spread
+log_paper_trade : OperationalError: table paper_trades has no column named session
+```
+
+### 18a — `paper_trades.session`
+`log_paper_trade` has INSERTed into `session` while `db.py` creates it in
+neither the `CREATE TABLE` nor any `ALTER`. Origin is the 2026-05-30 market-
+context work (`b5f4b57`), which wired `session` into `trades` and into the
+paper INSERT but only migrated the `trades` table.
+
+### 18b — `signal_log.spread` — self-inflicted, one commit old, and the most instructive item in this file
+
+**The warning against this exact mistake was written as a code comment in the
+same commit that made it, one table over.**
+
+`36fac3b` (spread capture) added `ALTER TABLE signal_log ADD COLUMN spread
+REAL` at line ~224, while `CREATE TABLE IF NOT EXISTS signal_log` sits at line
+~328. On an existing database the ALTER worked. On a fresh one the table did
+not yet exist, the bare `except` swallowed the error, the later CREATE built
+the table without the column, and every `log_signal_check()` raised.
+
+The same commit, on the `walkforward_runs` migration, carries this comment:
+
+> *"Must run AFTER the CREATE above — on a fresh DB the table would not yet
+> exist and the ALTER would be silently swallowed by the except, leaving the
+> column missing."*
+
+Identified, written down, and then violated in the same diff. **Knowing a trap
+and encoding that knowledge as prose is not the same as being protected from
+it** — the walkforward_runs migration was placed correctly *because it was
+written second, next to its own CREATE*; the signal_log one was written next to
+a different migration block and inherited that block's position.
+
+**Consequence for the commit that introduced it:** `36fac3b` was the spread
+CAPTURE commit. Its entire purpose was to start accumulating spread
+observations. On any fresh database it would have captured **nothing**, while
+appearing deployed. It was **one lost volume mount away from silently not
+capturing at all** — and the failure mode would have been invisible in exactly
+the way finding 9's unverified-controls class describes: silence read as
+"nothing to record."
+
+**The bare `except Exception: pass` is what made it silent.** It cannot
+distinguish "column already exists" (expected, benign, happens on every restart)
+from "table does not exist" (a real ordering bug). Both are swallowed
+identically.
+
+### Full audit — are there others? **No. These two only.**
+Every `INSERT INTO` and `UPDATE ... SET` in `models.py` was checked against a
+schema built purely from `init_db()`: **15 INSERT sites across 14 tables, 3
+UPDATE sites.** Result before the fix: 2 problems (the two above). After: **0**.
+
+Clean tables: `trades` (20 cols), `positions`, `heartbeat`,
+`candle_source_compare`, `backtest_results` (18), `backtest_trades`,
+`active_strategy`, `active_strategy_history`, `correlation_events`,
+`webhook_log`, `webhook_outcome_log`, `walkforward_runs` (18).
+
+### Sharpens the `.dockerignore` justification in `14c3c17`
+That commit argued excluding `database/*.db` improves the failed-mount case:
+*"a failed or misconfigured mount now yields an empty auto-created DB and
+therefore no trading, instead of silently running against a build-time
+snapshot."* **That statement was incomplete.** The auto-created DB could not
+log a paper trade or a signal check at all — the loop would have raised on
+every cycle. Still preferable to trading on stale strategy config, but the
+degraded state was worse than described.
+
+**Fix applied:** both columns added to their `CREATE TABLE` DDL *and* kept as
+`ALTER` migrations positioned **after** the corresponding CREATE, matching the
+`walkforward_runs` pattern. Verified on a fresh DB: `init_db()` idempotent
+across two runs, all three writers succeed, static audit clean.
+
+**Standing lesson:** an `ALTER TABLE` migration must sit after its table's
+`CREATE`, and a bare `except` around schema changes hides ordering bugs
+indefinitely. **A migration that has only ever run against an existing database
+has not been tested.** Every schema change from here should be verified against
+a DB built purely from `init_db()`, not only against the deployed one — the
+deployed database's history papers over exactly this class of defect.
+
+**DEFERRED, agreed but not this commit:** narrow the bare
+`except Exception: pass` around each migration to `sqlite3.OperationalError`
+with a message check, so "duplicate column name" passes and "no such table"
+raises. That converts this whole class from silent to loud.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |
