@@ -200,6 +200,31 @@ def init_db():
     except Exception:
         pass
 
+    # Migrate backtest_results: spread model provenance. engine_version alone
+    # cannot answer "which spread numbers produced this row" — it versions the
+    # model's STRUCTURE, while spread is a PARAMETER the structure is fed.
+    # Swapping the table without a version bump would silently blur measured
+    # and unmeasured rows, so the model name is stamped per row and the table
+    # content is hashed alongside it (a name can be kept while numbers change,
+    # a hash cannot). See spread_model.py.
+    for col, defn in [
+        ("spread_model",     "TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED'"),
+        ("spread_table_sha", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE backtest_results ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
+
+    # Migrate signal_log: per-check spread sample. One REAL column on rows that
+    # already exist — no new rows — so the cost is ~9 bytes on ~1,100 rows/day,
+    # about 11KB/day against a 305MB database. A separate samples table would
+    # have cost ~6x more by adding rows and their btree overhead.
+    try:
+        cursor.execute("ALTER TABLE signal_log ADD COLUMN spread REAL")
+    except Exception:
+        pass
+
     # Migrate active_strategy: add Phase 5 columns
     for col, defn in [
         ("timeframe",     "TEXT"),
@@ -465,6 +490,17 @@ def init_db():
         )
     except Exception:
         pass
+
+    # Same spread provenance pair on walkforward_runs — see the backtest_results
+    # migration above for why a version string alone is insufficient.
+    for col, defn in [
+        ("spread_model",     "TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED'"),
+        ("spread_table_sha", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE walkforward_runs ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
 
     # Commit changes and close connection
     conn.commit()

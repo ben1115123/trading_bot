@@ -161,6 +161,23 @@ last_trade_time = {}  # keyed by symbol
 # "swiftalgo" from the webhook path — no realistic same-symbol collision.
 last_reject_reason: dict[str, str] = {}
 
+# Dealing spread (offer - bid, decimal scale) observed at execution time,
+# per symbol. Same read-after-call pattern, same keyed-by-symbol caveats and
+# same justification as last_reject_reason directly above.
+#
+# WHY: trades.spread has been NULL on all 906 rows because
+# live_signal_loop.py hardcodes "spread": None in the context dict it passes
+# to update_trade_context — the column, the write path and the aggregation
+# query all already existed. This populates it from data place_trade ALREADY
+# fetches for pricing (the bid/offer below), so it costs zero extra IG calls.
+#
+# This is CAPTURE ONLY. Nothing reads it for pricing, sizing or ordering; the
+# backtest engine's spread model is unchanged and still the uncalibrated flat
+# per-round-trip constant. The point is to accumulate real per-symbol spread
+# observations so a measured model can replace that constant later, instead of
+# inventing a table nobody measured.
+last_spread: dict[str, float] = {}
+
 
 # -------------------------
 # Utils
@@ -300,6 +317,17 @@ def place_trade(symbol, action, sl=None, tp=None, strategy_name="tradingview_web
         bid = market["snapshot"]["bid"]
         offer = market["snapshot"]["offer"]
         entry_price = ig_scale.to_decimal(symbol, offer if direction == "BUY" else bid)
+
+        # Capture-only: record the dealing spread from the quote just read.
+        # Both sides are converted through ig_scale first so the value is in
+        # decimal price units for every epic, including the EURUSD DEMO
+        # points-scale quirk. Wrapped and never raising — a spread-capture
+        # failure must not be able to stop a trade.
+        try:
+            last_spread[symbol] = round(
+                ig_scale.to_decimal(symbol, offer) - ig_scale.to_decimal(symbol, bid), 7)
+        except Exception:
+            last_spread.pop(symbol, None)
 
         print(f"Entry Price: {entry_price}")
 

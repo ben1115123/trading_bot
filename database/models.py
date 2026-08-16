@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from database.db import get_connection
 from engine_version import CURRENT_ENGINE_VERSION
+from spread_model import CURRENT_SPREAD_MODEL, spread_table_sha
 
 
 def log_trade(trade_data: dict) -> int:
@@ -244,15 +245,20 @@ def insert_backtest_result(result: dict) -> int:
                  candles_total, candles_train, candles_test,
                  total_trades, win_rate, total_profit, max_drawdown,
                  sharpe_ratio, benchmark_return, params_json, strategy_type,
-                 engine_version)
+                 engine_version, spread_model, spread_table_sha)
             VALUES
                 (:strategy_name, :symbol, :timeframe, :run_at,
                  :candles_total, :candles_train, :candles_test,
                  :total_trades, :win_rate, :total_profit, :max_drawdown,
                  :sharpe_ratio, :benchmark_return, :params_json, :strategy_type,
-                 :engine_version)
-        """, {**result, "engine_version": result.get("engine_version",
-                                                     CURRENT_ENGINE_VERSION)})
+                 :engine_version, :spread_model, :spread_table_sha)
+        """, {
+            **result,
+            "engine_version":   result.get("engine_version", CURRENT_ENGINE_VERSION),
+            "spread_model":     result.get("spread_model", CURRENT_SPREAD_MODEL),
+            "spread_table_sha": result.get("spread_table_sha",
+                                           spread_table_sha(result.get("spread_table"))),
+        })
         conn.commit()
         return cursor.lastrowid
     finally:
@@ -292,6 +298,45 @@ def insert_backtest_trades(trades: list) -> None:
                  :entry_price, :exit_price, :pnl, :duration_mins)
         """, trades)
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_spread_samples(symbol: str = None, since: str = None) -> list:
+    """Captured spread observations, for calibrating a measured spread model.
+
+    DEDUP CAVEAT — read before aggregating. signal_log holds one row per
+    (symbol, timeframe, strategy_name) check, so a symbol watched by several
+    strategies records the SAME market spread several times in the same minute.
+    Measured 2026-08-16: 80,139 rows collapse to 45,733 distinct
+    (symbol, minute) groups, i.e. ~1.75x duplication, and it is uneven —
+    EURUSD logged 480 checks/day against AUDUSD's 96. Averaging the raw rows
+    would silently weight whichever symbol has the most strategies attached.
+
+    This collapses to one sample per (symbol, minute) before returning, so
+    callers get market observations rather than check counts.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        where, params = ["spread IS NOT NULL"], []
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol)
+        if since:
+            where.append("checked_at >= ?")
+            params.append(since)
+        cursor.execute(f"""
+            SELECT symbol,
+                   substr(checked_at, 1, 16) AS minute,
+                   AVG(spread)               AS spread,
+                   COUNT(*)                  AS checks_collapsed
+            FROM signal_log
+            WHERE {' AND '.join(where)}
+            GROUP BY symbol, minute
+            ORDER BY minute ASC
+        """, params)
+        return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -553,10 +598,10 @@ def log_signal_check(data: dict) -> None:
         cursor.execute("""
             INSERT INTO signal_log
                 (checked_at, symbol, strategy_name, timeframe,
-                 candle_time, signal, trade_placed, error)
+                 candle_time, signal, trade_placed, error, spread)
             VALUES
                 (:checked_at, :symbol, :strategy_name, :timeframe,
-                 :candle_time, :signal, :trade_placed, :error)
+                 :candle_time, :signal, :trade_placed, :error, :spread)
         """, {
             "checked_at":    data.get("checked_at", datetime.now(timezone.utc).isoformat()),
             "symbol":        data["symbol"],
@@ -566,6 +611,10 @@ def log_signal_check(data: dict) -> None:
             "signal":        data.get("signal", "NONE"),
             "trade_placed":  int(data.get("trade_placed", 0)),
             "error":         data.get("error"),
+            # Observed dealing spread at check time, decimal price units.
+            # NULL when the stream has no fresh observation. See
+            # get_spread_samples() for the dedup caveat before aggregating.
+            "spread":        data.get("spread"),
         })
         conn.commit()
     finally:
@@ -1037,12 +1086,12 @@ def insert_walkforward_run(data: dict) -> int:
                 (run_type, strategy_name, symbol, timeframe, params_json,
                  cache_file, cache_candle_count, cache_date_start, cache_date_end,
                  windows_json, verdict, median_pf, pct_profitable, extra_json, created_at,
-                 engine_version)
+                 engine_version, spread_model, spread_table_sha)
             VALUES
                 (:run_type, :strategy_name, :symbol, :timeframe, :params_json,
                  :cache_file, :cache_candle_count, :cache_date_start, :cache_date_end,
                  :windows_json, :verdict, :median_pf, :pct_profitable, :extra_json, :created_at,
-                 :engine_version)
+                 :engine_version, :spread_model, :spread_table_sha)
         """, {
             "run_type":           data["run_type"],
             "strategy_name":      data["strategy_name"],
@@ -1060,6 +1109,9 @@ def insert_walkforward_run(data: dict) -> int:
             "extra_json":         data.get("extra_json"),
             "created_at":         data.get("created_at", datetime.now(timezone.utc).isoformat()),
             "engine_version":     data.get("engine_version", CURRENT_ENGINE_VERSION),
+            "spread_model":       data.get("spread_model", CURRENT_SPREAD_MODEL),
+            "spread_table_sha":   data.get("spread_table_sha",
+                                           spread_table_sha(data.get("spread_table"))),
         })
         conn.commit()
         return cursor.lastrowid

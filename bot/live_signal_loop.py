@@ -16,7 +16,7 @@ from database.db import get_connection
 from filters.vix_filter import get_current_vix, VIX_CAUTION_THRESHOLD
 from risk_manager import get_risk_per_trade
 from bot.notifier import send_telegram
-from bot.candle_stream import get_candles as get_stream_candles
+from bot.candle_stream import get_candles as get_stream_candles, get_spread as get_stream_spread
 from backend.backtesting.regime import classify_regimes
 from symbols import SYMBOLS
 
@@ -338,6 +338,12 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         "signal":        "NONE",
         "trade_placed":  0,
         "error":         None,
+        # Capture-only spread sample, taken on EVERY check rather than only on
+        # trades. Live trades run ~1 per symbol per day, so a trade-only sample
+        # needs ~100 days to characterise a symbol; checks give ~96-480/day and
+        # a usable distribution in 1-2 days. None when the stream has nothing
+        # fresh (off-session, pre-warm-up, yfinance mode).
+        "spread":        get_stream_spread(symbol),
     }
 
     if _is_blocked(symbol):
@@ -666,7 +672,13 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         "atr_at_entry": round(sl_dist, 4),
         "day_of_week":  _now_utc.weekday(),
         "session":      _get_session(_now_utc.hour),
-        "spread":       None,
+        # Was hardcoded None, which is the entire reason trades.spread was
+        # NULL on all 906 rows — the column and write path always existed.
+        # Filled from execute_trade.last_spread after place_trade returns
+        # (below), since the dealing spread is only known once the quote has
+        # been read. Seeded here with the stream's observation as a fallback
+        # for the case where place_trade never reached its quote.
+        "spread":       get_stream_spread(symbol),
         "regime":       regime,
     }
     try:
@@ -695,6 +707,12 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         print(f"[signal_loop] [{symbol}] trade placed={placed}")
         if placed:
             try:
+                # Prefer the dealing spread actually observed at execution —
+                # that is the quote the trade crossed. Falls back to the
+                # stream seed set above if place_trade never got that far.
+                _exec_spread = execute_trade.last_spread.get(symbol)
+                if _exec_spread is not None:
+                    _ctx["spread"] = _exec_spread
                 update_trade_context(symbol, "live_signal_loop", _ctx)
             except Exception:
                 pass

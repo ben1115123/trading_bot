@@ -656,6 +656,53 @@ evidence to re-examine at all.
 
 ---
 
+## 14. `MIN_SL_DIST` — an uncalibrated table that now drives sizing
+*(added 2026-08-16 during the engine parity work — recorded, NOT fixed)*
+
+**Broken:** `MIN_SL_DIST` (was `_MIN_SL_DIST` in `bot/live_signal_loop.py`,
+moved to `instrument_limits.py` at parity-v1) is a hand-set table with **no
+recorded provenance** — no measurement, no date, no source, no sample size.
+Nobody knows where the numbers came from or when they were last true.
+
+**Why it matters now more than it did:** until 2026-08-16 the table existed
+only on the live path. The parity work imported it into the backtest engine,
+where it **materially drives sizing**: the floor binds on **45-55% of
+williams_r FX signal entries** (AUDUSD 55.2%, USDCAD 52.2%, EURUSD 47.7%,
+GBPUSD 44.9%), and on 95-100% of index candles. On a floored trade the floor —
+not the strategy, not the market — sets the stop distance, and therefore sets
+the position size and the entire P&L of that trade.
+
+**Evidence it is unverified:** the values are suspiciously round
+(0.00050 for EURUSD/AUDUSD/USDCAD/EURGBP, 0.00060 for GBPUSD, exactly 3.0/4.0/
+5.0 for US500/US100/DAX). The stated rationale is IG's per-instrument minimum
+stop distance, but **that minimum has never been read back from IG** —
+`fetch_market_by_epic` exposes `minNormalStopOrLimitDistance` per epic and
+nothing in the codebase consults it. ROADMAP Tier 5 already lists "dynamic
+min-distance floors (read IG per-instrument minimums at session start,
+replacing hardcoded values)" as a prerequisite, which concedes the point.
+
+**Same failure class as spread (finding 15 below / commit 4 work), discovered
+second.** Both are model *parameters* rather than model *structure*:
+`engine_version` versions the structure and says nothing about the numbers the
+structure is parameterised by. A future reader cannot tell, from a
+`backtest_results` row, which `MIN_SL_DIST` values produced it.
+
+**Fixing requires:** read `minNormalStopOrLimitDistance` per epic at session
+start and reconcile against the hardcoded table — expect disagreement, since
+these values predate several epic changes; give the table the same stamped
+provenance being built for spread (`spread_table_sha` pattern: a content hash
+plus per-symbol `n`/date-range/source), so a row records which parameter set
+it used; and decide explicitly whether the floor should be the broker minimum,
+a volatility floor, or both — right now it silently serves as both and is
+calibrated as neither.
+
+**Do not fix during the parity sequence.** Changing the floor changes sizing on
+half of all trades, which would confound the parity before/after comparison
+that is the entire point of that sequence. Fix after the gauntlet regenerates,
+and bump `engine_version` when it lands.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |

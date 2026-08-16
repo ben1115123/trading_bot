@@ -112,6 +112,21 @@ _partial_15min: dict[str, dict] = {}      # symbol -> {"bucket_start": iso, "bar
 _disconnected = threading.Event()
 _disconnected.set()  # starts "disconnected" until first successful connect
 
+# Latest dealing spread per symbol: symbol -> (spread_decimal, observed_at_iso).
+# CAPTURE ONLY — nothing reads this for pricing, sizing or signal decisions.
+#
+# Both sides of the book already arrive on every tick (BID_* and OFR_* are in
+# the subscribed field list below) and _mid_ohlc averages them to a mid and
+# DISCARDS the difference. The spread was never unavailable, only thrown away.
+# Retaining it costs no extra IG calls and no extra subscription.
+#
+# Why this source rather than trades.spread alone: live trades run ~1 per
+# symbol per day (25 trades across 4 FX symbols over the last 6 days), so a
+# per-trade sample needs ~100 days to build a per-symbol distribution. Stream
+# ticks give ~96-480 observations per symbol per day, which is a usable
+# distribution in ~1-2 days and session-stratified inside a week.
+_last_spread: dict[str, tuple] = {}
+
 # IG's REST snapshotTime is in the ACCOUNT'S configured timezone, not UTC
 # (confirmed via session creation's timezoneOffset field, e.g. 8 for this
 # account/MYT) -- despite looking like a naive UTC string. Caught live
@@ -127,6 +142,45 @@ def get_candles(symbol: str, timeframe: str) -> list | None:
     with _lock:
         buf = _buffers.get((symbol, timeframe))
         return list(buf) if buf and len(buf) >= 20 else None
+
+
+def get_spread(symbol: str, max_age_secs: int = 900) -> float | None:
+    """Latest observed dealing spread for `symbol`, in decimal price units.
+
+    Returns None when nothing has been observed yet or the last observation is
+    older than max_age_secs — a stale spread is worse than no spread, because
+    a NULL is visibly missing whereas a stale number silently looks measured.
+    Default 900s = one 15MIN bar.
+
+    CAPTURE ONLY. No caller may use this for pricing, sizing or gating.
+    """
+    with _lock:
+        rec = _last_spread.get(symbol)
+    if not rec:
+        return None
+    spread, observed_at = rec
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(observed_at)).total_seconds()
+    except Exception:
+        return None
+    return spread if 0 <= age <= max_age_secs else None
+
+
+def _record_spread(symbol: str, values: dict) -> None:
+    """Retain OFR_CLOSE - BID_CLOSE from a tick _mid_ohlc is about to average
+    away. Never raises: a capture failure must not disturb the candle path."""
+    try:
+        if not ig_scale.is_resolved(symbol):
+            return
+        spread = (ig_scale.to_decimal(symbol, float(values["OFR_CLOSE"])) -
+                  ig_scale.to_decimal(symbol, float(values["BID_CLOSE"])))
+        if spread < 0:
+            return  # crossed/garbage tick — drop rather than record a negative
+        with _lock:
+            _last_spread[symbol] = (round(spread, 7),
+                                    datetime.now(timezone.utc).isoformat())
+    except (KeyError, TypeError, ValueError):
+        return
 
 
 def debug_buffer_tail(symbol: str, timeframe: str, n: int = 10) -> list:
@@ -444,6 +498,11 @@ def _on_update(item_name: str, values: dict) -> None:
     symbol = _symbol_for_epic(epic) if epic else None
     if not symbol or not scale:
         return
+
+    # Capture-only, before _mid_ohlc averages the two sides away. Placed ahead
+    # of the mid guard deliberately: a tick can carry a usable BID/OFR pair
+    # even when _mid_ohlc rejects it for a missing OPEN/HIGH/LOW field.
+    _record_spread(symbol, values)
 
     mid = _mid_ohlc(symbol, values)
     if mid is None:
