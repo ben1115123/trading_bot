@@ -1,19 +1,148 @@
 # TRADING BOT — DEVELOPMENT ROADMAP
-Last updated: 2026-07-22
+Last updated: 2026-08-15
 Rule: this file is updated whenever a tier item 
 completes or a gate decision resolves.
 
-## HARD GATE (governs everything below)
-AUDUSD reconciliation read at 40+ clean post-flip 
-demo-live trades certifies whether backtest verdicts 
-predict real execution. Until it resolves:
-- Exploration (running backtests) is allowed anytime
-- Promotion/commitment of ANY new strategy is blocked
-Branch A (demo TRACKS backtest): ruler certified → 
-Tier 3 hunts proceed with confidence.
-Branch B (DIVERGES): diagnose why (execution residue 
-vs engine flattery vs overfit residue), fix engine, 
-re-certify before hunting.
+## HARD GATE — RESOLVED 2026-08-12: Branch B (DIVERGES)
+
+**Gate condition met.** Required 40+ clean single-position 
+post-cap demo-live AUDUSD trades. Delivered: **51 post-cap 
+trades, 50 closed**, verified clean by interval-overlap 
+scan — zero overlapping `[entry, close]` pairs on AUDUSD, 
+and zero on EURUSD/GBPUSD/USDCAD. The concurrent-position 
+cap (`risk/concurrent_positions.py`, deployed 
+2026-07-24 21:13:48 UTC) held without exception.
+
+**Result vs promotion basis.**
+
+| | Promotion basis | Live demo actual |
+|---|---|---|
+| Profit factor | median **1.285** | **0.71** |
+| Windows profitable | 83.3% | — |
+| Win rate | — | 26.0% |
+| Net | — | **−$109.07** |
+| Expectancy | — | **−$2.18/trade** |
+
+AUDUSD was the only roster strategy to clear the full 
+ROBUST gauntlet. It is the **worst live performer of the 
+four williams_r instances**. Across all four the 
+backtest-to-live ranking inverts: predicted AUDUSD > 
+EURUSD > GBPUSD > USDCAD; observed USDCAD ≈ EURUSD > 
+GBPUSD > AUDUSD.
+
+**Diagnosis: ENGINE FLATTERY.** The backtest models a 
+different strategy from the one running live — no 
+take-profit for `williams_r` (`engine.py:291` reads 
+`tp_price`, `WilliamsRStrategy` never emits it; zero 
+`tp_hit` across 403 trades), while live took profit on 
+30% of exits and **100% of live gross wins came through 
+TP**. Plus `RISK_PER_TRADE = 15.0` against live `$10`. 
+See SESSION_20260812_FINDINGS.md finding 1.
+
+**Execution residue is ruled out.** Concurrent cap holding 
+(zero overlaps, all four symbols); poller clean (4/4 
+tracked, ~30s cadence, DB matching IG deal-for-deal); 
+stops attached broker-side on every open position 
+(`stopLevel`/`limitLevel` present, `controlledRisk: 
+false`); sizing arithmetically correct (every live trade 
+prices to ≈$10). Execution did what it was told; the 
+instruction was wrong.
+
+**AMENDMENT 1 — the stability-map claim overstates the 
+data.** "23 contiguous cells at PF ≥ 1.1" is a 
+**profit-factor contour, not a plateau of robust 
+configurations.** Of the 84 recorded cells: FRAGILE 38, 
+MARGINAL 34, REJECT 11, **ROBUST 1.** Twenty-five clear 
+PF ≥ 1.1, so the contour is real — but exactly one cell 
+in the map earns a ROBUST verdict.
+
+**AMENDMENT 2 — no comparison baseline exists.** There is 
+**no `walk_forward` row for `williams_r` on any symbol**, 
+VPS or local. The "83.3% of 6 windows" figure survives 
+only as prose. `walkforward_runs` was created 2026-07-22, 
+one week after the 2026-07-15 promotion, so the 
+justifying run was never persisted. What exists locally: 
+the headline verdict (inside the permutation row's 
+`extra_json`), the 84-cell stability map, a 200-iteration 
+permutation test, and 25 Monte Carlo rows including the 
+Phase-5 ruin sweep. **The finding is the recurrence, not 
+the absence** — this file already documented the same gap 
+for EURUSD williams_r as a one-off. It silently applied to 
+the flagship too, unnoticed for four weeks. Verdicts must 
+be written to `walkforward_runs` when produced, or they 
+are not evidence.
+
+**Overfit residue is NOT ruled out.** The engine defect is 
+sufficient to explain a large divergence but does not 
+establish that these parameters would generalise on a 
+correct engine. The stability map and permutation result 
+were computed by the same flawed engine and inherit the 
+same defect — they establish robustness *within a model 
+that cannot take profit*.
+
+Re-running the gauntlet on the corrected engine is 
+therefore **regeneration, not reproduction**: for 
+walk-forward there is no prior artifact to diff against. 
+Stability map, permutation and Monte Carlo permit a 
+genuine before/after comparison, provided the old rows 
+are marked `pre-parity-v0` and never mixed with post-fix 
+results.
+
+**What the gate blocks until re-certification:** promotion 
+or commitment of ANY new strategy; Tier 3 hunts do not 
+open. Exploration remains allowed, but **no result from 
+the current engine constitutes promotion evidence.** 
+Re-certification requires the engine parity fix, the 
+paper-resolver sibling fix, a full gauntlet regeneration, 
+and fresh comparison against live demo data collected 
+under the corrected model.
+
+## NEXT SESSION — fixed sequence
+Order is load-bearing; each step's output is the next 
+step's input.
+
+1. **Engine contract** (`backend/backtesting/engine.py`) — 
+   a default TP rule when a strategy supplies none (an 
+   R-multiple, chosen against observed live behaviour, not 
+   guessed) **AND** a hard failure when neither `sl_price` 
+   nor `tp_price` is present and no default applies. Both 
+   halves required: a default alone makes the silence 
+   quieter rather than fixing it. Correct `RISK_PER_TRADE` 
+   to 10.0 and delete the false "matches live bot" 
+   comment. NOTE: `engine.py` has uncommitted local 
+   changes adding `force_flat`/`session_close` exit 
+   support — same function, textual conflict, no semantic 
+   overlap with this fix.
+2. **Paper resolver** (`_resolve_pending_paper_trades`) — 
+   sibling to step 1, not a subtask. Deduct spread, route 
+   prices through `ig_scale.to_decimal()`, add an 
+   `sl_distance` sanity bound that **rejects at both ends** 
+   rather than clamping, quarantine `paper_trades` id=824.
+3. **`engine_version` marking** — `NOT NULL DEFAULT 
+   'pre-parity-v0'` on `backtest_results`; semantic 
+   versions, not commit SHAs; bump only when the trade 
+   model changes; `get_backtest_results()` filters to 
+   current by default; `score_strategies()` **raises** on 
+   a mixed set; `active_strategy.score` nulled or flagged 
+   at the boundary.
+4. **Re-validation** — regenerate the gauntlet under the 
+   corrected engine. Audit the 13 emitting strategies' TP 
+   rules while here: emitting something is not evidence of 
+   emitting the right thing, and those rules have never 
+   been checked.
+5. **Promotion gate** — advisory report for one full 
+   cycle, then hybrid: hard gate on numeric criteria, 
+   advisory on correlation and judgement calls. Overrides 
+   impossible to make silently; must record 
+   `engine_version` alongside the metric snapshot. Refuse 
+   to cite a walk-forward verdict that has no 
+   `walkforward_runs` row — that alone would have caught 
+   both EURUSD and AUDUSD.
+
+Independent of the above, do first (cheap, unblocks 
+nothing but closes a live hole): the `status` fail-open 
+default at all three layers, and restricting cron to 
+writing `'paper'` only.
 
 ## TIER 1 — COMPLETE (2026-07-16)
 Quota-fallback alert dedup; yfinance-fallback UTC 
@@ -26,29 +155,42 @@ mid-vs-dealing fix makes drift cleanly measurable).
 DEFERRED: mid-vs-dealing comparison fix (cosmetic; 
 batch with future reanchor review).
 
-## TIER 2 — THE FORK (running now)
-- [ ] AUDUSD reconciliation read (trigger: ~30 clean
-  SINGLE-position trades, ~2 weeks post-cap; prompt
-  spec exists in session notes — realized vs backtest
-  WR/expectancy/RR/regime, plus post-flip entry-gap
-  "after" number). Clock reset 2026-07-25: max
-  concurrent-positions-per-symbol cap deployed
-  (`risk/concurrent_positions.py`, cap=1) after a
-  stacking-profitability analysis found concurrent
-  williams_r stacking cost -$219.63 vs first-entry-only
-  across 32 episodes — the pre-cap AUDUSD sample (49
-  closed trades, 37 stacked) does not match the
-  backtest's one-position-at-a-time model and does not
-  count toward the 40-trade bar. Only single-position
-  trades placed after this deploy count. Plan: initial
-  read at ~30 clean trades as a directional
-  certification (does demo track backtest direction,
-  yes/no), full statistical read upgrading as the
-  sample grows past 40+.
-- [ ] July 21: GBPUSD + stoch_rsi FRAGILE review 
-  gate (demo performance vs walk-forward profiles)
+## TIER 2 — THE FORK — RESOLVED 2026-08-12 (Branch B)
+- [x] **AUDUSD reconciliation read — DONE.** 51 post-cap 
+  clean trades, 50 closed. Verdict: DIVERGES. PF 0.71 vs 
+  1.285 promotion basis. Diagnosis engine flattery, 
+  execution ruled out, overfit residue not ruled out. 
+  Full detail in the HARD GATE section above. The 
+  40-trade bar was met on the post-cap sample only — the 
+  pre-cap history (49 closed, 37 stacked) never counted, 
+  per the 2026-07-25 clock reset.
+- [ ] **GBPUSD + stoch_rsi FRAGILE review gate — STILL 
+  OPEN, now ~4 weeks overdue** (was scheduled July 21). 
+  Partly overtaken by events: `US500 HOUR stoch_rsi` was 
+  deactivated 2026-08-13 on invalid-evidence grounds 
+  (history row 42), so only the GBPUSD half remains 
+  live. GBPUSD id 32 runs `period=21/-90/-20`, which is 
+  **not** the config any walk-forward run used — the 
+  review needs its real params pulled first.
+- [ ] **NEW — selector re-arm decision.** The daily 
+  selector is inert as of 2026-08-15 (cron line commented 
+  + all three of its symbols blocklisted). It stays inert 
+  until the engine fix and `engine_version` marking land; 
+  re-arming is a deliberate decision, not a default, and 
+  requires undoing both layers.
+
+Superseded wording of both Tier 2 items (the pre-cap 
+clock reset, the -$219.63 stacking analysis, the 
+original 30/40-trade trigger spec) is in git history at 
+commit b0c7261 and earlier.
 
 ## TIER 3 — EDGE INVENTORY EXPANSION 
+**BLOCKED — does not open.** The hard gate resolved 
+Branch B, which explicitly holds Tier 3 hunts shut until 
+re-certification on a corrected engine. Exploration is 
+still allowed; no result from the current engine counts 
+as promotion evidence. Items below are queued, not 
+started.
 (post-reconciliation; the actual priority — edge 
 inventory is the bottleneck, not orchestration)
 - [ ] Pairs trading research: EURUSD/GBPUSD/AUDUSD 
@@ -141,10 +283,31 @@ REJECTed because the pool was weak, not the switching)
   unfalsifiable, philosophically opposed to this 
   system.
 
+## OUTSTANDING — monitoring & housekeeping
+- [ ] **`candle_stream` heartbeat is unmonitored.** 
+  `scripts/watchdog.py` checks only `signal_loop` 
+  staleness. A dead candle stream would page nobody. 
+  Needs a market-hours-aware rule (same Sun 22:00 – 
+  Fri 21:00 UTC shape the signal_loop check uses); 
+  weekend silence is normal and must not alert.
+- [ ] `/app/logs/daily_run.log` no longer written 
+  (run_daily disabled) — dashboard page 01's cron-status 
+  panel now parses a missing file and reads permanently 
+  stale. Cosmetic; fix or remove the panel.
+- [ ] 51 dangling Docker images on the VPS (2026-08-15). 
+  Not pruned. Check before the next rebuild.
+
 ## TIER 5 — LIVE RETURN (Branch A only)
+**Branch B resolved, so this tier is not reachable on 
+the current evidence.** 
 One strategy at a time, 2 weeks apart. Sizing from 
 the MC ruin table: ~1% of account per trade ≈ 5.6% 
 ruin; 2% is proven reckless. Ladder: $100→$200→$500. 
+NOTE: the ruin table was computed on a $500 account 
+from pre-parity-engine AUDUSD trades. The demo account 
+holds $19,542.89, so demo survival tests none of it; 
+the percentages must be regenerated post-fix before 
+they gate any live sizing. 
 Demo runs forever as permanent staging. 
 Prerequisites: correlation limits live, dynamic 
 min-distance floors (read IG per-instrument minimums 

@@ -6,6 +6,25 @@ TradingView alert → webhook → Python bot → IG Markets API.
 Current focus: Phase 7 — Risk Management & Stability.
 Forward development plan: see ROADMAP.md
 
+### ⚠️ Read this before trusting any performance figure in this file
+`docs/SESSION_20260812_FINDINGS.md` is the authoritative record of 13 defects
+found in the 2026-08-12 audit. **Nothing in it is fixed.** It covers, and this
+file does NOT duplicate: engine parity (finding 1 — the backtest applies no
+take-profit for 21 of 34 strategies and sizes at $15 vs live $10), the paper
+resolver as a second inconsistent synthetic model (2), `status` fail-open
+defaults (4), first-activation with no score threshold (5), backtest
+provenance across the roster (13), and the local-vs-VPS corpus split (11).
+
+Consequences that apply to this whole file:
+- **Every backtest score, PF, and walk-forward verdict quoted below was
+  produced by the pre-parity engine.** They are recorded as history, not as
+  current evidence. Do not promote on them.
+- 26 of 31 roster rows use a strategy that never emits `tp_price`; only 2 of
+  8 live rows carry a `backtest_id` at all.
+- Re-running the gauntlet after the engine fix is **regeneration, not
+  reproduction** — for walk-forward there is no persisted artifact to diff
+  against (finding 7).
+
 ## Architecture
 main.py                     FastAPI entry point
 webhook/receiver.py         POST /webhook — alert parser
@@ -70,18 +89,29 @@ backend/strategies/         ✅ 13 strategies built
   orb.py, ichimoku.py, keltner.py, stoch_rsi.py,
   ema_cross_volume.py, vwap_mean_reversion.py,
   connors_rsi2.py, williams_r.py, macd_rsi.py
-backend/backtesting/        ✅ engine.py, metrics.py
+backend/backtesting/        ⚠️ engine.py, metrics.py
+                            engine.py violates its own signal contract —
+                            see findings doc finding 1 + 12
 scripts/run_backtest.py     ✅ CLI backtest runner
-scripts/run_daily.py        ✅ Morning orchestrator (6am UTC cron)
+scripts/run_daily.py        ⛔ 06:00 UTC cron DISABLED 2026-08-15
 scripts/score_strategies.py ✅ Score all backtest_results
-scripts/select_strategy.py  ✅ Select best per symbol+timeframe
-                            ✅ STRATEGY_BLOCKLIST — cron cannot promote
-                               blocklisted strategies to live/paper
+scripts/select_strategy.py  ⛔ INERT since 2026-08-15 — see Selector
+                               Disabled section
+                            SYMBOL_BLOCKLIST = {"BTC","US100","US500"}
+                            STRATEGY_BLOCKLIST — per (symbol,tf,strategy)
+                               tuple; allowlist by omission, NOT a
+                               symbol-wide block
+scripts/resolve_webhook_outcomes.py
+                            ✅ Stage E — own cron line, 06:10 UTC
 scripts/sync_ig_trades.py   ✅ IG trade sync, self-contained session
                             ✅ Duplicate prevention via deal_reference
                             ✅ Price+symbol+date secondary check
 scripts/backfill_pnl.py     ✅ Backfill missing P&L
-utils/telegram_alert.py     ⬜ Planned — not yet built
+utils/telegram_alert.py     ❌ DELETE THIS LINE'S PREMISE — Telegram
+                            alerting is BUILT and deployed as
+                            bot/notifier.py (4 layers, see Alerting).
+                            No utils/telegram_alert.py exists or is
+                            needed.
 
 ## Environments
 
@@ -196,6 +226,59 @@ name, and watchdog alerts fired in the last 24h (read from
 watchdog_alerts.jsonl — shows fired-and-cleared events, not just
 conditions still unresolved at summary time).
 
+## Selector Disabled (2026-08-15, commit 9e5f21a)
+
+The daily strategy selector is off at **two independent layers**. Re-arming it
+requires undoing **both** — uncommenting the cron line AND reverting the code.
+
+**Layer 1 — cron.** `scripts/crontab`: the `0 6 * * *` `run_daily.py` line is
+commented out, carrying the DISABLED note from the 2026-08-12 in-container
+edit. Cron file now has exactly two active lines:
+
+```
+10 6 * * * root ... scripts/resolve_webhook_outcomes.py >> /app/logs/webhook_outcomes.log
+*/15 * * * * root ... scripts/collect_candles.py >> /app/logs/candles.log
+```
+
+**Layer 2 — code.** `scripts/select_strategy.py`:
+`SYMBOL_BLOCKLIST = {"BTC", "US100", "US500"}`. `SYMBOLS` is exactly
+`["BTC", "US100", "US500"]`, so **`select_strategy()` skips every symbol it
+iterates before `_select_for_symbol` is ever called — the selector is a total
+no-op, not merely gated.** Also added `("US500","HOUR","stoch_rsi")` to
+`STRATEGY_BLOCKLIST`.
+
+**Why.** The selector ranks on `backtest_results` scores produced by an engine
+that applies no take-profit and sizes at $15 against live $10 (findings 1, 12).
+Separately, `_select_for_symbol`'s first-activation branch has no score
+threshold: when `get_active_strategy(symbol, "HOUR")` returns `None`, the
+top-scoring candidate is promoted **unconditionally**. That is the exact
+mechanism that put `US100 HOUR supertrend` live on 2026-06-16 with zero paper
+trades and zero human review (finding 5).
+
+**Precision on which symbols were actually armed:** after the 2026-08-13
+deactivations, **US100 HOUR had no active row** (armed). **US500 HOUR still
+has one** — id 13 `swiftalgo`, `status='active'` — and `get_active_strategy`
+filters `status='active'` (`database/models.py:430`), so US500 was **not**
+armed via that branch. Both are blocklisted regardless. An earlier note in
+this repo claimed US500 HOUR had no active row; that was wrong.
+
+**STRATEGY_BLOCKLIST is an allowlist by omission.** It blocks enumerated
+`(symbol, timeframe, strategy_name)` tuples only — any name not listed is
+permitted. This file previously claimed "all US100 strategies blocklisted
+since 2026-06-12"; that claim was false, `("US100","HOUR","supertrend")` was
+never in the set, which is how the 2026-06-16 promotion succeeded. Only
+`SYMBOL_BLOCKLIST` blocks a symbol. Also latent: 10 of the 22 US100 tuples are
+unreachable — `_select_for_symbol` filters to `timeframe == "HOUR"` before the
+blocklist check, so every 15MIN/5MIN tuple has never been evaluated.
+
+**Verification anchors after any rebuild:**
+- committed `scripts/crontab` md5 `aea93925651e8ee24ce7d52e70b3434d`
+  (blob `fe4ff2584c8dbfb4188bffdd6cf5b044316d135c`)
+- in-container `/etc/cron.d/trading-bot` must match byte-for-byte —
+  `Dockerfile:18` is a plain `cp`, no transformation
+- the pre-fix Method A value was `d7565feade7ac71356579e686b887a1b`; seeing it
+  again means a rebuild reverted the disable
+
 ## Claude Code SSH Permissions
 ✅ SSH, run docker, git pull, check logs, restart containers
 ❌ Never modify .env / expose credentials / git push from VPS
@@ -296,27 +379,83 @@ recreate / account switch). Falls back to `'USD'` only if the lookup never
 resolved for that symbol, logged loudly (`[ig_scale] currency_code fallback
 to USD for {symbol}`) so a wrong-currency order is never sent silently.
 
-## Supported Assets (Live)
-| Symbol | Epic                   | yfinance | Value/Point |
-|--------|------------------------|----------|-------------|
-| US500  | IX.D.SPTRD.IFMM.IP     | ^GSPC    | 1           |
-| US100  | IX.D.NASDAQ.IFMM.IP    | ^NDX     | 1           |
-| DAX    | IX.D.DAX.IFMS.IP       | ^GDAXI   | 1           |
-| EURUSD | CS.D.EURUSD.MINI.IP | EURUSD=X | 10000 | $1/pip, 10k contract |
+## Supported Assets — CANONICAL TABLE
+This is the single source of truth. A second, contradictory "Supported Assets"
+pair of tables further down this file was **stale and has been removed**: it
+listed EURUSD/BTC as "Paper only" and omitted GBPUSD, AUDUSD and USDCAD
+entirely, while all three have been trading live on demo since 2026-06/07.
+
+| Symbol | Epic                | yfinance | Value/Point | Trades live? |
+|--------|---------------------|----------|-------------|--------------|
+| US500  | IX.D.SPTRD.IFMM.IP  | ^GSPC    | 1           | Yes — swiftalgo webhook (id 13) |
+| EURUSD | CS.D.EURUSD.MINI.IP | EURUSD=X | 10000       | Yes — williams_r loop (22) + swiftalgo webhook (11) |
+| GBPUSD | CS.D.GBPUSD.MINI.IP | GBPUSD=X | 10000       | Yes — williams_r loop (32) |
+| AUDUSD | CS.D.AUDUSD.MINI.IP | AUDUSD=X | 10000       | Yes — williams_r loop (34) |
+| USDCAD | CS.D.USDCAD.MINI.IP | USDCAD=X | 10000       | Yes — williams_r loop (36) |
+| US100  | IX.D.NASDAQ.IFMM.IP | ^NDX     | 1           | No — symbol-blocklisted |
+| DAX    | IX.D.DAX.IFMS.IP    | ^GDAXI   | 1           | No — all strategies failed |
+| BTC    | —                   | BTC-USD  | 0.1         | No — inactive, no crypto strategy |
+
+FX minis: $1/pip, 10k contract. EURUSD carries the points-scale quirk on the
+DEMO account — see Price scale quirk.
 
 ## Paper Trade Symbols (.env)
-PAPER_TRADE_SYMBOLS=DAX,BTC
-(US100_5MIN removed — stoch_rsi deactivated)
+**Actual deployed value** (verified on VPS `.env` 2026-08-15):
+```
+PAPER_TRADE_SYMBOLS=DAX,US100_5MIN,BTC
+```
+This file previously documented `DAX,BTC` with the note "(US100_5MIN removed
+— stoch_rsi deactivated)". **That removal never happened in `.env`.** The
+value is inert in practice — US100 5MIN has no active row — but the doc and
+the deployment disagreed, so trust `.env`.
+
+Other `.env` values worth knowing: `IG_ACC_TYPE=DEMO`,
+`CANDLE_SOURCE=ig_stream`, and `RISK_PER_TRADE=5` which **no code reads**
+(see Dead Config).
 
 ## Active Strategies
 
-### Live
-| Symbol | TF   | Strategy   | Mode | Source  | Notes                          |
-|--------|------|------------|------|---------|--------------------------------|
-| US500  | HOUR | stoch_rsi  | Live | loop    | FRAGILE walk-forward verdict (2026-07-09): median PF 1.33, 57.1% windows profitable, 3 of 28 windows PF 0.00. Kept in demo roster at full size for reconciliation data — does NOT meet Phase 3 ROBUST bar for any future live-account return. Review alongside GBPUSD at the 2026-07-21 gate |
-| EURUSD | HOUR | swiftalgo  | Live | webhook | Promoted 2026-05-27, $10 risk  |
-| US500  | HOUR | swiftalgo  | Live | webhook | Confirmed live 2026-06-04, runs parallel with stoch_rsi via webhook |
-| GBPUSD | 15MIN | williams_r | Live | loop   | Promoted 2026-06-22, $1.50 risk (halved 2026-07-07 — FRAGILE walk-forward verdict, review after 20 trades), no session blocks. Review at the 2026-07-21 gate alongside stoch_rsi US500 HOUR |
+### Live — 6 instances (verified against `active_strategy` 2026-08-15)
+
+Every row below is **demo** (account Z67Y2C). `status='active'` in
+`active_strategy`. **`backtest_id` is NULL on all six** — none of them has
+recorded backtest provenance (findings doc finding 13).
+
+| id | Symbol | TF | Strategy | Source | Rostered params |
+|----|--------|-----|----------|--------|-----------------|
+| 11 | EURUSD | HOUR | swiftalgo | webhook | n/a — Pine Script upstream |
+| 13 | US500 | HOUR | swiftalgo | webhook | n/a — Pine Script upstream |
+| 22 | EURUSD | 15MIN | williams_r | loop | `period=10, oversold=-90, overbought=-20` |
+| 32 | GBPUSD | 15MIN | williams_r | loop | `period=21, oversold=-90, overbought=-20` |
+| 34 | AUDUSD | 15MIN | williams_r | loop | `period=14, oversold=-85, overbought=-20` |
+| 36 | USDCAD | 15MIN | williams_r | loop | `period=14, oversold=-85, overbought=-15` |
+
+**GBPUSD id 32 runs `period=21`, not the documented 14.** The williams_r entry
+rules below this file describe `%R(14)`, and the 2026-07-09 FX expansion batch
+was run at `period=14/-85/-15` — neither matches what is actually rostered.
+This is the 4th occurrence of the params-divergence class; always pull params
+from `active_strategy` (see Critical Rules).
+
+Detail on the four loop instances:
+
+| Symbol | Notes |
+|--------|-------|
+| GBPUSD | Promoted 2026-06-22. FRAGILE walk-forward. $1.50 risk was halved 2026-07-07 then **restored to $10** for demo validation. No session blocks. The 2026-07-21 review gate never happened — still open |
+| EURUSD | Data-collection instance (2026-07-14), not an edge promotion. Original 2026-07-07 run REJECT (median PF 0.92, 42.9% windows); 2026-07-14 rerun with rostered params MARGINAL (median PF 1.08, 85.7% windows, 442 test trades). Discrepancy root cause irreproducible — the runs were never persisted. $10 risk |
+| USDCAD | Data-collection instance (2026-07-14), never backtested before that batch. Walk-forward REJECT (median PF 0.99, 50% windows, 410 test trades). Epic verified clean decimal scale on demo 2026-07-14. $10 risk |
+| AUDUSD | Was the **Phase-3 lead candidate** (2026-07-15) — the only roster strategy to clear a full ROBUST gauntlet. **The hard gate resolved against it 2026-08-12: Branch B, DIVERGES.** 51 post-cap clean trades, PF 0.71 vs promotion basis 1.285, WR 26.0%, net −$109.07, expectancy −$2.18/trade — the *worst* live performer of the four williams_r instances. Diagnosis: engine flattery. See ROADMAP hard gate + findings doc |
+
+**Corrections to claims previously made in this table:**
+- AUDUSD "stability-map plateau (23 contiguous cells at PF>=1.1, not a spike)"
+  — the contour is real (25 of 84 cells clear PF ≥ 1.1), but of those 84 cells
+  the verdicts are FRAGILE 38, MARGINAL 34, REJECT 11, **ROBUST 1**. It is one
+  robust point in a mostly-fragile field, not a robust plateau.
+- AUDUSD "walk-forward ROBUST, 83.3% windows, 6 windows" — **there is no
+  `walk_forward` row for `williams_r` on any symbol, VPS or local.** The
+  headline verdict survives only inside a permutation row's `extra_json`; the
+  per-window breakdown is unrecoverable. `walkforward_runs` was created
+  2026-07-22, a week after the 2026-07-15 promotion.
+- The MC figures (p5=$707, p95=$2621) do reproduce exactly from stored rows.
 | EURUSD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — promoted for regime-tagged execution data. Walk-forward status: original 2026-07-07 run REJECT (median PF 0.92, 42.9% windows), corrected 2026-07-14 rerun with rostered params (period=10, oversold=-90, overbought=-20) MARGINAL (median PF 1.08, 85.7% windows, 442 test trades) — verdict boundary-sensitive, NOT an edge promotion. Discrepancy investigated: same cache (predates the original run), same params (verified via active_strategy id=22 timestamp), same window count (7=7) ruling out a --count difference, no engine/strategy code changed since — root cause irreproducible because walk-forward runs were never persisted (no DB row, no saved output); likely a --session-filter or --max-hold CLI flag difference in the original invocation. $10 risk |
 | USDCAD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — never backtested before this batch. Walk-forward: REJECT (median PF 0.99, 50% windows, 410 test trades, default params period=14/oversold=-85/overbought=-15 — no prior rostered config existed). NOT an edge promotion — running live on demo purely for regime-tagged execution data. Epic CS.D.USDCAD.MINI.IP verified clean decimal scale (bid=1.41468, TRADEABLE) on demo (Z67Y2C) 2026-07-14; newly registered in ig_scale.py and execute_trade.py EPIC_CONFIG. $10 risk |
 | AUDUSD | 15MIN | williams_r | Live | loop   | **Phase-3 lead candidate** (2026-07-15) — promoted paper→demo-live on full-stack validation, NOT a data-collection instance: walk-forward ROBUST (median PF 1.285, 83.3% windows profitable, 6 windows — corrected for the plateau-center params below; the original -15 config's 100%-windows/MARGINAL number was a different cell), stability-map plateau (23 contiguous cells at PF>=1.1, not a spike), permutation test 96th percentile vs synthetic noise, Monte Carlo positive at every percentile (p5=$707 to p95=$2621 on $500/$10-risk, 1000 paths). Params corrected period=14/oversold=-85/**overbought=-20** (was -15 — the rostered row predated the stability map; -20 is the plateau center). Epic CS.D.AUDUSD.MINI.IP verified clean decimal scale (bid=0.6987, TRADEABLE) on demo (Z67Y2C) 2026-07-15; newly registered in ig_scale.py/execute_trade.py EPIC_CONFIG (was paper-only). $10 risk (demo — no bankroll to protect; live sizing per the MC ruin table below comes at Phase 5) |
@@ -326,13 +465,39 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 |--------|-------|------------|-------|--------|---------------------------------|
 | US500  | HOUR  | williams_r | Paper | loop   | Accumulating trades             |
 | EURUSD | 15MIN | stoch_rsi  | Paper | loop   | 297 bt trades, PF 1.36          |
-| EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18. Walk-forward (2026-07-09): FRAGILE — median PF 1.08, 57.1% windows profitable, 149 trades across 7 windows |
+| EURUSD | 15MIN | bb_squeeze | Paper | loop   | 33 bt trades, PF 2.18. Walk-forward (2026-07-09): FRAGILE — median PF 1.08, 57.1% windows profitable, 149 trades across 7 windows. **Paper P&L corrected — see bb_squeeze correction below** |
 | EURUSD | 15MIN | supertrend | Paper | loop   | 111 bt trades, PF 1.35          |
 | US500  | HOUR  | stoch_rsi_confluence | Paper | loop | session filter only, shadow logging — see below |
 | EURUSD | 15MIN | ny_session_momentum | Paper | loop | 37 bt trades, 75.7% WR, PF 1.64, follow mode |
 | US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50. Walk-forward (2026-07-09): FRAGILE — median PF 1.03, 53.8% windows profitable, 171 trades across 13 windows |
 | US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best. Walk-forward (2026-07-09): FRAGILE — median PF 1.12, 69.2% windows profitable (one window short of ROBUST's 70% bar), 70 trades across 13 windows. The PF 3.17 sweep result did not survive — overfit |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
+
+### bb_squeeze EURUSD paper P&L — CORRECTED (2026-08-12)
+**The −$2,453.93 / 32-trade figure was wrong wherever it appeared.** It is one
+corrupted row carrying 31 clean ones:
+
+- `paper_trades` **id=824** (2026-07-21, EURUSD bb_squeeze PAPER_BUY) logged
+  native points-scale prices unconverted — `entry=11403.2, sl=11400.7,
+  tp=11408.2` — the documented EURUSD DEMO scale quirk. `sl_distance` computed
+  as `2.5` in decimal terms → `lot_size = 15/(2.5×10000) = 0.0006`, **clamped
+  up to the 0.1 floor** → `pnl = −2.5 × 0.1 × 10000 = −$2,500.00`.
+- **Excluding id=824, the other 31 trades sum to `+$46.07`**; expectancy moves
+  from −$76.69 to **+$1.49/trade**.
+
+The strategy's paper record is mildly positive, not catastrophic. It still
+fails promotion criteria on PF and expectancy — the point is that one bad row
+was misrepresenting 31 clean ones. id=824 is **unique**, the only out-of-band
+price in `paper_trades` (1,447 rows) or `trades` (894 rows). Quarantine it, do
+not delete it — it is the evidence.
+
+Root cause is structural, not a one-off: **the paper-trade path has no
+`ig_scale` conversion at all.** The boundary-conversion sites listed under
+Price scale quirk do not include it. Separately, 5 more paper rows hit the
+**opposite** clamp (sub-pip stops → lot 11–49 clamped down to 10), which
+under-risks those trades and **inflates Sharpe** — one of the four
+R:R-adjusted promotion criteria. Any `sl_distance` sanity bound must reject at
+**both** ends. See findings doc finding 3.
 
 ## Deactivated Strategies (2026-05-27)
 | Symbol | TF   | Strategy        | Reason                                   |
@@ -350,6 +515,23 @@ PAPER_TRADE_SYMBOLS=DAX,BTC
 | US500  | 15MIN| fvg             | 30.6% WR insufficient — deactivated 2026-06-12 |
 | US500  | 15MIN| smc             | 24% WR, low frequency — deactivated 2026-06-12 |
 | EURUSD | 15MIN| london_breakout | 35% WR, negative P&L — deactivated 2026-06-12  |
+
+### Deactivated 2026-08-13 — invalid backtest evidence
+Both set `status='inactive'` at 2026-08-13T01:38:04Z. `active_strategy_history`
+rows **41** and **42** carry the full reasons; summarised:
+
+| id | Symbol | TF | Strategy | history | Reason |
+|----|--------|-----|----------|---------|--------|
+| 33 | US100 | HOUR | supertrend | **41** | Promoted 2026-06-16 by the unconditional first-activation branch — no score threshold, **zero paper trades, zero human review**, and undocumented in this file for ~8 weeks. Its evidence (`backtest_id 73401`) is invalid: `supertrend` never emits `tp_price`, so the engine modelled it with no take-profit and sized at $15 vs live $10 |
+| 2 | US500 | HOUR | stoch_rsi | **42** | Evidence (`backtest_id 1705`, score 0.867) invalid for the same reason — `stoch_rsi` never emits `tp_price`; the score that ranked it is not reproducible. Walk-forward was already FRAGILE (median PF 1.33, 57.1% windows, 3 of 28 windows PF 0.00). Live since 2026-04-29 |
+
+**Neither is re-promotable** until the engine contract fix and a gauntlet
+regeneration. `("US500","HOUR","stoch_rsi")` is now in `STRATEGY_BLOCKLIST`;
+US100 is covered symbol-wide.
+
+Verified live after deactivation: checked-cycle count dropped 13→11 and zero
+new `signal_log` rows appeared for either key while the 11 siblings kept
+logging.
 
 BTC note: Two consecutive failed strategies. No BTC strategies until a
 crypto-specific volatility approach is designed and backtested.
@@ -444,18 +626,12 @@ Applied in order before any trade execution:
    No active_strategy row → falls through to place_trade_from_alert (live)
 EURUSD paper entry_price: midpoint of SL+TP (approximation, P&L rough)
 
-## Supported Assets (Live)
-| Symbol | Epic                   | yfinance | Value/Point |
-|--------|------------------------|----------|-------------|
-| US500  | IX.D.SPTRD.IFMM.IP     | ^GSPC    | 1           |
-| US100  | IX.D.NASDAQ.IFMM.IP    | ^NDX     | 1           |
-| DAX    | IX.D.DAX.IFMS.IP       | ^GDAXI   | 1           |
-
-## Supported Assets (Paper only)
-| Symbol | Epic                   | yfinance | Value/Point | Notes              |
-|--------|------------------------|----------|-------------|--------------------|
-| EURUSD | CS.D.EURUSD.MINI.IP    | EURUSD=X | 10000       | $1/pip, 10k contract|
-| BTC    | —                      | BTC-USD  | 0.1         | Inactive           |
+<!-- The two stale "Supported Assets" tables that stood here (Live: US500/
+     US100/DAX only; Paper only: EURUSD/BTC) were removed 2026-08-15. They
+     contradicted the canonical table above and were wrong in both directions:
+     EURUSD was listed paper-only while trading live since 2026-05-27, and
+     GBPUSD/AUDUSD/USDCAD were absent entirely despite trading live. Use the
+     canonical Supported Assets table. -->
 
 ## Risk Management
 lot_size = get_risk_per_trade(symbol) / (sl_distance × value_per_point)
@@ -498,9 +674,26 @@ equivalently $10/$1000 — confirmed identical by the model, since ruin
 depends only on risk-as-fraction-of-account). Largest size under 10%
 ruin: $5.50/$500 (9.56%). Largest under 5%: $4.75/$500 (4.54%). Full
 sweep (16 configs incl. $10 risk on $1000/$2000/$5000 accounts) persisted
-in `walkforward_runs` (run_type='monte_carlo'). This is a reference for
-Phase 5 live-account sizing — demo currently runs flat $10 regardless
-(no bankroll at risk).
+in `walkforward_runs` (run_type='monte_carlo') — **local DB only, zero rows
+on the VPS.**
+
+**⚠️ This table does not describe the account the bot is running on.** The
+demo account Z67Y2C balance is **$19,542.89** (verified 2026-08-15), not $500.
+At $10/trade that is 0.05% of account — off the bottom of the table, where
+ruin is effectively nil. Two consequences:
+
+1. The demo account **cannot produce a ruin event**, so demo survival is not
+   evidence that any sizing is safe. Nothing about the ladder is being tested
+   by current operation.
+2. The `$100 → $200 → $500` rebuild ladder in Account Rebuild Mode refers to
+   a **live** account that is not currently funded or trading. The ladder and
+   this ruin table are both Phase-5 planning artifacts for a future live
+   return — neither governs anything running today.
+
+Also inherited: the ruin table was computed from `williams_r` AUDUSD trades
+generated by the **pre-parity engine** (no take-profit modelled, $15 sizing).
+Its distribution is the flawed model's, so the percentages must be regenerated
+after the engine fix before they gate any live sizing decision.
 
 ### Paper Trade Risk Override (added 2026-06-12)
 Paper trades always use $10 risk regardless of symbol (RISK_PER_TRADE
@@ -968,7 +1161,86 @@ Min gap size: 0.5x ATR10
     "Spot Gold ($1)"        → XAUUSD
     "Germany 40 Cash (£1)"  → DAX
 
+## Unverified Controls — the recurring failure class
+
+**The class: a control believed to be in place that was never empirically
+confirmed.** Four instances surfaced in the 2026-08-12 session alone.
+
+1. **`service cron reload` is a no-op.** `/etc/init.d/cron` maps
+   `reload|force-reload` to `log_daemon_msg` + `log_end_msg 0`, commented
+   `# cron reloads automatically`. It signals nothing and **returns success**.
+   Had it been used as the remedy, it would have reported clean and changed
+   nothing.
+2. **`collect_candles` cron recorded as disabled 2026-06-28** — still firing
+   every 15 minutes ~7 weeks later. Almost certainly an in-container edit lost
+   to a later rebuild, i.e. instance 3 realised historically.
+3. **In-container cron edits do not survive a rebuild.** `/etc/cron.d/trading-bot`
+   is baked from `scripts/crontab` at build time (`Dockerfile:18`). Editing the
+   container file works until the next `up -d --build` silently restores the
+   baked copy. This is why the 2026-08-15 deploy exists at all.
+4. **A probe that invalidates its own precondition returns a false negative.**
+   A background check sampled a sentinel file 32 seconds *after* the cleanup
+   step had deleted it, and reported `MARKER_ABSENT` for an event that had
+   demonstrably occurred. The probe was measuring its own teardown.
+
+### The remedy — the marker test
+When disabling something, prove the disable took effect with a **positive
+signal**. Never infer it from absence of activity: absence is consistent with
+both "disabled" and "would have fired but didn't happen to." Construct a probe
+whose observation *differs* between the two states — a temporary artifact only
+the new configuration can produce — observe it, then remove it.
+
+Applied 2026-08-12: a one-shot cron line writing a timestamped sentinel,
+scheduled 5 minutes out, `%` escaped as `\%` (an unescaped `%` is a newline
+separator in crontab), with ≥2 minutes of lead for cron's per-minute mtime
+poll. It fired at 17:11:01 — **that**, not the silence of the disabled job,
+established the disable.
+
+Applied again 2026-08-15 to verify this deploy: `/app/logs/daily_run.log`
+stayed absent at 06:00 UTC while Stage E **wrote** `webhook_outcomes.log` at
+06:10. Cron was demonstrably alive and reading that exact file in the same
+window, so the 06:00 no-show is a real disable rather than a dead daemon.
+
+**Corollary 1:** a test whose positive and negative branches produce the same
+observation proves nothing. The first probe proposed on 2026-08-12 — watch the
+`*/15` collector fire — was discarded because that line is identical in the old
+and new crontabs, so it fires either way.
+
+**Corollary 2:** a probe must be invalidated when its artifact is cleaned up,
+or its result read against the cleanup timestamp.
+
+**Corollary 3 (2026-08-15):** an SSH transport failure is not a command
+result. The rebuild's wrapper exited 255 (`client_loop: send disconnect:
+Broken pipe`) having shown zero build output; the build had in fact succeeded.
+The conclusion rested on end-state evidence — new image ID, new `StartedAt`,
+flipped crontab md5, cron executing — **not** on the exit code or the log.
+
+## Monitoring Gaps (outstanding)
+
+- **`candle_stream` staleness is unmonitored.** `scripts/watchdog.py` alerts
+  only on `signal_loop` heartbeat staleness. The `heartbeat` table also holds
+  `name='candle_stream'`, and nothing checks it — a genuinely dead candle
+  stream **would not page anyone**. Observed 2026-08-15: `candle_stream` last
+  beat 05:04 UTC and silent thereafter, which is correct for a weekend
+  (markets closed, no Lightstreamer ticks) and therefore indistinguishable
+  from a real failure. Fix needs a market-hours-aware staleness rule, the same
+  shape the signal_loop check already uses (Sun 22:00 – Fri 21:00 UTC).
+- **`/app/logs/daily_run.log` no longer exists**, so the dashboard's
+  cron-status panel (page 01) parses a missing file. Expected consequence of
+  disabling `run_daily`, cosmetic, but the panel now reads permanently stale.
+- **51 dangling Docker images on the VPS** as of 2026-08-15, accumulated
+  across rebuilds. Not pruned — noted only. Precedent exists (Jun 27 prune).
+  Disk fills quietly; check before the next rebuild.
+
 ## Infrastructure Incidents
+2026-08-15: Selector-disable deploy (commit 9e5f21a). `run_daily` 06:00 cron
+permanently disabled in `scripts/crontab`; Stage E added at 06:10;
+`SYMBOL_BLOCKLIST` widened to all three selector symbols. Rebuild verified by
+marker test, not by absence. **Open positions at the time: 937 EURUSD, 939
+AUDUSD (both 2026-08-07 williams_r SELLs), 964 GBPUSD, 965 USDCAD (both opened
+2026-08-14 14:00 UTC).** 938 and 954 from the earlier handoff had closed by
+then — the roster churns, never carry a hardcoded position list forward.
+
 2026-07-02: Found stale systemd service (tradingbot.service) running
 since Apr 12 alongside Docker container — both sharing same IG account,
 same DB, same repo. Duplicate signal loop was firing live trades on
@@ -1076,7 +1348,13 @@ PHASE 7 — Risk Management & Stability
   symbols — see `risk/concurrent_positions.py`.
 
 ### Still to build in Phase 7
-- Telegram alerts (trade placed, trade closed, risk limit hit)
+- ~~Telegram alerts (trade placed, trade closed, risk limit hit)~~
+  **DONE — shipped 2026-07-07/08.** This line contradicted the Alerting
+  section for five weeks. All three named alerts exist as Layer 2 event hooks
+  in `bot/notifier.py` (OPENED, CLOSED, REJECTED, SL DRIFT, DAILY LOSS LIMIT
+  HIT, SIGNAL LOOP ERROR), plus heartbeat/watchdog (Layer 3) and the 23:00 UTC
+  daily summary (Layer 4). There is no `utils/telegram_alert.py` and none is
+  needed.
 - Strategy stability rules:
     Don't switch if live win rate dropped < 40% last 7 days
 - Weekly performance report via Telegram
