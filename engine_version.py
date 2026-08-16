@@ -36,9 +36,35 @@ History:
                  exists so that rows written between the sizing fix and the
                  contract fix are distinguishable, not because it is a model
                  worth measuring against. Wait for parity-v2.
+
+  parity-v2      2026-08-16. The sl_price/tp_price CONTRACT. Three branches
+                 mirroring live_signal_loop.py:552 — neither supplied gets the
+                 engine default (tp = entry +/- DEFAULT_TP_R * floored stop,
+                 DEFAULT_TP_R = 2.0, the measured live rule); both supplied are
+                 passed through UNCHANGED, so the 13 emitters keep their own
+                 designs including the three that are not R-multiples; exactly
+                 one supplied raises EngineContractError. Also raises on
+                 non-finite levels, wrong-side levels, and a non-positive stop
+                 distance after flooring.
+
+                 Exit ladder made explicit: sl_stop/tp_hit are intrabar and
+                 outrank session_close/max_hold/signal, which are evaluated at
+                 the bar's close. Order within the intrabar pair is the new
+                 `intrabar_priority` flag ('sl' default = pessimistic; the old
+                 code silently took TP-first). `reversal_exit` defaults False
+                 to match live FX, which has no reversal exit at all. Every
+                 run now reports `ambiguous_bars` so the size of the intrabar
+                 assumption is visible rather than inferred.
+
+                 STILL DIVERGENT at parity-v2, deliberately out of scope for
+                 the whole sequence: spread modelling (commit 4), entry price
+                 (live deals at offer/bid, engine uses the candle close), entry
+                 lag (live fills 25-55min later), weekend handling, and session
+                 windows. parity-v2 is the first version where the engine takes
+                 profit at all — it is not yet a faithful execution model.
 """
 
-CURRENT_ENGINE_VERSION = "parity-v1"
+CURRENT_ENGINE_VERSION = "parity-v2"
 
 # Bumped when the trade model changed, not when the code changed. The rule:
 # bump only if two runs of the same strategy over the same candles would now

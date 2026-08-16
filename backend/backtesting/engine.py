@@ -1,4 +1,5 @@
 import itertools
+import math
 from datetime import datetime, timezone
 
 from backend.backtesting.metrics import (
@@ -39,6 +40,31 @@ EPIC_CONFIG = {
 # That is what engine_version exists to make visible.
 from risk_manager import get_risk_per_trade
 from instrument_limits import MIN_SL_DIST
+
+# Default take-profit, as a multiple of the stop distance (R). Applied ONLY
+# when a strategy supplies neither sl_price nor tp_price — never to a strategy
+# that emits its own levels. 2.0 is not a guess: it is the live rule, measured.
+# live_signal_loop.py:576/580 sets tp = entry +/- sl_dist * 2, and
+# execute_trade.py:323 re-derives that same ratio when it reanchors to the live
+# fill, so every signal-loop trade reaches IG at exactly 2R. Verified against
+# 569 real williams_r trades: post-reanchor R:R spans 1.941-2.040 with median
+# exactly 2.000, the spread being 5th-decimal rounding of the stop leg.
+DEFAULT_TP_R = 2.0
+
+
+class EngineContractError(ValueError):
+    """A strategy's signal dict violates the sl_price/tp_price contract.
+
+    Raised, never logged-and-continued. The defect this exists to stop was
+    silent: `sig.get("tp_price")` returning None meant 21 of 34 strategies ran
+    with no take-profit at all, for months, with no error anywhere — which is
+    what produced the AUDUSD backtest-vs-live divergence (PF 1.285 predicted,
+    0.71 actual). A default alone would have made that silence quieter rather
+    than fixing it, so the contract is enforced as well as defaulted.
+
+    The rule: emit BOTH sl_price and tp_price, or NEITHER. Emitting neither is
+    valid and gets the DEFAULT_TP_R rule. Emitting one is always a bug.
+    """
 
 SPREAD_COSTS = {
     "EURUSD": 1.05,   # ~1 pip x $10/pip per round trip
@@ -155,6 +181,74 @@ def _lot_size(sl_distance: float, value_per_point: float, symbol: str) -> float 
     return max(0.1, min(10.0, size))            # ...then clamp
 
 
+def _resolve_sl_tp(sig: dict, entry: float, candle: dict, symbol: str,
+                   idx: int) -> tuple:
+    """Three branches, mirroring live_signal_loop.py:552 exactly.
+
+    Returns (sl_price, tp_price, sl_dist). Raises EngineContractError rather
+    than guessing when the signal dict is self-inconsistent.
+    """
+    _sl, _tp = sig.get("sl_price"), sig.get("tp_price")
+    direction = sig["signal"]
+
+    # Branch 1 — strategy supplies NEITHER: engine default, 2R off the floored
+    # candle range. This is the branch williams_r and the other 20
+    # non-emitters take.
+    if _sl is None and _tp is None:
+        sl_dist = max(candle["high"] - candle["low"],
+                      MIN_SL_DIST.get(symbol.upper(), 0.0))
+        if sl_dist <= 0:
+            raise EngineContractError(
+                f"{symbol} idx={idx}: stop distance {sl_dist} after flooring "
+                f"(candle range {candle['high'] - candle['low']}, floor "
+                f"{MIN_SL_DIST.get(symbol.upper(), 0.0)}). Cannot size a trade."
+            )
+        if direction == "BUY":
+            return entry - sl_dist, entry + DEFAULT_TP_R * sl_dist, sl_dist
+        return entry + sl_dist, entry - DEFAULT_TP_R * sl_dist, sl_dist
+
+    # Branch 3 — exactly one supplied. Always a bug in the strategy.
+    if (_sl is None) != (_tp is None):
+        missing = "tp_price" if _tp is None else "sl_price"
+        present = "sl_price" if _tp is None else "tp_price"
+        raise EngineContractError(
+            f"{symbol} idx={idx}: signal supplies {present} but not {missing}. "
+            f"Emit BOTH or NEITHER — a half-specified signal would silently "
+            f"run without a take-profit, the exact defect this check exists "
+            f"to stop. Fix the strategy, do not relax this."
+        )
+
+    # Branch 2 — strategy supplies BOTH: passed through UNCHANGED. The 13
+    # emitters keep their own designs, including london_breakout,
+    # ny_session_momentum and silver_bullet whose rules are not R-multiples
+    # and cannot be expressed as one. DEFAULT_TP_R is never applied here.
+    sl_price, tp_price = float(_sl), float(_tp)
+    for name, val in (("sl_price", sl_price), ("tp_price", tp_price)):
+        if not math.isfinite(val):
+            raise EngineContractError(
+                f"{symbol} idx={idx}: {name}={val!r} is not a finite number."
+            )
+    # Wrong-side check: a BUY's stop must sit below entry and its target above
+    # (and vice versa). A flipped level does not merely mis-price the trade —
+    # it would trigger instantly on the entry bar and book a fictitious result.
+    if direction == "BUY" and not (sl_price < entry < tp_price):
+        raise EngineContractError(
+            f"{symbol} idx={idx}: BUY requires sl_price < entry < tp_price, "
+            f"got sl={sl_price} entry={entry} tp={tp_price}."
+        )
+    if direction == "SELL" and not (tp_price < entry < sl_price):
+        raise EngineContractError(
+            f"{symbol} idx={idx}: SELL requires tp_price < entry < sl_price, "
+            f"got tp={tp_price} entry={entry} sl={sl_price}."
+        )
+    sl_dist = abs(entry - sl_price) or (candle["high"] - candle["low"])
+    if sl_dist <= 0:
+        raise EngineContractError(
+            f"{symbol} idx={idx}: strategy-supplied stop distance is {sl_dist}."
+        )
+    return sl_price, tp_price, sl_dist
+
+
 def _parse_candle_time(t) -> datetime:
     return datetime.fromisoformat(str(t).replace("Z", "+00:00"))
 
@@ -170,8 +264,22 @@ def _add_months(dt: datetime, n: int) -> datetime:
 
 def run_backtest(strategy, candles: list, symbol: str,
                  max_hold_candles: int = None,
-                 session_filter: str = None) -> dict:
-    """80/20 split. session_filter: 'US'|'24_7'|None. max_hold_candles: force-close after N candles."""
+                 session_filter: str = None,
+                 intrabar_priority: str = "sl",
+                 reversal_exit: bool = False) -> dict:
+    """80/20 split. session_filter: 'US'|'24_7'|None. max_hold_candles: force-close after N candles.
+
+    intrabar_priority: which level wins when SL and TP both fall inside one
+        bar. 'sl' (default, pessimistic), 'tp' (optimistic), or 'skip'
+        (discard the ambiguous bar, for sensitivity checks). OHLC cannot order
+        intrabar events, so this is an assumption either way — the result dict
+        reports `ambiguous_bars` so its size is visible on every run rather
+        than inferred.
+    reversal_exit: close on an opposing signal. Default False to match live —
+        live FX has NO reversal exit (bot/live_signal_loop.py's only close path
+        is _weekend_close_positions, filtered to SPTRD/NASDAQ/DAX epics), so
+        every FX position exits on SL or TP alone.
+    """
     split = int(len(candles) * 0.8)
     test = candles[split:]
 
@@ -181,67 +289,97 @@ def run_backtest(strategy, candles: list, symbol: str,
     regimes = classify_regimes(candles)
     test_regimes = regimes[split:]
 
-    trades = _simulate_trades(test, test_signals, symbol, max_hold_candles, session_filter, test_regimes)
+    trades, ambiguous_bars = _simulate_trades(
+        test, test_signals, symbol, max_hold_candles, session_filter,
+        test_regimes, intrabar_priority, reversal_exit)
 
     return {
-        "trades":           trades,
-        "benchmark_return": calc_benchmark_return(test),
-        "candles_total":    len(candles),
-        "candles_train":    split,
-        "candles_test":     len(test),
+        "trades":            trades,
+        "benchmark_return":  calc_benchmark_return(test),
+        "candles_total":     len(candles),
+        "candles_train":     split,
+        "candles_test":      len(test),
+        # Size of the intrabar assumption, reported on EVERY run. A handful of
+        # bars means the choice barely matters; a large share means it drives
+        # the result and the numbers should not be trusted without a
+        # sensitivity run at intrabar_priority='tp'/'skip'.
+        "ambiguous_bars":    ambiguous_bars,
+        "intrabar_priority": intrabar_priority,
+        "reversal_exit":     reversal_exit,
     }
 
 
 def _simulate_trades(test: list, test_signals: list, symbol: str,
                      max_hold_candles: int = None, session_filter: str = None,
-                     regimes: list = None) -> list:
+                     regimes: list = None, intrabar_priority: str = "sl",
+                     reversal_exit: bool = False) -> tuple:
+    """Returns (trades, ambiguous_bars). See run_backtest for the flags."""
+    if intrabar_priority not in ("sl", "tp", "skip"):
+        raise ValueError(f"intrabar_priority must be sl|tp|skip, got {intrabar_priority!r}")
     vpp = EPIC_CONFIG[symbol.upper()]["value_per_point"]
     spread_cost = SPREAD_COSTS.get(symbol.upper(), 0.75)
     trades = []
     open_trade = None
+    ambiguous_bars = 0
 
     for i, sig in enumerate(test_signals):
         candle = test[i]
         last = i == len(test_signals) - 1
 
         if open_trade is not None:
-            # TP check — takes priority over SL on same candle
+            # ---- EXIT LADDER, layer 1: intrabar. These fire the moment price
+            # touches, mid-bar, so they outrank everything evaluated at the
+            # bar's close (max_hold / signal, layer 2 below).
             _tp = open_trade.get("tp_price")
-            if _tp is not None:
-                tp_hit = (
-                    (open_trade["direction"] == "BUY"  and candle["high"] >= _tp) or
-                    (open_trade["direction"] == "SELL" and candle["low"]  <= _tp)
-                )
-                if tp_hit:
-                    ep  = open_trade["entry_price"]
-                    d   = open_trade["direction"]
-                    pnl = (((_tp - ep) if d == "BUY" else (ep - _tp))
-                           * open_trade["size"] * vpp) - spread_cost
-                    try:
-                        dur = int((datetime.fromisoformat(candle["time"]) -
-                                   datetime.fromisoformat(open_trade["entry_time"])
-                                   ).total_seconds() / 60)
-                    except Exception:
-                        dur = 0
-                    trades.append({
-                        "entry_time":    open_trade["entry_time"],
-                        "exit_time":     candle["time"],
-                        "direction":     d,
-                        "entry_price":   ep,
-                        "exit_price":    _tp,
-                        "pnl":           round(pnl, 2),
-                        "duration_mins": max(0, dur),
-                        "exit_reason":   "tp_hit",
-                        "regime":        open_trade.get("regime"),
-                    })
-                    open_trade = None
-                    continue
-
-            # Dollar stop-loss: check intra-bar low/high against SL price
+            tp_hit = _tp is not None and (
+                (open_trade["direction"] == "BUY"  and candle["high"] >= _tp) or
+                (open_trade["direction"] == "SELL" and candle["low"]  <= _tp)
+            )
             sl_hit = (
                 (open_trade["direction"] == "BUY"  and candle["low"]  <= open_trade["sl_price"]) or
                 (open_trade["direction"] == "SELL" and candle["high"] >= open_trade["sl_price"])
             )
+
+            if tp_hit and sl_hit:
+                # Both levels inside one bar. OHLC cannot say which came
+                # first. Default 'sl' is pessimistic, and not only for
+                # conservatism: with a 2R target against a 1R stop the stop is
+                # half the distance from entry, so on any driftless path the
+                # nearer level is strictly more likely to be touched first.
+                # The old code silently took the OTHER branch (TP first).
+                ambiguous_bars += 1
+                if intrabar_priority == "sl":
+                    tp_hit = False
+                elif intrabar_priority == "tp":
+                    sl_hit = False
+                else:                       # 'skip' — discard the bar entirely
+                    tp_hit = sl_hit = False
+
+            if tp_hit:
+                ep  = open_trade["entry_price"]
+                d   = open_trade["direction"]
+                pnl = (((_tp - ep) if d == "BUY" else (ep - _tp))
+                       * open_trade["size"] * vpp) - spread_cost
+                try:
+                    dur = int((datetime.fromisoformat(candle["time"]) -
+                               datetime.fromisoformat(open_trade["entry_time"])
+                               ).total_seconds() / 60)
+                except Exception:
+                    dur = 0
+                trades.append({
+                    "entry_time":    open_trade["entry_time"],
+                    "exit_time":     candle["time"],
+                    "direction":     d,
+                    "entry_price":   ep,
+                    "exit_price":    _tp,
+                    "pnl":           round(pnl, 2),
+                    "duration_mins": max(0, dur),
+                    "exit_reason":   "tp_hit",
+                    "regime":        open_trade.get("regime"),
+                })
+                open_trade = None
+                continue
+
             if sl_hit:
                 try:
                     dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
@@ -273,14 +411,23 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                 open_trade = None
                 continue  # don't re-open on same SL bar
 
+            # ---- EXIT LADDER, layer 2: evaluated at the bar's CLOSE, so all
+            # of these rank below the intrabar pair above. Within the layer,
+            # strongest first: max_hold (policy) > signal (weakest, and the
+            # only one live does not implement for FX at all). A session-flat
+            # rule slots in ahead of max_hold when it lands.
             candles_held = i - open_trade["entry_candle_idx"]
             force_close  = max_hold_candles is not None and candles_held >= max_hold_candles
-            should_close = (
-                last or
-                force_close or
+            # Reversal exit is OFF by default because live FX has none — a
+            # position there exits on SL or TP only. Kept as a flag rather than
+            # deleted: the measured cost of live's missing reversal exit was
+            # +$26.76 over 46 affected trades, small enough to be worth
+            # re-examining rather than assuming.
+            reverse_close = reversal_exit and (
                 (open_trade["direction"] == "BUY"  and sig["signal"] == "SELL") or
                 (open_trade["direction"] == "SELL" and sig["signal"] == "BUY")
             )
+            should_close = last or force_close or reverse_close
             if should_close:
                 ep  = open_trade["entry_price"]
                 xp  = candle["close"]
@@ -308,21 +455,12 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
             continue
 
         if open_trade is None and sig["signal"] in ("BUY", "SELL"):
-            entry     = candle["close"]
-            custom_sl = sig.get("sl_price")
-            if custom_sl is not None:
-                sl_price = custom_sl
-                sl_dist  = abs(entry - sl_price) or (candle["high"] - candle["low"])
-            else:
-                # _MIN_SL_DIST floor, mirroring live_signal_loop.py:566. The
-                # engine had no floor at all, so it sized off raw candle ranges
-                # the live path would never have traded: on williams_r FX
-                # entries the floor binds on 45-55% of signals. Strategy-supplied
-                # stops are left alone — that is the strategy's own design, and
-                # rewriting it is commit 3's question, not this one's.
-                sl_dist  = max(candle["high"] - candle["low"],
-                               MIN_SL_DIST.get(symbol.upper(), 0.0))
-                sl_price = (entry - sl_dist) if sig["signal"] == "BUY" else (entry + sl_dist)
+            entry = candle["close"]
+            # Three-branch contract, mirroring live_signal_loop.py:552.
+            # Raises EngineContractError rather than silently running a trade
+            # with a missing or nonsensical level.
+            sl_price, tp_price, sl_dist = _resolve_sl_tp(
+                sig, entry, candle, symbol, i)
             size = _lot_size(sl_dist, vpp, symbol.upper())
             if size is None:
                 # Unsizeable (zero/negative stop distance). Live aborts here
@@ -337,11 +475,15 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                 "entry_candle_idx": i,
                 "size":             size,
                 "sl_price":         sl_price,
-                "tp_price":         sig.get("tp_price"),
+                # Was `sig.get("tp_price")` — the silent None that meant 21 of
+                # 34 strategies ran with no take-profit at all. Now always a
+                # real level: the strategy's own if it emitted one, else the
+                # DEFAULT_TP_R rule.
+                "tp_price":         tp_price,
                 "regime":           regimes[i] if regimes else None,
             }
 
-    return trades
+    return trades, ambiguous_bars
 
 
 def run_parameter_sweep(strategy_class, candles: list, symbol: str, param_grid: dict,
@@ -372,7 +514,8 @@ def _build_wf_windows(start, end, train_months, test_months, step_months):
 
 
 def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = None,
-                     max_hold_candles: int = None, session_filter: str = None) -> dict:
+                     max_hold_candles: int = None, session_filter: str = None,
+                     intrabar_priority: str = "sl", reversal_exit: bool = False) -> dict:
     """Rolling walk-forward validation. Additive mode — does not replace run_backtest's
     80/20 split. train=6mo/test=1mo/step=1mo by default; shrinks train to 4mo if that
     yields fewer than WF_MIN_WINDOWS windows.
@@ -392,6 +535,7 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
         shrunk, train_months_used = True, WF_SHRUNK_TRAIN_MONTHS
 
     window_results, combined_trades = [], []
+    wf_ambiguous_bars = 0
     for tr_start, tr_end, te_end in windows:
         train_candles = [c for t, c in parsed if tr_start <= t < tr_end]
         test_candles  = [c for t, c in parsed if tr_end  <= t < te_end]
@@ -409,7 +553,10 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
         combined_regimes = classify_regimes(combined_candles)
         test_regimes = combined_regimes[len(train_candles):]
 
-        trades = _simulate_trades(test_candles, test_signals, symbol, max_hold_candles, session_filter, test_regimes)
+        trades, _amb = _simulate_trades(
+            test_candles, test_signals, symbol, max_hold_candles,
+            session_filter, test_regimes, intrabar_priority, reversal_exit)
+        wf_ambiguous_bars += _amb
         combined_trades.extend(trades)
         window_results.append({
             "train_start": tr_start, "train_end": tr_end, "test_end": te_end,
@@ -447,6 +594,9 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
         "median_pf": median_pf, "pct_profitable": pct_profitable, "worst_window": worst_window,
         "combined_trades": combined_trades, "combined_pnl": combined_pnl,
         "verdict": verdict, "verdict_reason": verdict_reason,
+        "ambiguous_bars": wf_ambiguous_bars,
+        "intrabar_priority": intrabar_priority,
+        "reversal_exit": reversal_exit,
     }
 
 

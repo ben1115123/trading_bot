@@ -998,8 +998,13 @@ default, `--confirm` to apply): cross-checked every CLOSED trade since
 the 2026-07-08 demo switch against real IG transaction history. Found
 **8** contaminated rows (ids 548, 566, 568, 581, 583, 596, 604, 619) —
 deeper than the 3 originally spotted by the read-only audit that
-triggered this investigation. DB backed up before correction
-(`database/trades.bak-20260720T012352Z.db`); full before/after values
+triggered this investigation. DB backed up before correction —
+**moved 2026-08-16 to `/home/ubuntu/backups/trades.bak-20260720T012352Z.db`
+on the VPS** (was `database/trades.bak-…`; relocated out of the repo tree
+so `COPY . .` stops baking it into every image, see Database Backups).
+It is the **sole surviving pre-correction ledger state** — 565 trades,
+179,413 backtest_results, `integrity_check ok`, sha256 verified across the
+move. Do not delete it. Full before/after values for the 8 corrected rows
 logged to `logs/ledger_reaudit_20260720T012352Z.jsonl`. One trade
 (id=500, GBPUSD) has no matching IG transaction in history at all and
 was left uncorrected — flagged, not explained. Re-run the script
@@ -1268,6 +1273,56 @@ on this file produces numbers that mean nothing.
 re-fetched and its scale verified against IG.** Diagnosed 2026-08-16 while
 measuring floor-bind frequency for the engine parity work; not investigated
 beyond establishing that the data is unusable.
+
+## Database Backups (VPS)
+
+Live in **`/home/ubuntu/backups/`**, outside the repo tree. Deliberately not
+under `database/` — `Dockerfile:11` is `COPY . .`, so anything in the tree is
+baked into every image layer; the two backups alone were 504 MB per build.
+
+| File | Taken for | Contents |
+|---|---|---|
+| `trades.bak-20260720T012352Z.db` | Before `scripts/reaudit_close_prices.py` corrected the 8 cross-symbol-contaminated rows | 565 trades, 179,413 backtest_results — **sole surviving pre-correction ledger state** |
+| `trades.bak-20260816T042148Z.db` | Before the `engine_version` migration | 906 trades, 268,117 backtest_results |
+
+Both verified `integrity_check ok` with sha256 unchanged across the move.
+**Neither is disposable.** Take new ones with the SQLite online backup API
+(`Connection.backup()`), never `cp` — `cp` on a live DB with an open WAL can
+produce a torn copy.
+
+## Engine parity work — caveats to carry forward (2026-08-16)
+
+### ⚠️ The 36/36 contract result is NOT full coverage
+`EngineContractError` enforces "emit BOTH `sl_price` and `tp_price`, or
+NEITHER". Checked across every strategy module on real candles: **zero
+violations, 13 emit both, 21 emit neither.**
+
+**But `orb` and `first_bar_breakout` produced ZERO signals on the test
+candles**, so they are contract-**untested**, not contract-clean. Nothing was
+observed either way for those two. The first real run that makes them fire is
+the first test of their compliance — if one of them emits only one price, it
+will raise at that point, and that is the check working, not a regression.
+Do not read "36/36" as proof all 36 are compliant.
+
+(Count is 36 rather than 34 because it includes the untracked working-tree
+strategies `liquidity_sweep` and `first_bar_breakout`.)
+
+### ⚠️ `score_strategies()` returning `[]` is ambiguous — resolve before re-arming
+`get_backtest_results()` filters to `CURRENT_ENGINE_VERSION`. After each
+version bump there are zero rows at the current version until the gauntlet is
+regenerated, so `score_strategies()` returns `[]` rather than raising. That is
+correct — an empty single-version set is legitimate, not a mixed-model error —
+and it is harmless **only because the selector is inert at both layers**.
+
+The hazard is for whenever the selector is re-armed: from the outside,
+**"no candidates at this engine_version" and "selector working but idle" look
+identical.** Both produce silence, no rows written, no error. That is the same
+absence-is-not-evidence trap as the cron disable (see Unverified Controls).
+
+Before re-arming, make the two states distinguishable — e.g. have the selector
+log explicitly when the candidate pool is empty *and why* (zero rows at
+`engine_version=X`), so a silent selector can be told apart from a starved one
+by a positive signal rather than inferred from nothing happening.
 
 ## Monitoring Gaps (outstanding)
 
