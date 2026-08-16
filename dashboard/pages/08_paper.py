@@ -8,6 +8,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from database.db import get_connection
+from database.paper_filters import paper_where
 
 st.set_page_config(page_title="Strategy Pipeline · Trading Bot", layout="wide")
 
@@ -17,35 +18,44 @@ inject_css()
 
 
 def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All",
-                     strategy_filter: str = "All", source_filter: str = "All") -> dict:
+                     strategy_filter: str = "All", source_filter: str = "All",
+                     shadow_mode: str = "Real only") -> dict:
+    """INSPECTION SURFACE. Unlike pages 01/07 this shows every resolver model —
+    a version bump must not blank the page — so paper_model is surfaced as a
+    column instead of filtered. Shadow rows are TOGGLED, never hidden: they are
+    counterfactuals for deliberately blocked signals and are the only
+    measurement of whether a blocking filter helps (findings doc finding 17).
+    """
+    _inc = {"Real only": False, "Shadow only": "only", "Both": True}[shadow_mode]
+    _frag, _fparams = paper_where(include_shadow=_inc, paper_model=None)
     conn = get_connection()
     try:
         cur = conn.cursor()
 
-        cur.execute("""
+        cur.execute(f"""
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN outcome='WIN'     THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN outcome='LOSS'    THEN 1 ELSE 0 END) as losses,
                    SUM(CASE WHEN outcome='PENDING' THEN 1 ELSE 0 END) as pending,
                    COALESCE(SUM(simulated_pnl), 0) as total_pnl
-            FROM paper_trades
-        """)
+            FROM paper_trades WHERE 1=1 {_frag}
+        """, _fparams)
         overall = dict(cur.fetchone())
 
-        cur.execute("""
+        cur.execute(f"""
             SELECT symbol, strategy_name, timeframe,
                    COUNT(*) as total,
                    SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
                    COALESCE(SUM(simulated_pnl), 0) as total_pnl
-            FROM paper_trades
+            FROM paper_trades WHERE 1=1 {_frag}
             GROUP BY symbol, strategy_name, timeframe
             ORDER BY symbol ASC
-        """)
+        """, _fparams)
         by_symbol = [dict(r) for r in cur.fetchall()]
 
-        conditions: list = []
-        params: list = []
+        conditions: list = [_frag.replace(" AND ", "", 1)] if _frag else []
+        params: list = list(_fparams)
         if symbol_filter != "All":
             conditions.append("symbol = ?")
             params.append(symbol_filter)
@@ -67,11 +77,11 @@ def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All",
         """, params)
         trades = [dict(r) for r in cur.fetchall()]
 
-        cur.execute("""
+        cur.execute(f"""
             SELECT checked_at, simulated_pnl FROM paper_trades
-            WHERE simulated_pnl IS NOT NULL
+            WHERE simulated_pnl IS NOT NULL {_frag}
             ORDER BY id ASC
-        """)
+        """, _fparams)
         eq_rows = [dict(r) for r in cur.fetchall()]
 
     finally:
@@ -86,11 +96,17 @@ def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All",
 
 
 def fetch_active_paper_strategies() -> list:
-    """All active + paper strategies. Stats from trades (active) or paper_trades (paper)."""
+    """All active + paper strategies. Stats from trades (active) or paper_trades (paper).
+
+    The paper_stats CTE uses the canonical predicate: real rows only. A
+    strategy's pipeline stats must not include counterfactuals for signals a
+    filter blocked.
+    """
+    _cfrag, _cparams = paper_where(paper_model=None)
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(f"""
             WITH trade_stats AS (
                 SELECT symbol, strategy_name,
                        COUNT(*)                                          AS total,
@@ -106,7 +122,7 @@ def fetch_active_paper_strategies() -> list:
                        SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END)  AS wins,
                        SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END)  AS losses,
                        COALESCE(SUM(simulated_pnl), 0)                  AS total_pnl
-                FROM paper_trades
+                FROM paper_trades WHERE 1=1 {_cfrag}
                 GROUP BY symbol, timeframe, strategy_name
             )
             SELECT
@@ -142,7 +158,7 @@ def fetch_active_paper_strategies() -> list:
                 CASE a.status WHEN 'active' THEN 0 ELSE 1 END,
                 total DESC,
                 a.symbol ASC
-        """)
+        """, _cparams)
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -373,8 +389,9 @@ _all_strats  = ["All", "stoch_rsi", "stoch_rsi_confluence", "williams_r", "bb_sq
                 "supertrend", "fvg", "smc", "london_breakout",
                 "ny_session_momentum", "ema_pullback", "rsi_divergence_session", "silver_bullet"]
 _all_sources = ["All", "live_signal_loop", "tradingview_webhook"]
+_shadow_modes = ["Real only", "Both", "Shadow only"]
 
-f_col1, f_col2, f_col3, f_col4 = st.columns([1, 1, 1, 1])
+f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns([1, 1, 1, 1, 1])
 with f_col1:
     sym_sel    = st.selectbox("Symbol",   _all_syms,    label_visibility="collapsed")
 with f_col2:
@@ -383,15 +400,26 @@ with f_col3:
     strat_sel  = st.selectbox("Strategy", _all_strats,  label_visibility="collapsed")
 with f_col4:
     source_sel = st.selectbox("Source",   _all_sources, label_visibility="collapsed")
+with f_col5:
+    # TOGGLE, not a hide. Shadow rows are counterfactuals for deliberately
+    # blocked signals — separable, never discarded (findings doc finding 17).
+    shadow_sel = st.selectbox("Shadow", _shadow_modes, label_visibility="collapsed")
 
 d_filtered = fetch_paper_data(symbol_filter=sym_sel, tf_filter=tf_sel,
-                               strategy_filter=strat_sel, source_filter=source_sel)
+                               strategy_filter=strat_sel, source_filter=source_sel,
+                               shadow_mode=shadow_sel)
+st.caption(
+    f"Showing: **{shadow_sel}** · all resolver models. "
+    "Rows from different `paper_model` values are NOT comparable — read the "
+    "column before comparing any two numbers here."
+)
 
 if d_filtered["trades"]:
     df_t = pd.DataFrame(d_filtered["trades"])
     display_cols = [
         "checked_at", "symbol", "timeframe", "strategy_name",
         "signal", "entry_price", "sl", "tp", "simulated_pnl", "outcome",
+        "paper_model",
     ]
     df_t = df_t[[c for c in display_cols if c in df_t.columns]]
     df_t["checked_at"] = df_t["checked_at"].apply(lambda t: t[:16] if t else "—")

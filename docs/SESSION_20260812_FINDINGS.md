@@ -965,6 +965,93 @@ raises. That converts this whole class from silent to loud.
 
 ---
 
+## 19. Two dashboard pages count "win" differently — and the disagreement is a symptom
+*(added 2026-08-16, Stage 2 — recorded, deliberately NOT fixed in commit 2)*
+
+**Broken:** two definitions of a winning paper trade coexist in the dashboards.
+
+| Site | Basis |
+|---|---|
+| `01_overview.py:83` | `SUM(CASE WHEN simulated_pnl > 0 ...)` — **P&L sign** |
+| `07_performance.py:671,681`, `08_paper.py:31,41` | `SUM(CASE WHEN outcome='WIN' ...)` — **outcome** |
+
+Two pages have been reporting different win rates for the same strategies, and
+nobody noticed.
+
+### Scale: small, and it is not the interesting part
+Across the 1,554 resolved rows, exactly **2 disagree**:
+
+| Case | Rows |
+|---|---|
+| `outcome='WIN'` but `pnl <= 0` | 0 |
+| `outcome='LOSS'` but `pnl > 0` | **2** |
+| `pnl` exactly 0 | 0 |
+| `pnl IS NULL` | 0 |
+
+Per-strategy win rate is identical under both bases for every strategy except
+one:
+
+| strategy | n | WR by outcome | WR by pnl sign | delta |
+|---|---|---|---|---|
+| **supertrend** | 117 | **32.48%** | **34.19%** | **+1.71 pp** |
+| williams_r | 846 | 37.23% | 37.23% | 0.00 |
+| stoch_rsi | 319 | 30.41% | 30.41% | 0.00 |
+| ema_pullback | 126 | 40.48% | 40.48% | 0.00 |
+| *(all others)* | | | | 0.00 |
+
+**No promotion decision turned on this.** `supertrend` EURUSD 15MIN is a paper
+row and 1.71 pp does not cross any criterion boundary. Recording it because
+"two definitions of the primary metric" is a defect regardless of current
+magnitude, and because of what the two rows turn out to be.
+
+### The disagreement is a SYMPTOM of a degenerate bracket
+Both rows are `paper_trades` id **334** and **335**, EURUSD `supertrend`
+`PAPER_SELL`:
+
+```
+entry=1.1469204425811768   sl=1.1469   tp=1.1469
+SELL requires tp < entry < sl  ->  1.1469 < 1.14692 < 1.1469  ->  WRONG-SIDE
+simulated_pnl=+2.0443   outcome=LOSS
+```
+
+`sl == tp`. A zero-width bracket where both levels sit on the same side of
+entry. The resolver detects `high >= sl` → `LOSS`, then computes
+`raw_pnl = entry - sl = +0.0000204` — **positive, because the stop is on the
+wrong side.** Hence a LOSS with positive P&L.
+
+**These are the same rows as finding 3's MAX-clamp survey** (ids 334/335,
+"sl=0.20 pips, lot=48.92 → clamped 10"). One defect surfacing three ways: a
+degenerate bracket, a lot clamp, and a win-basis disagreement.
+
+**3 of 1,573 priced rows have wrong-side levels** (1 BUY, 2 SELL).
+
+**`parity-v2`'s `EngineContractError` rejects exactly this condition in the
+backtest engine** — `BUY requires sl_price < entry < tp_price`, and the SELL
+mirror. The paper resolver has no equivalent check, which is why the same
+malformed signal is rejected by one synthetic model and monetised by the other.
+Another instance of findings 2's "two independent synthetic models" problem.
+
+### Which basis is correct: `outcome`. `01_overview.py` is the wrong one.
+A win is "the take-profit was reached", not "the arithmetic came out positive":
+
+1. **`outcome` states what happened**; P&L sign is a downstream consequence
+   that can invert when the bracket is malformed — as it does here. Defining
+   the metric by the consequence lets a data defect silently reclassify a
+   trade.
+2. **`outcome` handles the third state.** `PENDING` is excluded naturally,
+   whereas P&L sign counts a zero-P&L row as neither win nor loss, silently
+   shrinking the denominator.
+3. **It matches the engine**, which books `exit_reason` (`tp_hit`/`sl_stop`)
+   and derives P&L from it, never the reverse.
+
+**Fix, when it is taken (NOT commit 2 — that commit changes what is counted,
+not how):** `01_overview.py:83` moves to the `outcome` basis, AND the resolver
+gains the wrong-side/degenerate-bracket rejection the engine already has, so
+rows like 334/335 are refused rather than reinterpreted. Fixing the count alone
+would hide the malformed rows instead of surfacing them.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |

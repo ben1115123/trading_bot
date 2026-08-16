@@ -68,9 +68,17 @@ data/positions_poller.py    ✅ Polls IG every 30s, close detect
 database/db.py              ✅ SQLite connection/setup
                             ✅ paper_trades table added
 database/models.py          ✅ All table schemas + queries
-                            ✅ log_paper_trade, get_paper_trades
-                            ✅ get_paper_trade_stats, get_paper_stats_by_symbol
-                            ✅ get_pending_paper_trades, resolve_paper_trade
+                            ✅ log_paper_trade (stamps paper_model +
+                               spread_model), get_pending_paper_trades,
+                               resolve_paper_trade
+                            ❌ get_paper_trades / get_paper_trade_stats /
+                               get_paper_stats_by_symbol DELETED 2026-08-16 —
+                               zero callers, and dead code that looked like the
+                               canonical read path. Paper reads go through raw
+                               SQL composed with
+                               database/paper_filters.py::paper_where(), which
+                               is now the single definition of "a countable
+                               paper row" (real vs shadow, resolver model).
 dashboard/app.py            ✅ Streamlit entry point
 dashboard/pages/            ✅ Pages 01-08 complete
   01_overview.py            Signal monitor: LIVE + PAPER sections

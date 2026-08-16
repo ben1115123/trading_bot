@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import streamlit as st
 import pandas as pd
 from database.db import get_connection
+from database.paper_filters import paper_where
 from database.models import get_webhook_outcomes
 
 st.set_page_config(page_title="Context Analysis · Trading Bot", layout="wide")
@@ -175,6 +176,10 @@ def _fetch_live(strategy, symbol):
 
 
 def _fetch_paper(strategy, symbol):
+    # Real paper trades only, via the canonical predicate. This page already
+    # filtered shadow correctly by hand; it now shares the single definition
+    # rather than agreeing with the other pages by luck.
+    _frag, _params = paper_where()
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute(f"""
@@ -196,9 +201,9 @@ def _fetch_paper(strategy, symbol):
         FROM paper_trades
         WHERE strategy_name = ? AND symbol = ?
           AND outcome != 'PENDING'
-          AND signal NOT LIKE 'SHADOW%'
+          {_frag}
         ORDER BY checked_at DESC
-    """, (strategy, symbol))
+    """, (strategy, symbol, *_params))
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return rows
@@ -390,15 +395,17 @@ st.markdown('<div class="section-hd">Filter Effectiveness — Blocked Signals</d
 
 # Shadow paper trades — signals blocked by session filter or margin rejection
 try:
+    # Counterfactual view: shadow rows ONLY — the whole purpose of this panel.
+    _sfrag, _sparams = paper_where(include_shadow="only")
     conn        = get_connection()
     cur         = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT checked_at, signal, simulated_pnl, outcome, notes, session
         FROM paper_trades
         WHERE strategy_name = ? AND symbol = ?
-          AND signal LIKE 'SHADOW%'
+          {_sfrag}
         ORDER BY checked_at DESC
-    """, (strategy_sel, symbol_sel))
+    """, (strategy_sel, symbol_sel, *_sparams))
     shadow_rows = [dict(r) for r in cur.fetchall()]
     conn.close()
 except Exception as e:

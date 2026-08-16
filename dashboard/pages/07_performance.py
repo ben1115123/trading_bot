@@ -8,6 +8,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from database.db import get_connection
+from database.paper_filters import paper_where, excluded_count_sql
 
 st.set_page_config(page_title="Performance · Trading Bot", layout="wide")
 
@@ -663,26 +664,35 @@ try:
     _pconn = get_connection()
     try:
         _pcur = _pconn.cursor()
-        _pcur.execute("""
+        # DECISION SURFACE: real paper trades at the current resolver model
+        # only, and it must SAY what it dropped — an unexplained smaller number
+        # is indistinguishable from data loss. Shadow rows are counterfactuals
+        # for deliberately blocked signals (findings doc finding 17); counting
+        # them here inflated every figure on this panel until 2026-08-16.
+        _pfrag, _pparams = paper_where()
+        _pcur.execute(f"""
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
                    COALESCE(SUM(simulated_pnl), 0) as total_pnl
-            FROM paper_trades
-        """)
+            FROM paper_trades WHERE 1=1 {_pfrag}
+        """, _pparams)
         _pr       = dict(_pcur.fetchone())
 
-        _pcur.execute("""
+        _pcur.execute(f"SELECT {excluded_count_sql()} AS n FROM paper_trades")
+        _p_excluded = (_pcur.fetchone()["n"] or 0)
+
+        _pcur.execute(f"""
             SELECT strategy_name,
                    COUNT(*) as total,
                    SUM(CASE WHEN outcome='WIN'  THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses,
                    COALESCE(SUM(simulated_pnl), 0) as total_pnl
             FROM paper_trades
-            WHERE outcome IN ('WIN', 'LOSS')
+            WHERE outcome IN ('WIN', 'LOSS') {_pfrag}
             GROUP BY strategy_name
             ORDER BY total DESC
-        """)
+        """, _pparams)
         _p_by_strat = [dict(r) for r in _pcur.fetchall()]
         _p_total  = _pr["total"]     or 0
         _p_wins   = _pr["wins"]      or 0
@@ -724,6 +734,14 @@ try:
             '<div class="section-hd" style="margin-top:4px">Paper (Simulated)</div>',
             unsafe_allow_html=True,
         )
+        # Say what was filtered. A decision surface that silently shrinks is
+        # indistinguishable from one that lost data.
+        if _p_excluded:
+            st.caption(
+                f"{_p_excluded:,} rows excluded — shadow counterfactuals "
+                f"(deliberately blocked signals) and rows from an older "
+                f"resolver model. Not comparable to these figures."
+            )
         _resolved = _p_wins + _p_losses
         wr_color_p  = "#3B82F6" if _p_wr >= 50 else "#8B5CF6"
         pnl_str_p, pnl_cls_p = _fmt_pnl(_p_pnl) if _resolved > 0 else ("pending", "")

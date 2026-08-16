@@ -9,6 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from database.db import get_connection
+from database.paper_filters import paper_where, excluded_count_sql
 
 st.set_page_config(page_title="Overview · Trading Bot", layout="wide")
 
@@ -74,21 +75,32 @@ def fetch_data():
         }
 
         try:
-            cur.execute("""
+            # DECISION SURFACE: real paper trades at the current resolver
+            # model only. See findings doc finding 17.
+            # NOTE the win basis here is `simulated_pnl > 0`, while pages 07
+            # and 08 use `outcome='WIN'`. That inconsistency is finding 19 and
+            # is deliberately NOT changed here — this commit alters WHICH ROWS
+            # are counted, not HOW a win is defined. Changing both at once
+            # would make the two effects impossible to separate.
+            _pfrag, _pparams = paper_where()
+            cur.execute(f"""
                 SELECT symbol, strategy_name, timeframe,
                        COUNT(*) as total,
                        SUM(CASE WHEN simulated_pnl > 0 THEN 1 ELSE 0 END) as wins,
                        SUM(CASE WHEN simulated_pnl < 0 THEN 1 ELSE 0 END) as losses,
                        COALESCE(SUM(simulated_pnl), 0) as total_pnl
-                FROM paper_trades
+                FROM paper_trades WHERE 1=1 {_pfrag}
                 GROUP BY symbol, strategy_name, timeframe
-            """)
+            """, _pparams)
             paper_stats = {
                 f"{r['symbol']}_{r['timeframe']}_{r['strategy_name']}": dict(r)
                 for r in cur.fetchall()
             }
+            cur.execute(f"SELECT {excluded_count_sql()} AS n FROM paper_trades")
+            paper_excluded = (cur.fetchone()["n"] or 0)
         except Exception:
             paper_stats = {}
+            paper_excluded = 0
 
         try:
             cur.execute("""
@@ -116,12 +128,13 @@ def fetch_data():
             signal_by_key = {}
 
         try:
-            cur.execute("""
+            _pfrag2, _pparams2 = paper_where()
+            cur.execute(f"""
                 SELECT symbol, timeframe, strategy_name, COUNT(*) as n
                 FROM paper_trades
-                WHERE DATE(checked_at) = ?
+                WHERE DATE(checked_at) = ? {_pfrag2}
                 GROUP BY symbol, timeframe, strategy_name
-            """, (today_utc,))
+            """, (today_utc, *_pparams2))
             today_paper_by_key = {
                 (r["symbol"], r["timeframe"], r["strategy_name"]): r["n"]
                 for r in cur.fetchall()
@@ -132,10 +145,10 @@ def fetch_data():
     finally:
         conn.close()
 
-    return signal_rows, today_pnl, today_count, pnl_rows, today_bot_trades, today_bot_losses, strategy_stats, paper_stats, pipeline_rows, signal_by_key, today_paper_by_key
+    return signal_rows, today_pnl, today_count, pnl_rows, today_bot_trades, today_bot_losses, strategy_stats, paper_stats, pipeline_rows, signal_by_key, today_paper_by_key, paper_excluded
 
 
-signal_rows, today_pnl, today_count, pnl_rows, today_bot_trades, today_bot_losses, strategy_stats, paper_stats, pipeline_rows, signal_by_key, today_paper_by_key = fetch_data()
+signal_rows, today_pnl, today_count, pnl_rows, today_bot_trades, today_bot_losses, strategy_stats, paper_stats, pipeline_rows, signal_by_key, today_paper_by_key, paper_excluded = fetch_data()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -449,7 +462,9 @@ st.markdown(
     f'<div style="font-size:11px;color:#8B949E;text-align:right;margin-top:4px">'
     f'Tracking {_live_trade_total} live trade{"s" if _live_trade_total != 1 else ""}'
     f' &nbsp;·&nbsp; {_paper_trade_total} paper signal{"s" if _paper_trade_total != 1 else ""}'
-    f'</div>',
+    + (f' &nbsp;·&nbsp; <span style="color:#6E7681">{paper_excluded} excluded '
+       f'(shadow / older model)</span>' if paper_excluded else '')
+    + f'</div>',
     unsafe_allow_html=True,
 )
 
