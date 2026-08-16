@@ -775,6 +775,100 @@ before/after):
 
 ---
 
+## 16. USDCAD paper P&L understated ~1,900x — a missing dict key
+*(added 2026-08-16, Stage 2 Phase 1 — recorded, NOT fixed)*
+
+**Broken:** `_EPIC_VALUE_PER_POINT` (`bot/live_signal_loop.py:735-740`) is a
+**third independent copy** of the value-per-point table, and it omits USDCAD.
+The resolver reads it as `.get(symbol, 1.0)` (`:791`), so USDCAD silently
+sizes against `vpp = 1.0` instead of `10000.0`.
+
+**Consequence:** `lot = risk/(sl_dist × 1.0)` = `10/0.0005` = 20,000, clamped
+down to the 10.0 maximum, then `pnl = raw_pnl × 10 × 1.0`. Every USDCAD paper
+trade books roughly **one two-thousandth** of its intended value.
+
+**Evidence** — measured across all resolved paper rows:
+
+| symbol | n | avg abs(pnl) |
+|---|---|---|
+| **USDCAD** | **97** | **$0.008** |
+| AUDUSD | 174 | $13.72 |
+| US500 | 231 | $14.97 |
+| GBPUSD | 234 | $15.11 |
+| EURUSD | 713 | $17.41 |
+| US100 | 63 | $19.70 |
+| BTC | 29 | $20.69 |
+| DAX | 13 | $22.84 |
+
+Worked example, id=893: `entry=1.40841 sl=1.40891`, `sl_dist=0.00050`. Correct
+lot 2.02 → **−$10.00**. Stored: **−$0.0050**. Total USDCAD paper P&L across 97
+trades: **−$0.049**.
+
+**Also latent: EURGBP and USDJPY are absent from the same dict.** Neither has
+paper rows yet; both would fail identically the moment one is added.
+
+**Fourth instance of the duplicated-instrument-table class**, after
+`EPIC_CONFIG`/`SYMBOLS` in `candle_stream.py` (2026-07-20 bug 2, which cost
+USDCAD seven days of signals) and the `MIN_SL_DIST` copy resolved at parity-v1.
+`instrument_limits.py` was created for exactly this and arrived **one stage too
+late** to prevent it — the resolver's copy was never audited when the live-path
+copy was consolidated.
+
+**Invalidates:** every USDCAD paper statistic. USDCAD reads as flat because its
+P&L is quantised to fractions of a cent, not because the strategy is neutral.
+
+**Fixing requires:** a single `VALUE_PER_POINT` in `instrument_limits.py`
+imported by all three consumers, and a **`KeyError` rather than a `.get()`
+default** — a silent fallback is what turned a missing key into 97 wrong rows.
+
+---
+
+## 17. 557 shadow rows resolved and aggregated as real trades
+*(added 2026-08-16, Stage 2 Phase 1 — recorded, NOT fixed)*
+
+**Broken:** shadow rows are counterfactuals for signals that were
+**deliberately blocked** — session gates, correlation caps, margin rejections.
+They are written to `paper_trades` with a `SHADOW_BUY`/`SHADOW_SELL` prefix so
+the blocked path can be A/B compared against the taken one. Two places lose
+that distinction:
+
+1. `bot/live_signal_loop.py:749` strips the prefix before resolution:
+   `.replace("PAPER_", "").replace("SHADOW_", "")`. Shadow rows resolve
+   through exactly the same path as real paper trades.
+2. `database/models.py:686-696` `get_paper_trade_stats()` aggregates
+   `FROM paper_trades` with **no signal filter at all** — no `WHERE`, no
+   `GROUP BY signal`.
+
+**Scale — 36% of all resolved rows:**
+
+| signal | LOSS | WIN | PENDING |
+|---|---|---|---|
+| PAPER_BUY | 309 | 204 | 1 |
+| PAPER_SELL | 332 | 161 | 0 |
+| **SHADOW_BUY** | **147** | **102** | **9** |
+| **SHADOW_SELL** | **197** | **102** | **9** |
+
+997 real, **557 shadow**, 19 pending.
+
+**Invalidates: every paper statistic ever quoted from this system.** That
+includes the promotion-criteria table showing `US500 ema_pullback` clearing the
+R:R-adjusted bar, the paper win rates in CLAUDE.md's strategy tables, and
+dashboard pages 07 and 08. The contamination is not random — shadow rows are by
+construction the signals a filter judged *worse*, so mixing them in biases every
+strategy's apparent performance in an unknown direction and by an unknown
+amount.
+
+**Do NOT stop writing them or delete them.** Their counterfactual value is the
+entire reason they exist — they are the only measurement of whether a blocking
+filter helps. The requirement is **separability**, not removal.
+
+**Fixing requires:** filter at aggregation (every stats consumer), keep
+resolution as-is so the counterfactual continues to be measured, and expose a
+deliberate `include_shadow=False` parameter so a caller has to opt in rather
+than opt out.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |
@@ -806,8 +900,26 @@ cycle, then hybrid — hard gate on numeric criteria, advisory on correlation
 and judgement calls. Overrides must be impossible to make silently and must
 record `engine_version` alongside the metric snapshot. Rationale: applied as
 literally written today, the criteria pass `US500 ema_pullback` on 58 trades
-containing two different risk sizes ($10 and $15) and an unadjusted
-pre-spread PF — false authority is worse than no gate.
+containing **three** different risk sizes (see the correction below) and an
+unadjusted pre-spread PF — false authority is worse than no gate. **And per
+finding 17 that sample is contaminated with shadow rows**, so the trade count
+itself is not what it appears.
+
+**CORRECTION (2026-08-16) — the risk eras are THREE, not two.** This file said
+"$10 and $15". Recovered exactly from stored data, not inferred: for an
+unclamped LOSS the resolver's algebra gives `pnl = −risk` precisely, so reading
+`simulated_pnl` off `paper_trades` yields **$10: 597 rows, $15: 245, $3: 57,
+other (clamped): 86**. Confirmed against `git log` on `risk_manager.py`:
+
+| From | Paper risk |
+|---|---|
+| before 2026-06-12 | per-symbol `RISK_PER_TRADE_OVERRIDE` (no `is_paper` branch existed) |
+| 2026-06-12 (`4e1fa80`) | **$15** — `is_paper=True` introduced, forcing the module default |
+| 2026-07-02 (`1060609`) | **$3** — account-rebuild throttle |
+| 2026-07-08 (`0ee8551`) | **$10** — demo validation |
+
+Four regimes including the pre-`is_paper` era. Any re-baseline must key off the
+row's own recovered risk, not a single assumed constant.
 
 ---
 
