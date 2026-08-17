@@ -1115,25 +1115,54 @@ change.
 **Why the stream cannot serve this consumer — three independent reasons, any
 one of which is sufficient:**
 
-1. **Buffer depth.** `bot/candle_stream.py:69` `MAX_BUFFER = 500`. At 15MIN
-   that is 125 hours ≈ 5.2 days of history. Pending rows are routinely far
-   older — the oldest currently pending is **47 days** (⚠️ unverified-at-write,
-   see the provenance note in finding 22). The buffer cannot see
-   the window the row needs, and deepening it is not a small constant change:
-   it is per-(symbol, timeframe) resident memory in the bot process.
-2. **In-memory, reset on restart.** The buffers are process state. Every
-   container restart re-warms to `WARMUP_COUNT = 200` candles
-   (`candle_stream.py:66`) and the rest is gone. **Eight restarts today
-   alone.** A resolver reading it would produce different outcomes for the same
-   row depending on how recently the container bounced.
-3. **Subscription coverage.** Stream subscriptions follow the active roster.
-   Deactivating a strategy removes its subscription — so the data source
+1. **Buffer depth.** `bot/candle_stream.py:69` caps at `MAX_BUFFER = 500`, but
+   the live depth is set by warm-up plus uptime, not by the cap — measured on
+   the VPS 2026-08-17, **no buffer held more than 216 candles**. And 500
+   candles is not a fixed span of *time*: it is whatever that instrument's
+   trading calendar covers.
+
+   | buffer | candles | span |
+   |---|---|---|
+   | EURUSD 15MIN | 216 | **4.4 days** |
+   | US100 15MIN | 214 | 11.4 days |
+   | US500 HOUR | 205 | 40.9 days |
+
+   The oldest currently pending row is **47.6 days** (id=398). Nothing in the
+   buffer set reaches it, and the shortest-spanning buffer misses by an order
+   of magnitude. Deepening is not a constant change either — it is
+   per-(symbol, timeframe) resident memory in the bot process.
+2. **In-memory, reset on restart.** The buffers are process state; on restart
+   the process re-warms to `WARMUP_COUNT = 200` candles (`candle_stream.py:66`)
+   and everything earlier is gone. Measured: the current container has been up
+   since **2026-08-16T16:23:27Z with `RestartCount=0`**, and EURUSD 15MIN's
+   oldest candle is **2026-08-12T19:30** — the warm-up reach, not a history.
+   A resolver reading this would return different outcomes for the same row
+   depending on how recently the container was recreated, and deploys recreate
+   it routinely.
+3. **Coverage follows the roster — but at two different granularities, and the
+   coarser one is not the safe one.** `_needed_pairs()`
+   (`candle_stream.py:310`) derives `(symbol, timeframe)` pairs from
+   `get_active_strategies`, and **warm-up runs only over those pairs**. The
+   Lightstreamer subscription is built separately as a **cross product**,
+   `epics_needing × scales_needed` (`candle_stream.py:620-621`). So
+   deactivating a strategy removes its warm-up immediately, while its
+   subscription survives incidentally for as long as some *other* pair keeps
+   both its epic and its scale alive.
+
+   Measured, and this is the case that matters: **`(US100, HOUR)` is not in the
+   7-pair warm-up list**, yet its buffer exists with **5 candles, the earliest
+   2026-08-14T21:00** — fed by cross-product ticks alone. `paper_trades`
+   **id=1459** signalled **2026-08-12T13:01**, two days before the buffer's
+   first candle. Unreachable.
+
+   Full loss shows on symbols with no active pairs at all: **DAX HOUR, DAX
+   15MIN and BTC HOUR are all length 0**.
+
+   The point is not that one row is unreachable. It is that the data source
    disappears **exactly when you most want that strategy's paper record
-   completed**, i.e. when deciding whether the deactivation was right.
-   `paper_trades` **id=1459 is already in this state**: pending, and its
-   symbol/timeframe is no longer subscribed (⚠️ unverified-at-write, same
-   note). Note this reason stands on the *mechanism*, not on that row — even if
-   id=1459 has since resolved, deactivation still removes the subscription.
+   completed** — when judging whether the deactivation was right — and that a
+   partially-surviving cross-product subscription makes the loss *look*
+   intermittent rather than announcing itself.
 
 **Why a half-migration is worse than the divergence.** "Stream when available,
 yfinance otherwise" makes outcome provenance a function of container uptime and
@@ -1237,6 +1266,90 @@ the VPS and amend this section with the result** — including "unchanged" if
 that is what it is. An unverified figure that turns out to still be right must
 be *shown* to be right; per the marker-test rule in finding 9, absence of a
 contradiction is not confirmation.
+
+### ✅ Re-verified on the VPS, 2026-08-17 — headline holds, counts moved
+
+Read-only against `/home/ubuntu/trading_bot/database/trades.db`, plus a
+re-run of the flip counterfactual against live yfinance.
+
+| Figure | At write | Re-verified | |
+|---|---|---|---|
+| Flips | 4 of 9 — 424, 433, 512, 532, all EURUSD | **4 of 9 — 424, 433, 512, 532, all EURUSD** | **reproduced exactly** |
+| swiftalgo NULL-timeframe rows | 9 | **9** | unchanged |
+| Resolved rows | 1,554 | **1,565** | +11 |
+| Pending rows | 19 | **16** | −3 |
+| Non-swiftalgo pending ("the others") | 10 | **7** | −3 |
+| Oldest pending | 47 days | **47.6 days (id=398)** | unchanged |
+| id=1459 unsubscribed | asserted | **mechanism corrected, conclusion holds** | see finding 21 reason 3 |
+
+The moved counts are the expected behaviour of a live system, not a
+contradiction: rows resolve every cycle and new ones arrive. The two
+load-bearing figures — the 4-of-9 flip and the 9 swiftalgo rows — are exactly
+as measured.
+
+**The counterfactual, with the mechanism visible in the lag column:**
+
+```
+id= 424 EURUSD SELL sig=2026-07-01 06:13 | wrong=LOSS @ 2026-08-10 21:00 | right=WIN  @ 2026-07-01 09:00 | FLIP  (wrong window starts 40d after signal)
+id= 433 EURUSD SELL sig=2026-07-01 11:57 | wrong=LOSS @ 2026-08-10 21:00 | right=WIN  @ 2026-07-01 12:00 | FLIP  (40d)
+id= 512 EURUSD BUY  sig=2026-07-07 12:23 | wrong=WIN  @ 2026-08-10 21:00 | right=LOSS @ 2026-07-07 16:00 | FLIP  (34d)
+id= 532 EURUSD SELL sig=2026-07-07 18:32 | wrong=LOSS @ 2026-08-10 21:00 | right=WIN  @ 2026-07-07 19:00 | FLIP  (34d)
+id=1012 US500  BUY  sig=2026-07-30 09:21 | wrong=WIN  @ 2026-07-30 13:30 | right=WIN  @ 2026-07-30 13:30 | same  (0d)  <- control
+```
+
+Two things this makes visible that the summary figure alone does not. Every
+correct-window resolution lands **within hours** of its signal, which is what a
+15MIN/HOUR bracket should do; every wrong-window EURUSD resolution lands on the
+**same** far-future bar, `2026-08-10 21:00`, because all four are reading the
+same recent tail and returning whichever level it grazed first. And **id=1012
+is the control**: it is the one row young enough that its wrong window starts
+0 days after the signal, so wrong and right agree. The defect switches on
+precisely when the row outlives the tail.
+
+### ⚠️ Discovered during re-verification: those 9 rows have NEVER been resolved at all
+
+The live resolver does not misresolve them. **It crashes on them, every cycle,
+and has since they were written.** From `docker logs trading_bot-bot-1`:
+
+```
+[resolver] 16 pending paper trade(s) to check
+[resolver] [US500] candle fetch failed: 'NoneType' object has no attribute 'upper'
+[resolver] [EURUSD] candle fetch failed: 'NoneType' object has no attribute 'upper'
+...   (exactly 9 of these, every cycle)
+[resolver] [US100/HOUR] id=1459 still PENDING
+```
+
+Cause: `timeframe = trade.get("timeframe", "HOUR")` — `.get`'s default fires on
+a **missing key**, not on a **present NULL**. `get_pending_paper_trades()` does
+`SELECT *`, so the key is always present, and a NULL column yields `None`. The
+`"HOUR"` default has never once been used. `_fetch_yfinance_candles` then does
+`timeframe.upper()` and raises.
+
+Three consequences:
+
+1. **The 4-of-9 flip is a counterfactual, not an observed misresolution.** It
+   is computed under an *assumed* HOUR granularity, which is precisely the
+   assumption the EXPIRE decision refuses to make. Stated exactly: *had* these
+   rows been resolvable, 44% of them would have been booked wrong. The window
+   defect itself is not in doubt — the code path is unambiguous and applies to
+   every row old enough — but this particular set demonstrates it by
+   simulation, and the finding must not be read as "4 rows were resolved
+   wrongly."
+2. **It strengthens the EXPIRE decision to two independent reasons.** These
+   rows cannot resolve (permanent crash) *and* resolving them would require
+   inventing a granularity. Either alone is sufficient.
+3. **It is a live instance of the exact distinction Stage 2 item 2 exists to
+   draw.** A permanent, structural failure — a malformed row that will raise
+   identically forever — is swallowed by the resolver's generic
+   `except Exception` and printed in the same words as a transient network
+   failure, then retried every five minutes indefinitely. The fix must
+   classify the `timeframe is None` case explicitly rather than let the 14-day
+   expiry mop it up, or a NULL-timeframe row written tomorrow will crash-loop
+   for a fortnight before anything notices.
+
+Not a `.get(symbol, default)` instance (finding 20's standing rule), but the
+same family: **a default that silently never fires is indistinguishable from
+one that fires correctly, until something downstream raises.**
 
 ### The unmeasurable part — and why it changes the re-baseline framing
 
