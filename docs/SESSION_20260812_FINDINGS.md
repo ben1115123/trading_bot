@@ -1103,6 +1103,217 @@ default.
 
 ---
 
+## 21. Paper resolver price source — ACCEPTED DIVERGENCE, not a to-do
+*(added 2026-08-17, Stage 2 — decided, closed)*
+
+The resolver reads yfinance while live execution reads the IG stream
+(`CANDLE_SOURCE=ig_stream` since 2026-07-15). That is a real divergence between
+the paper model and live, and it is **recorded here as accepted permanently**,
+not as a deferred item. Nothing about the resolver's source is scheduled to
+change.
+
+**Why the stream cannot serve this consumer — three independent reasons, any
+one of which is sufficient:**
+
+1. **Buffer depth.** `bot/candle_stream.py:69` `MAX_BUFFER = 500`. At 15MIN
+   that is 125 hours ≈ 5.2 days of history. Pending rows are routinely far
+   older — the oldest currently pending is **47 days** (⚠️ unverified-at-write,
+   see the provenance note in finding 22). The buffer cannot see
+   the window the row needs, and deepening it is not a small constant change:
+   it is per-(symbol, timeframe) resident memory in the bot process.
+2. **In-memory, reset on restart.** The buffers are process state. Every
+   container restart re-warms to `WARMUP_COUNT = 200` candles
+   (`candle_stream.py:66`) and the rest is gone. **Eight restarts today
+   alone.** A resolver reading it would produce different outcomes for the same
+   row depending on how recently the container bounced.
+3. **Subscription coverage.** Stream subscriptions follow the active roster.
+   Deactivating a strategy removes its subscription — so the data source
+   disappears **exactly when you most want that strategy's paper record
+   completed**, i.e. when deciding whether the deactivation was right.
+   `paper_trades` **id=1459 is already in this state**: pending, and its
+   symbol/timeframe is no longer subscribed (⚠️ unverified-at-write, same
+   note). Note this reason stands on the *mechanism*, not on that row — even if
+   id=1459 has since resolved, deactivation still removes the subscription.
+
+**Why a half-migration is worse than the divergence.** "Stream when available,
+yfinance otherwise" makes outcome provenance a function of container uptime and
+subscription state at resolution time — neither of which is recorded anywhere in
+the row. Two rows with identical signals could then be resolved by different
+price sources with no way to tell which, after the fact. A single consistent
+wrong-ish source is auditable; a silently-varying one is not. Compare finding
+20's general lesson: the dangerous failure is the one that announces nothing.
+
+**The only path that changes this** is durable candle storage — a persisted
+IG-sourced cache (`--source ig_cache`, `scripts/collect_candles.py`) deep enough
+to cover a 14-day resolution window, which the resolver could query by time
+range rather than by buffer position. That is a separate project with its own
+volume, retention and backfill decisions (see finding 10 — `candle_cache/` is
+not even a volume today). **Until that exists, yfinance is the resolver's
+source, by decision.**
+
+---
+
+## 22. The resolver's resolution window was never the signal's window
+*(added 2026-08-17, Stage 2 — quantified, fix in Stage 2 items 1+2)*
+
+**Broken:** `_resolve_pending_paper_trades()` asks for 100 candles and then
+filters to those after the signal. For any row older than 100 candles, **every
+candle it examines postdates the signal by weeks**, and it books whichever
+level was touched first in that far-future window.
+
+**Mechanism — `count` never controlled the fetch.**
+`scripts/run_backtest.py::_fetch_yfinance_candles` downloads a **fixed period**
+and only then trims:
+
+```python
+period = YF_PERIODS[interval]          # 15m → "60d", 1h → "730d"
+df = yf.download(ticker, period=period, interval=interval, ...)
+...
+return candles[-count:]                # count is a TAIL TRIM, not a range
+```
+
+**The available window is two different numbers, and the gap is itself a
+finding.** `YF_PERIODS["15m"] = "60d"` is what the code **requests**. A
+measurement of one actual 15MIN response returned **5,592 candles spanning 80.9
+days** — yfinance returns **more** than the configured period asks for. Neither
+number is wrong; they answer different questions, and only the measured one
+describes what the resolver can actually reach.
+
+Record both, and treat the discrepancy as live: **the difference between what a
+data source is asked for and what it returns is an undocumented assumption**,
+and this project has been bitten by that class repeatedly — IG's REST
+`snapshotTime` in account-local time, yfinance intraday timestamps in
+exchange-local time, `scalingFactor` not predicting which epics need conversion
+(see CLAUDE.md, CANDLE_SOURCE and Price scale quirk). Same shape every time: a
+value assumed from configuration or a field name rather than measured from the
+response.
+
+The 14-day expiry sits well inside **either** figure, so nothing in the fix
+depends on resolving this. Do not build anything on the 80.9-day number without
+re-measuring — it is one observation of a third-party API's behaviour, not a
+documented contract.
+
+The resolver's call is `_fetch_yfinance_candles(symbol, timeframe, 100)`
+(`bot/live_signal_loop.py:803`), so it receives **the most recent 100 candles**
+— 25 hours at 15MIN — regardless of when the signal fired. Then:
+
+```python
+later = [c for c in candles if _candle_dt(c) > signal_dt]
+```
+
+For a row whose signal predates that 25-hour tail, the predicate is **true for
+all 100 candles**. Nothing is filtered out. The loop walks a window ~36 days
+downstream of the signal and returns the first SL or TP touch it finds there.
+
+**This is not truncation. It is the wrong window entirely.** A truncated window
+resolves a subset of the correct bars and otherwise stays PENDING — safe. This
+resolves a *disjoint* set of bars and returns a confident WIN/LOSS.
+
+**Measured impact on the current pending set: 4 of 9 resolvable rows (44%) flip
+outcome under a correct window** — ids **424, 433, 512, 532**, all EURUSD.
+⚠️ **UNVERIFIED-AT-WRITE — see the provenance note below.**
+
+### ⚠️ Provenance of the counts in findings 21 and 22
+
+Every row-level number in these two findings came from a **prior-session
+measurement against the VPS database**, and none of it was re-checkable at the
+time of writing: the **local `database/trades.db` holds zero `paper_trades`
+rows** (the corpus split of finding 11, in a form that bites documentation
+rather than backtests).
+
+Carried unverified: **9 resolvable pending**, **4 flips (424, 433, 512, 532)**,
+**1,554 resolved**, **9 swiftalgo NULL-timeframe rows**, **10 others staying
+PENDING**, **47-day oldest pending**, **id=1459 unsubscribed**.
+
+**These numbers are not stable by nature.** Pending rows resolve on every
+signal-loop cycle, so the set measured on one day is not the set that exists on
+the next — a row counted as "resolvable" can become resolved, and a new pending
+row can appear, without anything being wrong. Two of these figures are
+load-bearing: **4-of-9 is the headline of this finding**, and **the 9 swiftalgo
+rows drive the expiry decision**.
+
+**Required before the Stage 2 window fix lands: re-measure all of the above on
+the VPS and amend this section with the result** — including "unchanged" if
+that is what it is. An unverified figure that turns out to still be right must
+be *shown* to be right; per the marker-test rule in finding 9, absence of a
+contradiction is not confirmation.
+
+### The unmeasurable part — and why it changes the re-baseline framing
+
+Any already-resolved row that was older than its window **at the moment it was
+resolved** went through this same path. There are **1,554 resolved rows**. How
+many were affected cannot be determined:
+
+> **`paper_trades` has no resolution timestamp.** `checked_at` is the *signal*
+> time, not the resolution time. There is no stored value from which row-age-at-
+> resolution can be reconstructed.
+
+So the re-baseline framing must be stated as **both** of the following at once,
+and neither clause may be dropped:
+
+- outcomes on resolved rows are **taken as given** — they are the only record
+  that exists; and
+- they are **demonstrably wrong for a subset whose size is unknowable**.
+
+This is not the usual "historical numbers came from a worse model" caveat that
+`engine_version` handles. `engine_version` answers *are these two rows
+comparable*; it cannot answer *was this individual row resolved against the
+right bars*, because the input that would decide it was never recorded.
+
+**This wording must appear in the re-baseline commit message and in the
+re-baseline script's header comment — not only in this file.** A caveat that
+lives only in a findings doc is one `git log` away from invisible.
+
+### `resolved_at` — added going forward, deliberately NOT backfilled
+
+The Stage 2 fix adds `paper_trades.resolved_at`, written at resolution time. It
+is **not** backfilled, and that is a decision, not an omission: **there is
+nothing to backfill from.** Any value written into it for the 1,554 existing
+rows would be inferred, and an inferred timestamp in a column whose entire
+purpose is auditing resolution timing would manufacture exactly the false
+confidence this finding is about. The rows stay NULL. NULL means "resolved
+before resolution time was recorded, age-at-resolution unknown" — which is the
+true state.
+
+---
+
+## Standing rule — when to bump a model stamp
+
+Three stamps now exist: **`engine_version`** (backtest trade model),
+**`paper_model`** (paper resolver outcome model), **`spread_model`** (the cost
+parameterisation). All three answer the same question — *are these two rows
+comparable?* — so all three take the same test:
+
+> **Would two runs over the same row and the same candles produce a different
+> result?**
+> **Yes → bump. No → do not bump.**
+
+Nothing else decides it. Not the size of the diff, not how many files changed,
+not whether the change feels significant, and **never a commit SHA** — a SHA
+changes on commits that cannot move a number, which makes it useless for the
+one question the field exists to answer.
+
+Worked example, the paper-v1 → **paper-v2** bump (Stage 2):
+
+| Change | Same row + same candles → different result? | Bump? |
+|---|---|---|
+| Window derived from signal time instead of a tail trim | **Yes** — different bars decide the outcome, so WIN can become LOSS (finding 22) | **Yes** |
+| Terminal outcomes `EXPIRED` / `NO_HISTORY` / persistent `REFUSED` | **Yes** — rows that v1 would eventually have booked as WIN/LOSS now terminate elsewhere, changing every aggregate's denominator | **Yes** |
+| `resolved_at` column added | **No** — pure metadata, no outcome or P&L moves | No |
+| Log wording, comments, refactors | **No** | No |
+
+The bump is carried by the first two. `resolved_at` rides along in the same
+commit because the schema is being touched anyway — **riding along in a
+versioned commit is not the same as justifying the version**, and conflating
+the two is how stamps drift into meaning "something changed", which is not a
+useful thing for a stamp to mean.
+
+Corollary: a stamp bump is **not** a quality claim. `parity-v2` takes profit
+and `parity-v1` does not, but neither is calibrated (see the spread residual).
+The stamp says *incomparable*, never *better*.
+
+---
+
 ## Sequencing
 
 | Work | Depends on | Notes |
@@ -1114,7 +1325,8 @@ default.
 | Paper resolver (finding 2) | — | **Sibling to engine parity, not a subtask** |
 | `sl_distance` sanity bound | paper resolver | Must **reject at both ends** — floor and ceiling (finding 3 correction) |
 | `engine_version` marking | engine parity | See below |
-| Quarantine id=824, re-baseline | finding 2 | Includes correcting CLAUDE.md |
+| Quarantine id=824, re-baseline | finding 2 | Includes correcting CLAUDE.md. **Framing per finding 22**: outcomes taken as given AND demonstrably wrong for an unmeasurable subset — must appear in the commit message and script comment, not only in the findings file |
+| Resolution window + terminal outcomes | finding 22 | Derive window from signal time; REFUSED / EXPIRED / NO_HISTORY distinct from transient failure; `resolved_at` forward-only |
 | Gauntlet regeneration | engine parity + marking | Regeneration, not reproduction |
 | Promotion-time verdict check | `walkforward_runs` | Refuse to cite a verdict with no row — would have caught both EURUSD and AUDUSD (finding 7) |
 | `logs/` + `candle_cache/` volumes | — | Fold in with the `collect_candles` decision |
