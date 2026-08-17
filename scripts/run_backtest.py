@@ -25,7 +25,21 @@ YF_INTERVALS = {"5MIN": "5m", "15MIN": "15m", "HOUR": "1h", "DAY": "1d"}
 YF_PERIODS   = {"5m": "60d", "15m": "60d", "1h": "730d", "1d": "5y"}
 
 
-def _fetch_yfinance_candles(symbol: str, timeframe: str, count: int) -> list:
+def _fetch_yfinance_candles(symbol: str, timeframe: str, count: int | None) -> list:
+    """Fetch candles from yfinance.
+
+    count is a TAIL TRIM applied AFTER the download, not a range selector — the
+    download size is fixed by YF_PERIODS per interval and `count` has never
+    influenced it. Pass count=None to skip the trim and receive the full
+    downloaded history.
+
+    That distinction is not cosmetic: the paper resolver asked for 100 and then
+    filtered to candles after its signal, which for any row older than the
+    100-candle tail left EVERY returned candle passing the filter — so it
+    resolved against a window weeks downstream of the signal rather than a
+    truncated one (findings doc finding 22). Callers that need a window
+    relative to a timestamp must take the full history and slice by time.
+    """
     try:
         import yfinance as yf
     except ImportError:
@@ -56,7 +70,7 @@ def _fetch_yfinance_candles(symbol: str, timeframe: str, count: int) -> list:
         except Exception:
             vol = 0.0
         candles.append({"time": str(ts), "open": o, "high": h, "low": l, "close": c, "volume": vol})
-    return candles[-count:]
+    return candles if count is None else candles[-count:]
 
 
 def _load_alphavantage_candles(symbol: str, timeframe: str) -> list:

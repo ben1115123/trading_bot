@@ -8,7 +8,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from database.db import get_connection
-from database.paper_filters import paper_where
+from database.paper_filters import paper_where, unresolvable_count_sql
 
 st.set_page_config(page_title="Strategy Pipeline · Trading Bot", layout="wide")
 
@@ -37,6 +37,13 @@ def fetch_paper_data(symbol_filter: str = "All", tf_filter: str = "All",
                    SUM(CASE WHEN outcome='WIN'     THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN outcome='LOSS'    THEN 1 ELSE 0 END) as losses,
                    SUM(CASE WHEN outcome='PENDING' THEN 1 ELSE 0 END) as pending,
+                   -- paper-v2: total is no longer wins+losses+pending. Rows
+                   -- that will never resolve terminate as REFUSED/EXPIRED/
+                   -- NO_HISTORY, and an unexplained shortfall in a headline
+                   -- count is indistinguishable from data loss — so the page
+                   -- SAYS what it dropped rather than letting the arithmetic
+                   -- stop reconciling.
+                   {unresolvable_count_sql()} as unresolvable,
                    COALESCE(SUM(simulated_pnl), 0) as total_pnl
             FROM paper_trades WHERE 1=1 {_frag}
         """, _fparams)
@@ -174,11 +181,12 @@ st.markdown("""
 d = fetch_paper_data()
 o = d["overall"]
 
-total    = o["total"]    or 0
-wins     = o["wins"]     or 0
-losses   = o["losses"]   or 0
-pending  = o["pending"]  or 0
-tot_pnl  = o["total_pnl"] or 0.0
+total        = o["total"]        or 0
+wins         = o["wins"]         or 0
+losses       = o["losses"]       or 0
+pending      = o["pending"]      or 0
+unresolvable = o["unresolvable"] or 0
+tot_pnl      = o["total_pnl"]    or 0.0
 resolved = wins + losses
 win_rate = (wins / resolved * 100) if resolved > 0 else 0.0
 
@@ -210,10 +218,18 @@ st.markdown(f"""
   <div class="kpi-card amber">
     <div class="kpi-label">Pending</div>
     <div class="kpi-value">{pending}</div>
-    <div class="kpi-sub">Awaiting P&amp;L resolution</div>
+    <div class="kpi-sub">{f"{unresolvable} unresolvable" if unresolvable else "Awaiting P&amp;L resolution"}</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+if unresolvable:
+    st.caption(
+        f"{unresolvable} of {total} signals terminated without a P&L "
+        f"(REFUSED / EXPIRED / NO_HISTORY) and are excluded from win rate and "
+        f"P&L. Total signals ≠ wins + losses + pending by exactly this count — "
+        f"see the Outcome column and `resolution_reason`."
+    )
 
 
 # ── Strategy Cards ────────────────────────────────────────────────────────────

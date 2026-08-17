@@ -1421,6 +1421,37 @@ versioned commit is not the same as justifying the version**, and conflating
 the two is how stamps drift into meaning "something changed", which is not a
 useful thing for a stamp to mean.
 
+### Related standing rule — where misclassification costs are asymmetric, the default goes to the cheap side
+
+Recorded alongside the stamp rule because it decided the shape of the paper-v2
+fix and this codebase has repeatedly defaulted the other way.
+
+When code must classify something it cannot always identify — is this error
+permanent or transient, is this signal real or noise, is this row countable —
+**the two mistakes rarely cost the same, and the unrecognised case must land on
+whichever side is cheaper to be wrong about.**
+
+Applied in `_classify_fetch_error`: structural failures are an **allowlist**,
+and anything unrecognised falls through to transient.
+
+| mistake | cost |
+|---|---|
+| transient classified as structural | a resolvable row is killed permanently |
+| structural classified as transient | a dead row retries until it EXPIRES |
+
+The second is bounded and self-correcting; the first is not. So the default is
+transient — *even though* that is precisely the behaviour that let finding 22's
+`AttributeError` retry for 40+ days. The fix is not to flip the default, it is
+to name the structural cases explicitly.
+
+The codebase's habitual direction is the opposite, and each instance cost
+something: `.get(symbol, 1.0)` returning a plausible value-per-point rather
+than raising (finding 16, 97 rows at 1/2000th value); `status` defaulting to
+the permissive branch (finding 4); the VIX filter failing open. The rule is not
+"always fail closed" — a VIX API blip should not halt trading. It is that the
+direction must be **chosen from the cost asymmetry and stated**, not inherited
+from whichever default was easiest to write.
+
 Corollary: a stamp bump is **not** a quality claim. `parity-v2` takes profit
 and `parity-v1` does not, but neither is calibrated (see the spread residual).
 The stamp says *incomparable*, never *better*.

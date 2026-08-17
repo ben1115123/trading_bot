@@ -3,6 +3,7 @@ from database.db import get_connection
 from engine_version import CURRENT_ENGINE_VERSION
 from spread_model import CURRENT_SPREAD_MODEL, spread_table_sha
 from paper_model import CURRENT_PAPER_MODEL
+from database.paper_filters import TERMINAL_OUTCOMES, UNRESOLVABLE_OUTCOMES
 
 
 def log_trade(trade_data: dict) -> int:
@@ -714,14 +715,39 @@ def get_pending_paper_trades() -> list:
         conn.close()
 
 
-def resolve_paper_trade(trade_id: int, outcome: str, pnl: float) -> None:
+def resolve_paper_trade(trade_id: int, outcome: str, pnl: float | None,
+                        reason: str | None = None) -> None:
+    """Terminate a paper row.
+
+    outcome must be one of paper_filters.TERMINAL_OUTCOMES. The three
+    unresolvable ones (REFUSED / EXPIRED / NO_HISTORY) pass pnl=None: NULL,
+    never 0.0, so a query that forgets to exclude them contributes nothing to a
+    SUM instead of a phantom break-even trade.
+
+    resolved_at is stamped here rather than by the caller — it is the one place
+    every terminal transition passes through, and the column exists precisely
+    because row-age-at-resolution was previously unrecoverable (finding 22).
+    """
+    if outcome not in TERMINAL_OUTCOMES:
+        raise ValueError(
+            f"resolve_paper_trade: {outcome!r} is not a terminal outcome "
+            f"(expected one of {TERMINAL_OUTCOMES})"
+        )
+    if outcome in UNRESOLVABLE_OUTCOMES and pnl is not None:
+        raise ValueError(
+            f"resolve_paper_trade: {outcome} must carry pnl=None, got {pnl!r} "
+            f"— an unresolvable row has no simulated P&L"
+        )
     conn = get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            UPDATE paper_trades SET outcome = ?, simulated_pnl = ?
+            UPDATE paper_trades
+               SET outcome = ?, simulated_pnl = ?,
+                   resolved_at = ?, resolution_reason = ?
             WHERE id = ?
-        """, (outcome, pnl, trade_id))
+        """, (outcome, pnl, datetime.now(timezone.utc).isoformat(),
+              reason, trade_id))
         conn.commit()
     finally:
         conn.close()

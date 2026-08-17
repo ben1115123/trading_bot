@@ -365,7 +365,9 @@ def init_db():
             session       TEXT,
             paper_model    TEXT NOT NULL DEFAULT 'pre-parity-v0',
             spread_model   TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED',
-            risk_per_trade REAL
+            risk_per_trade REAL,
+            resolved_at       TEXT,
+            resolution_reason TEXT
         )
     """)
 
@@ -408,11 +410,29 @@ def init_db():
     # and is currently recoverable only by algebra on simulated_pnl — cheap to
     # store per row, expensive to re-derive forever. See paper_model.py.
     #
+    # resolved_at / resolution_reason (paper-v2, 2026-08-17):
+    #
+    # resolved_at is FORWARD-ONLY and deliberately NOT backfilled. There is
+    # nothing to backfill from — `checked_at` is the SIGNAL time, not the
+    # resolution time, so no stored value can reconstruct how old a row was
+    # when it resolved. That gap is exactly what makes finding 22's blast
+    # radius unmeasurable across the 1,565 already-resolved rows. Writing an
+    # inferred timestamp into the one column whose purpose is auditing
+    # resolution timing would manufacture the false confidence the finding is
+    # about. NULL means "resolved before resolution time was recorded" — the
+    # true state.
+    #
+    # resolution_reason carries WHY a row terminated. The three unresolvable
+    # outcomes are deliberately coarse (REFUSED / EXPIRED / NO_HISTORY) so they
+    # stay countable; the specific defect goes here in prose.
+    #
     # Placed AFTER the CREATE above, per finding 18.
     for col, defn in [
-        ("paper_model",    "TEXT NOT NULL DEFAULT 'pre-parity-v0'"),
-        ("spread_model",   "TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED'"),
-        ("risk_per_trade", "REAL"),
+        ("paper_model",       "TEXT NOT NULL DEFAULT 'pre-parity-v0'"),
+        ("spread_model",      "TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED'"),
+        ("risk_per_trade",    "REAL"),
+        ("resolved_at",       "TEXT"),
+        ("resolution_reason", "TEXT"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {defn}")

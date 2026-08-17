@@ -28,6 +28,67 @@ from paper_model import CURRENT_PAPER_MODEL
 # signal values carry a PAPER_ or SHADOW_ prefix; see live_signal_loop.py:749
 _SHADOW_PREFIX = "SHADOW%"
 
+# ---------------------------------------------------------------------------
+# Outcome vocabulary
+#
+# Until paper-v2 a row was WIN, LOSS or PENDING, and PENDING meant two
+# different things that nothing could tell apart: "not resolved yet" and
+# "will never resolve". paper-v2 splits the second case into three terminal
+# outcomes, so `outcome != 'PENDING'` no longer means "has a P&L" and
+# `total - wins - losses` no longer means "pending".
+#
+# The completeness assumption is the point. Twelve query sites forgot to
+# exclude shadow rows (finding 17) because the predicate lived nowhere; the
+# same shape applies here, so the vocabulary lives here too rather than as a
+# literal in each SELECT.
+# ---------------------------------------------------------------------------
+
+# Carry a simulated_pnl. The only rows any statistic may count.
+RESOLVED_OUTCOMES = ("WIN", "LOSS")
+
+# Terminated without a P&L — the row is closed, and simulated_pnl stays NULL
+# so a mistaken SUM contributes nothing rather than a phantom break-even.
+#   REFUSED     the row itself is unusable: malformed bracket, NULL timeframe,
+#               unparseable candle_time. No future data can fix it.
+#   EXPIRED     aged past the resolution horizon. A relevance judgement.
+#   NO_HISTORY  the data source provably cannot cover the signal's window —
+#               its earliest available candle postdates the signal, and the
+#               window only rolls forward.
+UNRESOLVABLE_OUTCOMES = ("REFUSED", "EXPIRED", "NO_HISTORY")
+
+PENDING_OUTCOME = "PENDING"
+
+TERMINAL_OUTCOMES = RESOLVED_OUTCOMES + UNRESOLVABLE_OUTCOMES
+
+
+def resolved_outcomes(alias: str = "") -> tuple:
+    """Return (sql_fragment, params) restricting to rows that carry a P&L.
+
+    Use this anywhere a query previously said `outcome != 'PENDING'`, or
+    counted `COUNT(*)` on the assumption that every non-pending row resolved.
+    Composes with paper_where():
+
+        frag, params   = paper_where()
+        rfrag, rparams = resolved_outcomes()
+        cur.execute(f"SELECT ... WHERE 1=1 {frag} {rfrag}", (*params, *rparams))
+    """
+    p = f"{alias}." if alias else ""
+    placeholders = ",".join("?" * len(RESOLVED_OUTCOMES))
+    return f" AND {p}outcome IN ({placeholders})", list(RESOLVED_OUTCOMES)
+
+
+def unresolvable_count_sql(alias: str = "") -> str:
+    """SQL expression counting rows terminated without a P&L.
+
+    Same contract as excluded_count_sql: a decision surface must SAY what it
+    dropped. Nine rows silently vanishing from a total is indistinguishable
+    from data loss — and per finding 22 those nine are the evidence for the
+    defect that created this vocabulary, so they must stay visible.
+    """
+    p = f"{alias}." if alias else ""
+    quoted = ",".join(f"'{o}'" for o in UNRESOLVABLE_OUTCOMES)
+    return f"SUM(CASE WHEN {p}outcome IN ({quoted}) THEN 1 ELSE 0 END)"
+
 
 def paper_where(include_shadow: bool | str = False,
                 paper_model: str | None = CURRENT_PAPER_MODEL,

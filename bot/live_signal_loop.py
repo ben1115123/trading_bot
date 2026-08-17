@@ -770,40 +770,151 @@ def _bracket_error(signal: str, entry, sl, tp) -> str | None:
     return None
 
 
+# How long a pending row stays worth resolving.
+#
+# A RELEVANCE JUDGEMENT, NOT A DATA LIMIT — and the distinction matters,
+# because a threshold that quietly encodes "as far back as the source reaches"
+# is a data limit wearing a policy's clothes:
+#   - the most extreme hold ever observed live is 118h (~4.9 days). 14 days is
+#     ~3x that, so a row still open at the horizon is not a slow trade, it is a
+#     bracket the market never touched.
+#   - it sits well inside the fetch window at BOTH timeframes — 60d for 15MIN,
+#     730d for HOUR (run_backtest.YF_PERIODS). Nothing expires because the data
+#     ran out; that case is NO_HISTORY and is reported separately.
+# Widening this is a policy decision about relevance and needs no data work.
+_RESOLUTION_HORIZON = timedelta(days=14)
+
+
+def _classify_fetch_error(exc: Exception) -> str | None:
+    """Return a reason string if `exc` is STRUCTURAL, or None if transient.
+
+    THE POLARITY IS THE WHOLE POINT. Structural is an ALLOWLIST; anything
+    unrecognised falls through to transient. The two misclassifications do not
+    cost the same:
+      transient mistaken for structural -> a resolvable row is killed forever
+      structural mistaken for transient -> a dead row retries until it EXPIRES
+    So the unknown case must land on the cheap side. Where misclassification
+    costs are asymmetric, the default belongs with the recoverable error.
+
+    This function exists because a bare `except Exception` around the fetch
+    printed 'candle fetch failed' for BOTH cases, and a permanent
+    AttributeError on NULL timeframe therefore looked identical to a network
+    blip and retried every five minutes for 40+ days (findings doc finding 22).
+    """
+    if isinstance(exc, (AttributeError, TypeError, KeyError)):
+        # None.upper(), a missing dict key, a field of the wrong type — the row
+        # or its mapping is malformed. Re-running changes nothing.
+        return f"structural fetch error: {type(exc).__name__}: {exc}"
+    if isinstance(exc, ValueError):
+        # _fetch_yfinance_candles raises this for an unknown symbol/timeframe.
+        return f"unsupported symbol/timeframe: {exc}"
+    # RuntimeError ("yfinance returned no data"), urllib/requests errors,
+    # pandas hiccups, anything unrecognised: assume recoverable.
+    return None
+
+
+def _row_defect(trade: dict, symbol: str, timeframe, signal: str,
+                entry, sl, tp) -> str | None:
+    """Return a reason if the ROW ITSELF can never be resolved, else None.
+
+    Distinct from NO_HISTORY, which is a statement about the DATA. This is a
+    statement about the row: a required field is missing or malformed, so no
+    query can even be formed and no future candle changes that.
+
+    NULL timeframe lands here deliberately rather than being mopped up by the
+    expiry horizon. Those 9 swiftalgo rows are the evidence for finding 22 and
+    must be labelled by their actual defect, not by having sat around: EXPIRED
+    would say "we lost interest", REFUSED says "this row was never resolvable",
+    and only the second is true. It also means a NULL-timeframe row written
+    tomorrow is identified on its first cycle instead of crash-looping for a
+    fortnight first.
+    """
+    if timeframe is None or not str(timeframe).strip():
+        # `trade.get("timeframe", "HOUR")` never protected against this: .get's
+        # default fires on a MISSING KEY, and get_pending_paper_trades does
+        # SELECT *, so the key is always present holding None. The default has
+        # never once been used.
+        return "timeframe is NULL — cannot select a candle granularity"
+    if signal not in ("BUY", "SELL"):
+        return f"unrecognised signal {trade.get('signal')!r}"
+    bracket = _bracket_error(trade.get("signal"), entry, sl, tp)
+    if bracket:
+        return bracket
+    try:
+        _parse_signal_dt(trade)
+    except Exception as e:
+        return f"unparseable candle_time {trade.get('candle_time')!r}: {e}"
+    return None
+
+
+def _parse_signal_dt(trade: dict) -> datetime:
+    dt = datetime.fromisoformat(
+        str(trade.get("candle_time", "")).replace("Z", "+00:00")
+    )
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _terminate(trade: dict, symbol: str, outcome: str, reason: str) -> None:
+    resolve_paper_trade(trade["id"], outcome, None, reason)
+    print(f"[resolver] [{symbol}] id={trade['id']} → {outcome} — {reason}")
+
+
 def _resolve_pending_paper_trades() -> None:
     trades = get_pending_paper_trades()
     if not trades:
         return
     print(f"[resolver] {len(trades)} pending paper trade(s) to check")
+    now = datetime.now(timezone.utc)
     for trade in trades:
         symbol    = trade["symbol"]
-        timeframe = trade.get("timeframe", "HOUR")
+        timeframe = trade.get("timeframe")
         signal    = (trade.get("signal") or "").upper().replace("PAPER_", "").replace("SHADOW_", "")
         entry     = trade["entry_price"]
         sl        = trade["sl"]
         tp        = trade["tp"]
-        if signal not in ("BUY", "SELL"):
+
+        # 1. Is the ROW usable at all? Checked first so a malformed row is
+        #    labelled by its defect rather than by its age.
+        defect = _row_defect(trade, symbol, timeframe, signal, entry, sl, tp)
+        if defect:
+            _terminate(trade, symbol, "REFUSED", defect)
             continue
-        _bad = _bracket_error(trade.get("signal"), entry, sl, tp)
-        if _bad:
-            # Refuse, loudly. Left PENDING rather than resolved: a malformed
-            # row must not acquire a P&L, and must stay visible rather than be
-            # silently written off.
-            print(f"[resolver] [{symbol}] id={trade['id']} REFUSED — {_bad}")
+
+        signal_dt = _parse_signal_dt(trade)
+
+        # 2. Age. Before the fetch — a row past the horizon terminates whatever
+        #    the candles would have said, so downloading them is wasted work.
+        age = now - signal_dt
+        if age > _RESOLUTION_HORIZON:
+            _terminate(trade, symbol, "EXPIRED",
+                       f"{age.days}d old, past the {_RESOLUTION_HORIZON.days}d "
+                       f"resolution horizon")
             continue
+
+        # 3. Fetch the FULL history and slice by time. count=None because
+        #    `count` was only ever a tail trim (finding 22) — the window must
+        #    be derived from signal_dt, and this costs no extra API call
+        #    because the same download always happened.
         try:
-            signal_dt = datetime.fromisoformat(
-                str(trade.get("candle_time", "")).replace("Z", "+00:00")
-            )
-            if signal_dt.tzinfo is None:
-                signal_dt = signal_dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            continue
-        try:
-            candles = _fetch_yfinance_candles(symbol, timeframe, 100)
+            candles = _fetch_yfinance_candles(symbol, timeframe, None)
         except Exception as e:
-            print(f"[resolver] [{symbol}] candle fetch failed: {e}")
+            structural = _classify_fetch_error(e)
+            if structural:
+                _terminate(trade, symbol, "REFUSED", structural)
+            else:
+                print(f"[resolver] [{symbol}] id={trade['id']} still PENDING — "
+                      f"transient fetch failure: {e}")
             continue
+
+        # 4. Can the source cover this signal at all?
+        if candles and _candle_dt(candles[0]) > signal_dt:
+            # Its earliest candle postdates the signal. The rolling window only
+            # moves forward, so this is permanent, not "not yet".
+            _terminate(trade, symbol, "NO_HISTORY",
+                       f"earliest available candle {candles[0].get('time')} "
+                       f"postdates signal {signal_dt.isoformat()}")
+            continue
+
         later      = [c for c in candles if _candle_dt(c) > signal_dt]
         outcome    = None
         raw_pnl    = None
@@ -822,37 +933,45 @@ def _resolve_pending_paper_trades() -> None:
                 if candle["low"] <= tp:
                     outcome, raw_pnl = "WIN", entry - tp
                     break
-        if outcome:
-            if entry is None:
-                resolve_paper_trade(trade["id"], outcome, 0.0)
-                print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} (no entry_price, pnl=0)")
-            else:
-                # [symbol], never .get(symbol, default) — a KeyError on an
-                # unregistered symbol is correct and would have caught the
-                # USDCAD omission on its first paper trade (finding 16).
-                value_per_point = VALUE_PER_POINT[symbol]
-                sl_distance = abs(entry - sl)
-                if sl_distance <= 0:
-                    # Abort, mirroring risk_manager:30-32 which returns None and
-                    # makes place_trade refuse. The old code booked at the 0.1
-                    # minimum, inventing a position live would never have opened.
-                    print(f"[resolver] [{symbol}] id={trade['id']} REFUSED — "
-                          f"sl_distance={sl_distance} (entry={entry} sl={sl})")
-                    continue
-                lot_size = get_risk_per_trade(symbol, is_paper=True) / (sl_distance * value_per_point)
-                # Round THEN clamp, matching risk_manager:36-44 and the backtest
-                # engine. The resolver clamped without ever rounding, so its lot
-                # sizes disagreed with both other models at the boundaries.
-                lot_size = round(lot_size, 2)
-                lot_size = max(0.1, min(10.0, lot_size))
-                simulated_pnl = raw_pnl * lot_size * value_per_point
-                resolve_paper_trade(trade["id"], outcome, round(simulated_pnl, 4))
-                print(
-                    f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} "
-                    f"raw={raw_pnl:.4f} lot={lot_size:.4f} pnl=${simulated_pnl:.2f}"
-                )
-        else:
+        if not outcome:
+            # Genuinely undecided: the bracket has not been touched yet and the
+            # row is still inside the horizon. The one case that legitimately
+            # stays PENDING.
             print(f"[resolver] [{symbol}/{timeframe}] id={trade['id']} still PENDING")
+            continue
+
+        # entry is never None here: get_pending_paper_trades filters
+        # `entry_price IS NOT NULL`, and _row_defect refuses the row otherwise.
+        # The old `if entry is None: resolve(..., 0.0)` branch was unreachable
+        # and would have booked a phantom break-even.
+        #
+        # [symbol], never .get(symbol, default) — a KeyError on an unregistered
+        # symbol is correct and would have caught the USDCAD omission on its
+        # first paper trade (finding 16).
+        value_per_point = VALUE_PER_POINT[symbol]
+        sl_distance = abs(entry - sl)
+        if sl_distance <= 0:
+            # Abort, mirroring risk_manager:30-32 which returns None and makes
+            # place_trade refuse. The old code booked at the 0.1 minimum,
+            # inventing a position live would never have opened.
+            # TERMINAL as of paper-v2: this can never improve with more candles,
+            # so leaving it PENDING only meant re-deciding the same refusal
+            # every five minutes forever.
+            _terminate(trade, symbol, "REFUSED",
+                       f"sl_distance={sl_distance} (entry={entry} sl={sl})")
+            continue
+        lot_size = get_risk_per_trade(symbol, is_paper=True) / (sl_distance * value_per_point)
+        # Round THEN clamp, matching risk_manager:36-44 and the backtest
+        # engine. The resolver clamped without ever rounding, so its lot
+        # sizes disagreed with both other models at the boundaries.
+        lot_size = round(lot_size, 2)
+        lot_size = max(0.1, min(10.0, lot_size))
+        simulated_pnl = raw_pnl * lot_size * value_per_point
+        resolve_paper_trade(trade["id"], outcome, round(simulated_pnl, 4))
+        print(
+            f"[resolver] [{symbol}/{timeframe}] id={trade['id']} → {outcome} "
+            f"raw={raw_pnl:.4f} lot={lot_size:.4f} pnl=${simulated_pnl:.2f}"
+        )
 
 
 def _loop() -> None:

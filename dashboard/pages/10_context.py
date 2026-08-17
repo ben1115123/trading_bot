@@ -8,7 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import streamlit as st
 import pandas as pd
 from database.db import get_connection
-from database.paper_filters import paper_where
+from database.paper_filters import paper_where, resolved_outcomes, excluded_count_sql
+from paper_model import CURRENT_PAPER_MODEL
 from database.models import get_webhook_outcomes
 
 st.set_page_config(page_title="Context Analysis · Trading Bot", layout="wide")
@@ -180,6 +181,12 @@ def _fetch_paper(strategy, symbol):
     # filtered shadow correctly by hand; it now shares the single definition
     # rather than agreeing with the other pages by luck.
     _frag, _params = paper_where()
+    # Was `outcome != 'PENDING'`, which meant "has a P&L" only while PENDING
+    # was the sole non-resolved state. paper-v2 adds REFUSED/EXPIRED/
+    # NO_HISTORY, so that test would have pulled rows with no P&L into a
+    # summary whose Losses column is `total - wins` — every one of them would
+    # have been counted as a loss.
+    _rfrag, _rparams = resolved_outcomes()
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute(f"""
@@ -200,10 +207,10 @@ def _fetch_paper(strategy, symbol):
             NULL AS atr_at_entry
         FROM paper_trades
         WHERE strategy_name = ? AND symbol = ?
-          AND outcome != 'PENDING'
+          {_rfrag}
           {_frag}
         ORDER BY checked_at DESC
-    """, (strategy, symbol, *_params))
+    """, (strategy, symbol, *_rparams, *_params))
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return rows
@@ -255,6 +262,29 @@ if source_sel == "ALL" and all_rows:
     s = _summary(all_rows, "COMBINED")
     if s:
         parts.append(s)
+
+# Say what was filtered, ALWAYS — including (especially) when the result is
+# empty. A page that renders a bare zero after a paper_model bump is
+# indistinguishable from a broken query or a lost table, and the first bump
+# where this matters is paper-v2: every pre-existing row carries an older
+# model, so this panel legitimately shows nothing until new rows resolve.
+# An unexplained empty panel is the failure mode, not the emptiness itself.
+try:
+    _xcur = get_connection().cursor()
+    _xcur.execute(f"SELECT {excluded_count_sql()} AS n FROM paper_trades")
+    _paper_excluded = (_xcur.fetchone()["n"] or 0)
+    _xcur.connection.close()
+except Exception:
+    _paper_excluded = 0
+
+if _paper_excluded:
+    st.caption(
+        f"{_paper_excluded:,} paper rows excluded — shadow counterfactuals "
+        f"(deliberately blocked signals) and rows from an older resolver "
+        f"model ({CURRENT_PAPER_MODEL} is current). Not comparable to these "
+        f"figures. An empty PAPER row here means no row has resolved under "
+        f"the current model yet, not missing data."
+    )
 
 if not parts:
     _no_data("No resolved trades.")

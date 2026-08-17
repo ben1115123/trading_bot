@@ -71,11 +71,50 @@ History:
                  The win-basis inconsistency (finding 19) is NOT fixed here.
                  Rejection surfaces the malformed rows; changing the count
                  would have hidden them.
+
+  paper-v2       2026-08-17. The RESOLUTION WINDOW and the outcome vocabulary.
+                   - The window is now derived from the row's signal time
+                     instead of a 100-candle tail trim. `count` never
+                     controlled the fetch (_fetch_yfinance_candles downloads a
+                     fixed period and slices the tail), so for any row older
+                     than that tail EVERY returned candle passed the
+                     "after the signal" filter and the row resolved against a
+                     window weeks downstream of its own signal. Not truncation
+                     — a disjoint window. Costs zero extra API calls; the same
+                     download always happened.
+                   - PENDING no longer means two things. Three terminal
+                     outcomes separate "not resolved yet" from "will never
+                     resolve": REFUSED (the row is unusable), EXPIRED (past the
+                     14-day relevance horizon), NO_HISTORY (the source
+                     provably cannot cover the signal's window). All three
+                     carry simulated_pnl = NULL, never 0.0.
+                   - Fetch exceptions are classified instead of swallowed.
+                     Structural (AttributeError/TypeError/KeyError/ValueError)
+                     terminates; everything else stays PENDING and retries.
+                     Unknown deliberately falls to transient — see
+                     _classify_fetch_error for why the polarity is not
+                     symmetric.
+                   - resolved_at and resolution_reason recorded per row.
+
+                 THE BUMP IS CARRIED BY THE WINDOW AND THE OUTCOME SET, not by
+                 the new columns. Same row, same candles, different result:
+                 a stale row that booked a WIN off a far-future bar now books
+                 a LOSS, or terminates without a P&L at all. resolved_at rides
+                 along in the same commit because the schema was being touched
+                 anyway — riding along is not the same as justifying the
+                 version.
+
+                 STILL DEFECTIVE at paper-v2, deliberately: no spread deducted,
+                 no ig_scale conversion on the paper write path, and resolution
+                 remains against yfinance regardless of CANDLE_SOURCE. That
+                 last one is now an ACCEPTED DIVERGENCE rather than a to-do —
+                 findings doc finding 21.
 """
 
-CURRENT_PAPER_MODEL = "paper-v1"
+CURRENT_PAPER_MODEL = "paper-v2"
 
-# Bumped because simulated_pnl now computes differently for the same stored
-# signal: USDCAD by ~1,900x, boundary lots by the rounding change, and three
-# malformed rows are refused rather than monetised. pre-parity-v0 rows are not
-# comparable to paper-v1 rows.
+# Bumped per the standing rule: would two runs over the same row and the same
+# candles produce a different result? Yes — the resolution window changed, so
+# different bars decide the outcome, and rows that would have booked a WIN or
+# LOSS now terminate as REFUSED/EXPIRED/NO_HISTORY, changing every aggregate's
+# denominator. paper-v1 rows are not comparable to paper-v2 rows.
