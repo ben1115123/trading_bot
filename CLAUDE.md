@@ -1478,6 +1478,56 @@ most expensive window we have and the one we least want to go blind on.
 Until that observation exists, this control is verified only against
 constructed timestamps.
 
+## 🚦 GATE — do not build the spread table before these are all true
+
+The market-open filter shipped 2026-08-17 (`get_spread_samples(market_open_only=True)`,
+predicate `market_hours.is_entry_allowed`). **The table itself is deliberately
+NOT built yet.** Friday 2026-08-21 is the earliest check, and it is a check,
+not a judgement call — the criteria are fixed here while the reasoning is
+fresh.
+
+**Why not on 2026-08-17's pool:** n was fine (65–89/symbol, and the filtered
+distribution has only 2 distinct values, so the median is statistically
+solid). **Coverage was not.** Hours **18:00–22:00 UTC had ZERO samples on
+every symbol** — including the ~21:00 UTC daily rollover, the most reliably
+wide weekday period there is. A median built then would not be thin, it would
+be **biased low**: the same error as calibrating on the shut book, opposite
+sign, and harder to catch because the number looks plausible.
+
+### Acceptance criteria — ALL must hold
+
+1. **Every UTC hour 00–23 represented**, and **18:00–22:00 specifically
+   present**. This is the criterion that failed on 2026-08-17.
+2. **Every weekday Mon–Fri represented.**
+3. **≥ ~480 samples/symbol** after filtering (~97/day × 5 trading days).
+4. **If any hour is still empty: do NOT build.** Report which hours, and wait.
+
+### Preference: two weeks, not one
+
+One Mon–Fri cycle is the *minimum* — it gives ~20 observations per hour. Two
+weeks gives **~40 per hour** and a realistic chance of catching a news day
+(NFP/CPI/FOMC), which is where the tail actually lives. Build at one week only
+if something downstream is blocked on it; otherwise prefer two.
+
+### When it is built
+
+- `spread_model` renamed to make **median-only** explicit and impossible to
+  mistake for tail-calibrated later
+- `spread_table_sha` populated
+- provenance in code per symbol: n samples, date range, filter applied
+- commit message and script comment must state that **the tail is
+  uncalibrated and risk-of-ruin work must NOT use this table**
+
+### Known limitation to carry into the table — model shape, not filter
+
+`is_entry_allowed` governs **entries**. A position held through Friday 20:45 →
+Sunday 23:00 can still be **exited** at reopen spreads (10–17 pips measured),
+and that cost is excluded from anything calibrated this way. `SPREAD_COSTS` is
+a single round-trip constant and **cannot express an asymmetric entry/exit
+cost**, so this is not fixable by filtering differently — it needs a different
+model shape. Recorded in `get_spread_samples`' docstring where whoever builds
+the table will read it.
+
 ## Monitoring Gaps (outstanding)
 
 - **`candle_stream` staleness is unmonitored.** `scripts/watchdog.py` alerts

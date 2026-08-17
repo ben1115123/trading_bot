@@ -4,6 +4,7 @@ from engine_version import CURRENT_ENGINE_VERSION
 from spread_model import CURRENT_SPREAD_MODEL, spread_table_sha
 from paper_model import CURRENT_PAPER_MODEL
 from database.paper_filters import TERMINAL_OUTCOMES, UNRESOLVABLE_OUTCOMES
+from market_hours import is_entry_allowed
 
 
 def log_trade(trade_data: dict) -> int:
@@ -304,7 +305,8 @@ def insert_backtest_trades(trades: list) -> None:
         conn.close()
 
 
-def get_spread_samples(symbol: str = None, since: str = None) -> list:
+def get_spread_samples(symbol: str = None, since: str = None,
+                       market_open_only: bool = True) -> list:
     """Captured spread observations, for calibrating a measured spread model.
 
     DEDUP CAVEAT — read before aggregating. signal_log holds one row per
@@ -317,6 +319,53 @@ def get_spread_samples(symbol: str = None, since: str = None) -> list:
 
     This collapses to one sample per (symbol, minute) before returning, so
     callers get market observations rather than check counts.
+
+    MARKET-OPEN FILTER (default ON) — this is not a refinement, it is a
+    prerequisite. The raw pool is contaminated with observations taken while
+    the book was SHUT: the stream keeps delivering ticks with freshly stamped
+    timestamps carrying a closed-market quote, so get_spread()'s 900s
+    staleness guard does not catch them. Measured on the 2026-08-16/17 pool,
+    every single observation above 3 pips came from a weekend, none from the
+    Monday session:
+
+        symbol   raw pool                          filtered
+        EURUSD   med 0.60  p90  1.50  max 10.50    med 0.60  p90 0.60  max 0.90
+        GBPUSD   med 0.90  p90 14.60  max 24.50    med 0.90  p90 0.90  max 1.50
+        AUDUSD   med 0.60  p90  5.60  max 16.00    med 0.60  p90 0.90  max 0.90
+        USDCAD   med 1.30  p90  6.70  max  8.60    med 1.30  p90 2.10  max 5.70
+        US500    med 0.60  p90  0.60  max  1.50    med 0.60  p90 0.60  max 0.60
+        US100    med 2.00  p90  2.00  max  5.00    med 2.00  p90 2.00  max 2.00
+
+    Calibrating on the raw pool would produce a constant ~10x too wide —
+    reproducing the NORMAL_SPREADS error (findings doc finding 15) that this
+    measurement work exists to fix. Note that MEDIANS DO NOT MOVE on any
+    symbol: the filter removes a fabricated tail without reshaping the data,
+    which is the evidence that it is removing contamination rather than
+    inconvenient observations.
+
+    WHY is_entry_allowed AND NOT is_market_open. The constant feeds a cost
+    model for trades the bot can actually place, and after the finding-23 fix
+    it will never open a position in the Sunday 20:00-22:59 reopen. Measured
+    on the same pool: is_market_open keeps 507 samples and leaves 26 wide
+    survivors (the whole reopen ramp); is_entry_allowed keeps 458 and leaves
+    exactly 1 — a real USDCAD quote at Sun 23:01.
+
+    THIS ONLY BECAME THE CORRECT PREDICATE ONCE _is_blocked WAS FIXED. Before
+    that, _is_blocked never fired for FX and the bot really did trade the
+    reopen — 21 weekend trades at 10-17 pip spreads — so the window would have
+    had to be INCLUDED to model live behaviour honestly. Filtering it out
+    while the bot still traded there would have been the engine-flattery
+    mistake in a new place.
+
+    KNOWN LIMITATION OF THE MODEL SHAPE, not of this filter — read this before
+    building a spread table. is_entry_allowed governs ENTRIES. A position held
+    through Friday 20:45 to Sunday 23:00 can still be EXITED at reopen
+    spreads, and that cost is excluded from anything calibrated here.
+    SPREAD_COSTS is a single round-trip constant and cannot express an
+    asymmetric entry/exit cost, so this cannot be fixed by filtering
+    differently — it needs a different model shape. Recorded, not solved.
+
+    Pass market_open_only=False for raw inspection only. Never for calibration.
     """
     conn = get_connection()
     try:
@@ -338,9 +387,28 @@ def get_spread_samples(symbol: str = None, since: str = None) -> list:
             GROUP BY symbol, minute
             ORDER BY minute ASC
         """, params)
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+    if not market_open_only:
+        return rows
+
+    # Applied in Python rather than SQL: the predicate is weekday-and-hour
+    # logic that lives in market_hours.py, and duplicating it as a SQL
+    # expression would create the fourth boundary definition this codebase
+    # keeps producing (findings 20, 22, 23).
+    kept = []
+    for row in rows:
+        try:
+            when = datetime.fromisoformat(row["minute"])
+        except ValueError:
+            continue          # unparseable stamp: drop rather than assume open
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if is_entry_allowed(row["symbol"], when):
+            kept.append(row)
+    return kept
 
 
 def get_backtest_results(engine_version: str | None = CURRENT_ENGINE_VERSION) -> list:
