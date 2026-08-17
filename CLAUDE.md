@@ -1446,6 +1446,38 @@ log explicitly when the candidate pool is empty *and why* (zero rows at
 `engine_version=X`), so a silent selector can be told apart from a starved one
 by a positive signal rather than inferred from nothing happening.
 
+## ⚠️ WEEKEND CHECK OUTSTANDING — FX market-hours block (deployed 2026-08-17)
+
+`_is_blocked` never blocked FX. `MARKET_CLOSE` holds only US500/US100/DAX/BTC,
+so every FX symbol hit `.get(symbol) is None → return False` before reaching
+any weekend rule. **21 weekend trades were placed as a result**, at exactly the
+timestamps where measured spread is 10–17 pips. Fixed by `market_hours.py`
+(`is_market_open` = venue fact, `is_entry_allowed` = our policy);
+`_is_blocked` is now a thin call. Findings doc finding 23.
+
+**THE FIRST REAL WEEKEND AFTER THIS DEPLOY IS THE ACTUAL TEST.** Everything
+verified so far used *constructed* timestamps. This control has never once
+fired for FX in production, so — per the marker-test rule in Unverified
+Controls — its silence proves nothing on its own.
+
+On the first Saturday after 2026-08-17, confirm all three:
+
+1. FX symbols log `BLOCKED` in `signal_log` with reason
+   `market closed — weekend` (not the old `near market close`)
+2. **Zero** FX entries in `trades` over the weekend
+3. The `signal_loop` heartbeat kept beating through a fully-blocked cycle
+   (`upsert_heartbeat` is outside the per-symbol loop, but prove it, don't
+   infer it)
+
+Also confirm spread sampling **continues** while blocked — `signal_log.spread`
+non-null on FX rows during the blocked window. The sample is taken before the
+block check and the blocked branch still calls `log_signal_check`; that
+ordering is load-bearing and commented as such, because the thin reopen is the
+most expensive window we have and the one we least want to go blind on.
+
+Until that observation exists, this control is verified only against
+constructed timestamps.
+
 ## Monitoring Gaps (outstanding)
 
 - **`candle_stream` staleness is unmonitored.** `scripts/watchdog.py` alerts

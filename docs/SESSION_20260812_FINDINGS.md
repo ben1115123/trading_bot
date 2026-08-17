@@ -1436,6 +1436,212 @@ true state.
 
 ---
 
+## 23. `_is_blocked` has NEVER blocked FX — the control that was never confirmed
+*(added 2026-08-17, Stage 2 — FIXED same day)*
+
+**Broken:** the market-hours block did not apply to a single FX symbol, and
+never had. `bot/live_signal_loop.py:126` opened with:
+
+```python
+close = MARKET_CLOSE.get(symbol)
+if close is None:
+    return False          # <-- every FX symbol exits HERE
+```
+
+`MARKET_CLOSE` contains **only `US500`, `US100`, `DAX`, `BTC`**. EURUSD,
+GBPUSD, AUDUSD and USDCAD are absent, so `.get` returned `None` and the
+function returned `False` **before reaching the Saturday, Sunday or Friday
+branches below it**. Those branches were unreachable for FX for the entire
+life of the file.
+
+**Consequence, measured: 21 weekend trades were placed** — EURUSD 5, GBPUSD 7,
+AUDUSD 4, USDCAD 2, BTC 3 — at exactly the timestamps where the measured
+spread is **10–17 pips**. The bot was opening positions at the widest spreads
+it ever sees, while the control everyone believed was in place did nothing.
+
+**Two failure classes at once:**
+
+1. **Fourth instance of `.get(key, default)` with an absent key** (findings 16,
+   20, 22) — and **the first on the LIVE TRADING PATH**. The earlier three cost
+   wrong numbers; this one placed real orders.
+2. **Unverified controls** (finding 9). A filter believed active, never
+   confirmed, silently inert. Nothing ever tested it — and absence of weekend
+   trades would not have proved anything either, because most weekend cycles
+   died downstream anyway.
+
+**What made the silence look like normal operation:** `near market close` is
+the single largest weekend `signal_log` error at **8,207 occurrences** across
+23,496 weekend checks. The checks ran all weekend and mostly failed later in
+the pipeline — on stale candles, unwarm buffers, or IG rejections — so the logs
+looked busy and unremarkable. A control doing nothing looked identical to a
+control working, because something *else* was usually stopping the trade.
+
+### The root confusion: venue session vs entry policy
+
+The function answered one boolean for two different questions, and that is why
+the hole was invisible:
+
+| | question | nature |
+|---|---|---|
+| **venue session** | can IG deal at all? | a **fact** about the market |
+| **entry policy** | will *we* open a position? | a **preference**, narrower |
+
+A shut book and a thin-but-open reopen are both "blocked" under one boolean,
+yet they are opposites for analysis: the first produces quotes nobody could
+trade on, the second produces real quotes we simply choose to avoid. Filtering
+observations needs the fact; gating a trade needs both. `market_hours.py` now
+splits them into `is_market_open()` and `is_entry_allowed()`.
+
+### IG exposes no session data — the constant is derived from our own record
+
+Verified 2026-08-17 via `fetch_market_by_epic` on CS.D.EURUSD.MINI.IP,
+CS.D.GBPUSD.MINI.IP and IX.D.SPTRD.IFMM.IP:
+
+| field | value |
+|---|---|
+| `instrument.openingHours` | **`null`** on every epic — present, unpopulated |
+| `instrument.rolloverDetails` | `null` |
+| `snapshot.marketStatus` | populated, but **live only** — cannot say what the status was last Sunday, so it cannot classify a stored row |
+
+So the session is derived from **our own trade record** — successful
+`live_signal_loop` FX opens by UTC weekday and hour:
+
+```
+Sun    . . . . . . . . . . . . . . . . . . . .  4  3  4  7      <- deals resume 20:00
+Mon    8 10 7 3 5 2 8 10 10 2 6 5 4 6 9 5 1 1 1 3 1 1 2 2
+Fri   11 10 13 8 6 7 12 7 6 9 5 6 5 5 5 1 . .  2 1 1  . . .     <- last deal ~21:00
+Sat    . . . . . . . . . . . . . . . . . . . . . . . .          <- zero, all hours
+```
+
+Corroborated by IG's own rejections: `MARKET_CLOSED_WITH_EDITS` ×3 on Sat
+2026-07-25 00:00, and `MARKET_OFFLINE` on Sun 2026-07-26 **21:20** — inside the
+reopen ramp, which is why the reopen is treated as ragged rather than a clean
+edge. **That provenance is restated in `market_hours.py`'s docstring**, because
+a measured constant whose derivation lives only in a findings file becomes an
+assumed constant the first time someone edits it.
+
+### A second unverified constant, found while fixing the first
+
+Writing the replacement, an index intraday close was nearly added from
+`MARKET_CLOSE` (20:45) and CLAUDE.md's Market Hours table ("US500/US100 close
+20:00 UTC"). **Neither survives contact with the trade record**, which holds
+**18 index opens at or after 20:00 UTC — US500 10, US100 8 — every one
+accepted by IG**:
+
+```
+US500  hour 20:00 -> 23:00 opens:  5  2  1  2
+US100  hour 20:00 -> 23:00 opens:  .  3  1  4
+```
+
+Had it been added, it would have blocked trades that currently happen and that
+the venue evidently permits.
+
+**Same class as `NORMAL_SPREADS` (finding 15) and `MIN_SL_DIST` (finding 14):
+a stated constant nobody ever checked against the record.** Two documents
+asserted the same wrong number, which made it look corroborated — a second
+source repeating an unverified claim is not verification.
+
+**Establishing the real index session is explicitly NOT done here.** It needs
+its own measurement, and this finding is about FX. `market_hours.py` carries no
+index intraday rule, with the counts above written in as the reason it is
+absent — so the next person sees measured evidence for the omission rather than
+an apparent oversight to helpfully fix.
+
+### Three disagreeing weekend boundaries in the tree — recorded, not merged
+
+| value | where | governs |
+|---|---|---|
+| **Sun 20:00 UTC** | `market_hours.SESSION_REOPEN_HOUR` | measured venue reopen |
+| **Sun 23:00 UTC** | `market_hours.FX_ENTRY_REOPEN_HOUR` | entry policy (matches `_is_blocked`'s original intent) |
+| **Sun 22:00 UTC** | `scripts/watchdog.py::_is_market_hours` | heartbeat-staleness alerting only |
+
+The watchdog copy is **legitimately separate and must not import
+`market_hours.py`**: it runs on the host under cron, stdlib-only with no
+project imports, so that it still works when the container is dead — which is
+the entire point of a watchdog. It gates alerting, never a trade. Recorded so
+the next person to notice the disagreement has a reference point rather than
+assuming one of the three is a bug.
+
+### Did blocking the weekend cost anything? Measured before fixing
+
+The aggregate initially argued *against* the fix — weekend entries were the
+only profitable FX subset:
+
+| | n | net | mean | WR |
+|---|---|---|---|---|
+| weekend entries | 17 | **+$104.30** | +$6.14 | 52.9% |
+| weekday entries | 559 | −$826.98 | −$1.48 | 30.1% |
+
+Split at the 23:00 policy boundary, it resolves completely:
+
+| | n | net | mean | WR |
+|---|---|---|---|---|
+| thin reopen 20:00–22:59 | 10 | **−$9.29** | −$0.93 | **30.0%** |
+| post-23:00 | 7 | **+$113.59** | +$16.23 | 85.7% |
+| weekday baseline | 559 | −$826.98 | −$1.48 | **30.1%** |
+
+The thin-reopen window performs **exactly like the weekday baseline** — 30.0%
+against 30.1%. The wide spread buys nothing. All of the profit sits after
+23:00, where spreads are already normal.
+
+**The mechanism is visible in the hold times.** Five of the thin-window trades
+were closed within two minutes of entry at full risk:
+
+```
+id=844 EURUSD  Sun 20:35:30 -> 20:36:00   30s   -$10.00
+id=845 AUDUSD  Sun 20:35:45 -> 20:35:44   ~0s   -$10.00
+id=846 GBPUSD  Sun 21:05:37 -> 21:05:42    5s   -$10.00
+id=727 GBPUSD  Sun 20:45:42 -> 20:47:29  107s   -$ 9.95
+id=728 AUDUSD  Sun 21:15:55 -> 21:15:54   ~0s   -$10.00
+```
+
+A 10–17 pip spread against a candle-range stop breaches the stop **on the
+spread alone**, before any price movement. These are not losing trades; they
+are trades that were never viable.
+
+> **CAVEAT, and it constrains what may be claimed.** n=7 and n=10 are small.
+> The post-23:00 85.7% WR is **NOT an edge estimate** and nothing should be
+> built on it. The only defensible claim here is the narrow one: **the thin
+> window costs nothing measurable**, so refusing it forfeits nothing.
+
+**Fixed 2026-08-17.** `market_hours.py` (leaf, zero imports) holds both
+predicates; `_is_blocked` is a thin call to `is_entry_allowed`. `MARKET_CLOSE`
+is left in place, marked dead, as the evidence.
+
+---
+
+## 24. id=941 — a closed trade with no recorded outcome
+*(added 2026-08-17 — recorded, NOT fixed)*
+
+`trades` id **941**: USDCAD, opened Sun 2026-08-09 21:52:16, `status='CLOSED'`
+at 21:53:28 — **72 seconds later** — with **`pnl` NULL and `close_price`
+NULL**.
+
+**It is unique.** Of **915** CLOSED trades, it is the **only** one with a NULL
+`pnl`. (The other three NULLs in the table are `status='OPEN'`, which is
+correct.) So this is not a systemic gap in the close path; it is one row that
+lost its outcome.
+
+**Context, not yet explanation:** it sits inside the thin Sunday reopen window
+of finding 23, alongside the five trades that were stopped out within two
+minutes at full risk. It is plausibly the same event — an instant
+spread-triggered stop — that additionally failed to record a fill price. The
+deferred P&L checker gives up after 24 hours, so nothing will retry it now.
+
+**Why it is recorded rather than patched:** a closed trade with no recorded
+outcome is a **hole in the ledger**, and the ledger is the only evidence base
+for every promotion decision. Inventing a plausible P&L for it would be the
+`resolved_at` mistake in a worse place. It should be understood, then either
+recovered from IG transaction history (`scripts/reaudit_close_prices.py` is the
+existing tool) or explicitly marked unrecoverable — not silently filled.
+
+Note for whoever picks this up: two other rows have a `close_time` **one second
+EARLIER** than their `timestamp` (id 728: 21:15:55 → 21:15:54; id 845:
+20:35:45 → 20:35:44). Negative holding periods. Both are thin-reopen trades
+too. Same neighbourhood, possibly the same clock/ordering defect.
+
+---
+
 ## Standing rule — when to bump a model stamp
 
 Three stamps now exist: **`engine_version`** (backtest trade model),

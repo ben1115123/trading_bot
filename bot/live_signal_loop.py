@@ -19,6 +19,7 @@ from bot.notifier import send_telegram
 from bot.candle_stream import get_candles as get_stream_candles, get_spread as get_stream_spread
 from backend.backtesting.regime import classify_regimes
 from symbols import SYMBOLS
+from market_hours import is_entry_allowed, is_market_open, SESSION_REOPEN_HOUR
 
 CANDLE_SOURCE = os.getenv("CANDLE_SOURCE", "yfinance").lower()  # 'yfinance' (default,
                                                                  # unchanged) | 'ig_stream'
@@ -29,6 +30,12 @@ _PIP_SIZE = {
     "US500": 1.0, "US100": 1.0, "DAX": 1.0,
 }
 
+# DEAD as of 2026-08-17 — kept only as the evidence for finding 23, delete
+# once that finding is closed. `_is_blocked` used to open with
+# `MARKET_CLOSE.get(symbol)` and return False when the key was absent; because
+# no FX symbol appears here, the weekend rules below that line were
+# unreachable for FX and the block never fired for it. Session logic now lives
+# in market_hours.py, derived from measurement rather than from this table.
 MARKET_CLOSE = {
     "US500": {"hour": 20, "minute": 45},
     "US100": {"hour": 20, "minute": 45},
@@ -124,28 +131,34 @@ def _is_due(symbol: str, timeframe: str, strategy_name: str = "") -> bool:
 
 
 def _is_blocked(symbol: str) -> bool:
-    close = MARKET_CLOSE.get(symbol)
-    if close is None:
-        return False
+    """True when no new position may be opened in `symbol` right now.
+
+    Thin wrapper over market_hours.is_entry_allowed — ONE definition, shared
+    with whatever else needs to reason about sessions.
+
+    FIXED 2026-08-17 (findings doc finding 23): this function opened with
+    `close = MARKET_CLOSE.get(symbol); if close is None: return False`, and
+    MARKET_CLOSE holds only US500/US100/DAX/BTC. Every FX symbol took that
+    early return, so the Saturday, Sunday and Friday branches below it were
+    UNREACHABLE FOR FX — the block had never once fired for EURUSD, GBPUSD,
+    AUDUSD or USDCAD. 21 weekend trades were placed as a result, at exactly
+    the timestamps where the measured spread is 10-17 pips.
+
+    Fourth instance of `.get(key, default)` returning a plausible value for an
+    absent key, and the first on the live trading path.
+    """
+    return not is_entry_allowed(symbol, datetime.now(timezone.utc))
+
+
+def _block_reason(symbol: str) -> str:
+    """Why `symbol` is blocked right now, for the signal_log error column."""
     now = datetime.now(timezone.utc)
-    weekday = now.weekday()
-
-    # Saturday — always blocked
-    if weekday == 5:
-        return True
-
-    # Sunday — blocked until 23:00 UTC (IG reopens)
-    if weekday == 6:
-        return now.hour < 23
-
-    now_mins = now.hour * 60 + now.minute
-
-    # Friday — block from 20:45 UTC
-    if weekday == 4:
-        return now_mins >= (20 * 60 + 45)
-
-    # Mon-Thu — 24h trading, no block
-    return False
+    if not is_market_open(symbol, now):
+        wd = now.weekday()
+        if wd == 5 or (wd == 6 and now.hour < SESSION_REOPEN_HOUR):
+            return "market closed — weekend"
+        return "market closed — Friday session end"
+    return "entry window closed — thin reopen / pre-weekend policy"
 
 
 def _should_weekend_close() -> bool:
@@ -340,16 +353,38 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
         "error":         None,
         # Capture-only spread sample, taken on EVERY check rather than only on
         # trades. Live trades run ~1 per symbol per day, so a trade-only sample
-        # needs ~100 days to characterise a symbol; checks give ~96-480/day and
-        # a usable distribution in 1-2 days. None when the stream has nothing
-        # fresh (off-session, pre-warm-up, yfinance mode).
+        # needs ~100 days to characterise a symbol.
+        #
+        # MEASURED RATE, correcting an earlier estimate here: raw check rows
+        # are 69-345/symbol/day, but several strategies on the same
+        # (symbol, timeframe) log the SAME instant — EURUSD writes 5 rows per
+        # check. Deduped to one observation per (symbol, minute) the real rate
+        # is 86-114/day, capped by the 15MIN check cadence, not by capture.
+        # Capture itself is ~100% while markets are open. That puts a pooled
+        # per-symbol distribution about a week out and a session-stratified one
+        # 2-3.5 weeks out, not the 1-2 days originally claimed here.
+        #
+        # None when the stream has nothing fresh (off-session, pre-warm-up,
+        # yfinance mode).
         "spread":        get_stream_spread(symbol),
     }
 
+    # NOTE, load-bearing: the spread sample above is taken BEFORE the block
+    # check, and the blocked branch still calls log_signal_check. That is what
+    # keeps sampling alive through windows we refuse to trade — including the
+    # thin Sunday reopen, which finding 23 shows is the most expensive window
+    # we have and therefore the one we least want to go blind on. Do NOT
+    # "optimise" the blocked path by returning before logging.
+
     if _is_blocked(symbol):
-        print(f"[signal_loop] [{symbol}] blocked — near market close")
+        # "near market close" was the only reason string, and it was wrong for
+        # most of the 8,207 weekend rows carrying it — a Saturday block is not
+        # "near close". Name the actual reason so the log distinguishes a
+        # weekend from a Friday session end from the reopen policy.
+        _reason = _block_reason(symbol)
+        print(f"[signal_loop] [{symbol}] blocked — {_reason}")
         log_data["signal"] = "BLOCKED"
-        log_data["error"]  = "near market close"
+        log_data["error"]  = _reason
         log_signal_check(log_data)
         return
 
