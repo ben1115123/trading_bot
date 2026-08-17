@@ -1091,6 +1091,52 @@ converts a missing key into wrong numbers that look right. Applied at
 paper-v1 to `VALUE_PER_POINT`; `MIN_SL_DIST` and the remaining tables should
 follow when they are next touched.
 
+### Addendum (2026-08-17) — the `.get(key, default)` variant, and 4 latent instances
+
+Finding 22 turned up a **second form** of the same defect, and it is the more
+deceptive one. The standing rule above targets `.get(symbol, default)` on
+instrument tables, where the key is genuinely absent. This variant is:
+
+> **`.get(key, default)` against a row from `SELECT *`, where the key is ALWAYS
+> present and holds `None`.** The default is dead code. It has never fired and
+> never will.
+
+`trade.get("timeframe", "HOUR")` read as a safe fallback for nine weeks. It was
+not a fallback at all — `get_pending_paper_trades()` does `SELECT *`, so
+`timeframe` is always a key, and a NULL column hands back `None`. The resolver
+then called `None.upper()` and raised, every cycle, for 40+ days.
+
+**Audited across the codebase. Four more instances, all reading
+`active_strategy` rows via `SELECT *`:**
+
+| site | key | dead default |
+|---|---|---|
+| `bot/candle_stream.py:327` | `timeframe` | `"HOUR"` |
+| `bot/candle_stream.py:328` | `strategy_name` | `""` |
+| `bot/live_signal_loop.py:329` | `timeframe` | `"HOUR"` |
+| `bot/live_signal_loop.py:1008-1010` | `timeframe` / `strategy_name` / `strategy_type` | `"HOUR"` / `""` / `"swing"` |
+
+**Not firing today** — those three columns hold zero NULLs in
+`active_strategy` on the VPS. **Recorded, deliberately not fixed**: they sit on
+the live candle-subscription and signal-check paths, and this commit's job was
+the resolver. Fold into the next `candle_stream` touch.
+
+**Their failure mode is worse than the resolver's, and that is the point.** The
+resolver *crashed* — loud, repeated, and ultimately findable. These four would
+not crash. `None` flows into the downstream membership tests
+(`strategy_name not in STRATEGIES`, `timeframe not in _LS_SCALE_FOR_TIMEFRAME`)
+and the pair is **silently skipped**: no exception, no log line, just a
+`(symbol, timeframe)` that quietly stops being subscribed. That is precisely
+the USDCAD shape from Bug 2 — a candle buffer that was never created, reported
+only as "buffer not warm yet" for seven days.
+
+So the general rule needs its second half stated:
+
+> **A default is only a safety net when the key can actually be missing.**
+> Against a `SELECT *` row, prefer `row["key"]` and handle NULL explicitly.
+> `.get(key, default)` there does not defend anything — it disguises a NULL as
+> a deliberate value.
+
 ### XAUUSD will now raise, and that is correct
 `XAUUSD` appears in `execute_trade`'s floor table and in
 `instrument_limits.MIN_SL_DIST`, but **not** in `VALUE_PER_POINT` — no epic is
