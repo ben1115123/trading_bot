@@ -163,12 +163,25 @@ mildly positive, not catastrophic. It still fails promotion criteria on PF
 and expectancy; the point is that the headline number was one bad row
 misrepresenting 31 clean ones.
 
+> **⛔ ROOT CAUSE SUPERSEDED — see finding 25 (2026-08-18).** Point 1 below
+> is true as literally written but is **not the cause**, and the fix it
+> implies is actively wrong. The candle buffer that feeds the paper write
+> sites is already decimal (`_mid_ohlc` and `_rest_fetch` both guard and
+> convert, since `839aeee`, twelve days before id=824), so adding
+> `to_decimal` at the write sites would DOUBLE-CONVERT. The real mechanism
+> is a single Lightstreamer tick delivered in points scale while `ig_scale`
+> held a correct decimal classification, making `to_decimal` a no-op —
+> recovered from `candle_source_compare` at `2026-07-21T19:20:32`,
+> `delta_pips = -114,008,596`. Read finding 25 before acting on this
+> section.
+
 **Two structural problems this exposes:**
 
 1. The paper-trade path has **no `ig_scale` conversion**. CLAUDE.md lists
    the boundary conversion sites as `execute_trade.py`,
    `positions_poller.py`, `candle_stream.py`, `sync_ig_trades.py`. The paper
-   logging path is not among them.
+   logging path is not among them. *(True, but harmless and not the cause —
+   see the note above.)*
 2. **The clamp masks implausible `sl_distance` instead of rejecting it.**
    See the correction and the full clamp survey immediately below.
 
@@ -1639,6 +1652,153 @@ Note for whoever picks this up: two other rows have a `close_time` **one second
 EARLIER** than their `timestamp` (id 728: 21:15:55 → 21:15:54; id 845:
 20:35:45 → 20:35:44). Negative holding periods. Both are thin-reopen trades
 too. Same neighbourhood, possibly the same clock/ordering defect.
+
+---
+
+## 25. id=824 EXPLAINED — a single anomalous tick, and the guard that cannot catch it
+*(added 2026-08-18 — supersedes finding 3's root-cause account and closes the
+ig_scale-at-write-sites item)*
+
+### The scoped item was built on a premise that does not hold
+
+An item was carried for several sessions to "add `ig_scale` conversion at the
+four paper write sites". **It should not be built, and the reasoning behind it
+was wrong on three counts.**
+
+1. **The guards already exist, at every path that fills a candle buffer.** All
+   landed in `839aeee` (2026-07-09):
+
+   | path | guard | conversion |
+   |---|---|---|
+   | `_mid_ohlc` (live ticks) | `is_resolved` :400 | `to_decimal` :408-409 |
+   | `_rest_fetch` (REST warm-up) | `is_resolved` :219 | `to_decimal` :236-239 |
+   | `_yfinance_fallback` | n/a | n/a — yfinance is natively decimal |
+   | loop's stale-fallback `_fetch_yfinance_candles` | n/a | n/a — natively decimal |
+
+   The four write sites read `candle["close"]/["high"]/["low"]` out of that
+   buffer, which is already decimal. **Adding `to_decimal` there would
+   DOUBLE-CONVERT** — dividing an already-decimal EURUSD price by 10,000 a
+   second time. The proposed fix was worse than the defect.
+
+2. **The dates rule the story out.** id=824 is `2026-07-21`, **twelve days
+   after** those guards shipped, with EURUSD inside `CHECKED_SYMBOLS`.
+   Finding 3's account — "the paper-trade path has no `ig_scale` conversion" —
+   is true as literally stated but is **not the cause**, because the prices it
+   receives were already converted upstream.
+
+3. **The risk-source half was also a non-issue.** The resolver already calls
+   `get_risk_per_trade(symbol, is_paper=True)`, and that function returns
+   `RISK_PER_TRADE` **before** consulting `RISK_PER_TRADE_OVERRIDE` — paper
+   risk deliberately ignores per-symbol overrides, which CLAUDE.md documents
+   as intended. Not a missing call.
+
+### What actually happened — recovered from `candle_source_compare`
+
+The comparison logger stores every cycle's stream close against the yfinance
+reference. It recorded the event directly:
+
+```
+2026-07-21T19:05:32  yf=1.1406410932540894  stream=1.14032   delta_pips=3.21
+2026-07-21T19:20:32  yf=1.140380859375      stream=11402.0   delta_pips=-114008596.19   <-- HERE
+2026-07-21T19:35:31  yf=1.1406410932540894  stream=1.14026   delta_pips=3.81
+```
+
+**One cycle. One tick. Points-scale, unconverted, straight into the buffer.**
+
+The full sequence:
+
+1. `ig_scale` had EURUSD classified as **`divisor = 1.0`** — and that
+   classification was **correct**. Verified live 2026-08-18: REST
+   `snapshot.bid` for `CS.D.EURUSD.MINI.IP` is **1.1578**, decimal, and
+   `_classify` returns 1.0 for it.
+2. At 19:20:32 the Lightstreamer stream delivered a tick valued **11402.0** —
+   points scale, disagreeing with the REST snapshot that classification was
+   based on.
+3. `to_decimal` with `divisor = 1.0` is a **no-op**. The value entered the
+   `(EURUSD, 15MIN)` buffer unchanged.
+4. The comparison logger noticed — `delta_pips = -114,008,596` — **and nothing
+   alerted on it.** It was written to a table and never read.
+5. The signal loop reads `candles[-2]`, not `candles[-1]`. So the poisoned
+   19:15 candle was *not* acted on in the cycle that ingested it. **Fifteen
+   minutes later it aged into the `candles[-2]` slot**, `bb_squeeze` signalled
+   on it, and `entry=11403.2 / sl=11400.7 / tp=11408.2` was written as id=824.
+
+That last step is why the row looks isolated and inexplicable: the corrupted
+candle and the corrupted row are **one cycle apart**, and at 19:35 the
+*latest* candle was healthy decimal again. Anyone checking the buffer at the
+moment of the write would have found nothing wrong.
+
+### Why `is_resolved` / `to_decimal` structurally cannot catch this
+
+**Classification succeeded and was right.** There was no ambiguity, no
+`PriceScaleAmbiguous`, no unresolved symbol, no alert — the guard did exactly
+what it was designed to do. The design assumes **one scale per (account,
+epic)**, sampled once from the REST snapshot and applied to every
+Lightstreamer tick. It has no answer for the two endpoints disagreeing for a
+single tick.
+
+> **The gap, stated generally: `ig_scale` validates the SCALE, never the
+> VALUE.** `_EXPECTED_DECIMAL_RANGE` already encodes what a plausible decimal
+> price is for every checked symbol — it is consulted at classification time
+> and never again. A post-conversion band check in `_mid_ohlc` would have
+> dropped this tick on arrival for the cost of one comparison.
+
+### Breadth — measured, not assumed
+
+- **1 anomaly in 19,852 `candle_source_compare` rows**, spanning
+  2026-07-08 → 2026-08-18. That single row is the one above.
+- **1 out-of-band price in 1,623 `paper_trades` rows** (id=824).
+- **0 out-of-band prices in 918 `trades` rows** — no live order was ever
+  placed on a points-scale price. The `candles[-2]` delay is a plausible part
+  of why: a one-cycle poisoning has to survive 15 minutes and then produce a
+  signal.
+
+So this is genuinely rare, was never a live-money event, and does not justify
+a broad refactor. It justifies **one cheap band check**.
+
+### ⚠️ Collateral finding — the EURUSD points-scale quirk is NOT currently in effect
+
+CLAUDE.md's Price scale quirk section states that `CS.D.EURUSD.MINI.IP`
+quotes in native points scale (`bid=11423.3`) on DEMO account Z67Y2C.
+**Measured 2026-08-18, that is no longer true:**
+
+| symbol | REST `snapshot.bid` | classified divisor | live stream buffer |
+|---|---|---|---|
+| EURUSD | 1.1578 | **1.0** | 1.15817 |
+| GBPUSD | 1.35445 | 1.0 | 1.354845 |
+| AUDUSD | 0.7106 | 1.0 | — |
+| USDCAD | 1.38712 | 1.0 | — |
+| US500 | 7740.36 | 1.0 | 7746.9 |
+
+**Every symbol classifies to `divisor = 1.0`, so the entire `ig_scale`
+conversion layer is currently a no-op.** It is doing nothing except the
+classification check — which is precisely why the one anomalous tick passed
+through untouched.
+
+Two consequences worth holding:
+
+- The quirk was real when documented (every pre-2026-07-08 EURUSD trade is
+  decimal, every post-switch one was points), so **the scale changed under us
+  at least twice**. `init_price_scales(force=True)` on session recreate exists
+  for exactly this and should stay.
+- **Do not delete `ig_scale` as dead weight** because it currently converts
+  nothing. Its value is the classification and the raise-on-ambiguity, and the
+  account has already demonstrated it can flip.
+
+### Recommended fix — NOT built here
+
+A post-conversion band check in `_mid_ohlc` (and `_rest_fetch`), reusing
+`_EXPECTED_DECIMAL_RANGE`: if the converted close falls outside the symbol's
+plausible decimal band, **drop the tick and alert** rather than buffer it.
+Cheap, uses a table that already exists, and would have caught this on arrival
+instead of 15 minutes later in a paper row.
+
+It is a **live-path change** — `_mid_ohlc` feeds live entry prices and the
+SL/TP actually sent to IG — so it needs its own commit, its own permission and
+its own verification. Recorded here, deliberately not bundled.
+
+Related and still open: `is_resolved` returns `True` for any symbol outside
+`CHECKED_SYMBOLS` (finding 20's fail-open shape on the conversion path).
 
 ---
 
