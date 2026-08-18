@@ -1802,6 +1802,155 @@ Related and still open: `is_resolved` returns `True` for any symbol outside
 
 ---
 
+## 26. The `ig_scale` conversion layer is currently a NO-OP — and the docs say otherwise
+*(added 2026-08-18 — outranks finding 25, which is one symptom of it)*
+
+**Measured live on DEMO account Z67Y2C, 2026-08-18:**
+
+| symbol | REST `snapshot.bid` | classified divisor | live stream buffer |
+|---|---|---|---|
+| EURUSD | 1.1578 | **1.0** | 1.15817 |
+| GBPUSD | 1.35445 | **1.0** | 1.354845 |
+| AUDUSD | 0.7106 | **1.0** | — |
+| USDCAD | 1.38712 | **1.0** | — |
+| US500 | 7740.36 | **1.0** | 7746.9 |
+
+**Every checked symbol classifies to `divisor = 1.0`. `to_decimal` and
+`to_native` currently divide and multiply by one.** The entire conversion
+layer is arithmetically inert.
+
+### The documented quirk is not in effect
+
+CLAUDE.md's *Price scale quirk* section asserts, in the present tense, that
+`CS.D.EURUSD.MINI.IP` quotes in native points scale (`bid=11423.3`) on this
+account. **It does not, and has not for some time.** The claim was true when
+written — the 2026-07-08 rejections and the id=824 tick both prove points-scale
+data was real — but it describes a past state.
+
+**The scale has therefore flipped at least twice:**
+
+1. decimal on LIVE (TW75S) — every pre-2026-07-08 EURUSD trade has a decimal
+   `entry_price`
+2. points on DEMO (Z67Y2C) after the 2026-07-08 switch — the quirk as
+   documented
+3. **decimal on DEMO now** — measured above
+
+Nobody changed accounts between 2 and 3. **The broker changed the
+representation underneath a running system**, and nothing noticed, because
+`init_price_scales` re-derives on session recreate and silently produced a
+different answer.
+
+### What `ig_scale` is actually for — and why it must not be deleted
+
+It is tempting to read "every divisor is 1.0" as "this module does nothing,
+delete it." **That is exactly wrong.** Its value was never the arithmetic:
+
+- **The classification** is what notices a flip. It is the only thing in the
+  system that ever compares a price against what that price *ought to* look
+  like.
+- **The raise-on-ambiguity** (`PriceScaleAmbiguous` → Telegram ERROR → symbol
+  blocked) is the safety property. A reading that fits neither band stops
+  trading rather than guessing.
+- **`init_price_scales(force=True)` on session recreate is load-bearing**, and
+  transition 2→3 is the proof: a cached divisor from before a flip would be
+  silently wrong afterwards, and `force=True` is the only thing that
+  re-derives it.
+
+The module is a **detector wearing a converter's clothes**. Judge it on
+whether it would catch the next flip, not on whether it currently multiplies
+by anything.
+
+### Consequence for finding 25
+
+The single anomalous tick passed through untouched *because* `divisor = 1.0`
+made `to_decimal` a no-op. Had the account still been in points-scale mode,
+the same anomalous tick would have been divided by 10,000 and buffered as
+`1.1402` — plausible, in-band, and **completely undetectable**. The no-op
+state is what left the bad value visibly wrong.
+
+That is worth sitting with: **the current configuration is the one in which
+this class of fault is most visible.** A band check (finding 25's recommended
+fix) is what makes detection independent of which mode the account happens to
+be in.
+
+---
+
+## 27. Write-only sinks — the detector that fired and went unheard
+*(added 2026-08-18 — audit, nothing fixed)*
+
+Finding 25's anomaly was **caught perfectly, in real time, by an existing
+control**:
+
+```
+2026-07-21T19:20:32  EURUSD 15MIN  yf=1.140380859375  stream=11402.0
+                     delta_pips = -114,008,596.19
+```
+
+`candle_source_compare` recorded it the moment it happened, with a magnitude
+no human could misread. It then sat in the table for **28 days** while the
+corrupted row it produced was investigated twice and written up with the wrong
+root cause.
+
+**This is the unverified-controls class (finding 9) inverted.** Finding 9 is
+about a control that never fired and whose silence was mistaken for success.
+This is a control that **fired correctly and had no listener**. Both fail the
+same way — nobody learns anything — but this one is worse value for money,
+because the detection work was already done and paid for.
+
+> **A detector with no consumer is not a control. It is a log.**
+
+### Audit — every table, writers vs readers
+
+| table | writers | readers | rows (VPS) | verdict |
+|---|---|---|---|---|
+| `candle_source_compare` | 1 | **0** | **19,859** | **write-only** |
+| `correlation_events` | 1 | 1 *(dead)* | **3,732** | **write-only in practice** |
+| `walkforward_runs` | 1 | 0 | 0 | write-only; also empty on VPS (finding 11) |
+| `webhook_outcome_log` | 1 | 1 | 179 | read by dashboard page 10 |
+| `backtest_trades` | 1 | 1 | 2,608,572 | read by dashboard page 04 |
+| `positions` | 1 | 2 | 3 | fine |
+| `signal_log`, `paper_trades`, `trades`, `active_strategy`, `heartbeat`, `webhook_log`, `backtest_results`, `active_strategy_history` | — | ≥2 | — | fine |
+
+**Two genuine write-only sinks, and the second is worse than the first.**
+
+**`correlation_events` — 3,732 rows, and `get_correlation_events()` is defined
+but has ZERO callers.** CLAUDE.md is explicit that this table exists to
+"measure frequency before deciding whether to build blocking logic (Tier 4
+prerequisite)". The measurement ran for 27 days (2026-07-22 → 2026-08-18) and
+produced **3,341 SELL clusters against 391 BUY** — a nearly 9:1 skew that is
+exactly the sort of thing the decision was waiting on. **The decision has
+never been made, because nobody read the data it was waiting for.**
+
+A partial mitigation exists: the correlation check also sends a Telegram INFO
+alert, so the events were not literally invisible. But a per-event alert is
+not an aggregate, and 3,732 alerts over 27 days is closer to noise than to a
+finding.
+
+### Log files — better, but check the direction
+
+| file | writer | reader |
+|---|---|---|
+| `logs/watchdog_alerts.jsonl` | `scripts/watchdog.py` | ✅ `scripts/daily_summary.py` |
+| `logs/ledger_reaudit_*.jsonl` | `scripts/reaudit_close_prices.py` | none — acceptable, it is an audit artifact for humans |
+
+`watchdog_alerts.jsonl` is the pattern to copy: written by one process,
+**consumed by a scheduled summary that a human actually receives**.
+
+### The general rule
+
+> **Every detector needs a named consumer at the time it is built** — a
+> dashboard panel, a summary line, or an alert threshold. "We will query it
+> when we need it" is how 19,859 rows and 3,732 rows both became invisible.
+> If no consumer can be named, the honest options are to not build it, or to
+> write down explicitly that it is a passive archive nobody watches.
+
+**Nothing fixed here.** The obvious candidates — an anomaly threshold on
+`candle_source_compare`, and an aggregate of `correlation_events` on a
+dashboard page — are both small, but they are decisions about what to watch,
+not mechanical fixes.
+
+---
+
 ## Standing rule — when to bump a model stamp
 
 Three stamps now exist: **`engine_version`** (backtest trade model),

@@ -325,14 +325,35 @@ of IG_DEMO_API_KEY — silently would have failed or hit the wrong
 environment. Both now use the DEMO-specific vars.
 
 ### Price scale quirk — ig_scale.py (fixed 2026-07-09)
-CS.D.EURUSD.MINI.IP quotes in native **points scale** (e.g. bid=11423.3)
+
+> **⚠️ NOT CURRENTLY IN EFFECT — measured 2026-08-18 (findings doc finding 26).**
+> Every checked symbol now classifies to **`divisor = 1.0`** on this account
+> (EURUSD REST `snapshot.bid` = 1.1578, stream buffer = 1.15817), so
+> `to_decimal`/`to_native` currently divide and multiply by one and the
+> conversion layer is arithmetically inert. The scale has flipped **at least
+> twice** — decimal on LIVE, points on DEMO after 2026-07-08, decimal on DEMO
+> now — and the last flip happened with **no account change**: the broker
+> changed representation under a running system.
+>
+> **Do NOT delete `ig_scale` as dead weight.** Its value is the
+> classification and the raise-on-ambiguity, never the arithmetic — it is the
+> only thing that compares a price against what that price ought to look like.
+> `init_price_scales(force=True)` on session recreate is load-bearing for
+> exactly this reason. The description below is the state as of 2026-07-08 and
+> is retained as history.
+
+CS.D.EURUSD.MINI.IP quoted in native **points scale** (e.g. bid=11423.3)
 on the DEMO account (Z67Y2C), not decimal FX price (1.14233) like every
 other FX epic and like this same epic on the LIVE account (TW75S).
 Discovered via 3x ATTACHED_ORDER_LEVEL_ERROR rejections on EURUSD SELL
 (2026-07-08): entry_price came back native-scale from IG while SL/TP
 (webhook, always decimal) went out unconverted — stop_level ended up
 ~10000x off market. Same mismatch silently corrupted candle_stream.py's
-yfinance-vs-stream comparison logging (~1e8 "pip" deltas).
+yfinance-vs-stream comparison logging (~1e8 "pip" deltas) — and that
+comparison table later caught a recurrence in real time
+(`2026-07-21T19:20:32`, `delta_pips = -114,008,596`) that **nobody read for
+28 days**, because `candle_source_compare` has no consumer. See findings doc
+findings 25 and 27.
 
 `ig_scale.py` is the fix: classifies each symbol's native scale
 **empirically** — compares the live bid against a known decimal-price
