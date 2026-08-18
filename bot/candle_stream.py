@@ -94,6 +94,59 @@ def _should_alert_fallback(condition: str) -> bool:
         print(f"[candle_stream] fallback state write failed: {e}")
     return True
 
+
+def _band_reject(symbol: str, source: str, values: dict) -> bool:
+    """True when any converted OHLC value is outside the symbol's plausible
+    decimal band — meaning the tick/bar must be DROPPED, not buffered.
+
+    DROP, NEVER RAISE. This runs inside the Lightstreamer callback thread; an
+    exception escaping here risks the subscription itself, and one bad tick
+    must never cost the whole stream. Dropping is also non-destructive by
+    construction: the 15MIN aggregator refuses to emit a bucket built from
+    fewer than 3 bars (see _feed_15min_aggregator / _reset_partial_15min), so
+    a dropped 5MIN bar produces a GAP rather than a short candle, and gaps are
+    already handled by the signal loop's staleness guard.
+
+    Unbanded symbols (in_expected_band -> None) are NOT rejected — they are
+    unchecked, and that is reported once rather than silently passed. Today
+    EPIC_MAP and CHECKED_SYMBOLS are identical sets so this cannot trigger,
+    but that identity is exactly what broke when USDCAD was added to one
+    symbol list and not the other and its buffer was never created for 7 days
+    (Bug 2). This stays correct if they diverge again.
+    """
+    bad = {}
+    for field, value in values.items():
+        verdict = ig_scale.in_expected_band(symbol, value)
+        if verdict is False:
+            bad[field] = value
+        elif verdict is None:
+            # Unchecked, not unsafe. Say so; do not drop.
+            if _should_alert_fallback(f"band_unchecked:{symbol}"):
+                print(f"[candle_stream] {symbol} has no expected-decimal band — "
+                      f"value sanity UNCHECKED (add it to "
+                      f"ig_scale._EXPECTED_DECIMAL_RANGE)")
+            return False
+    if not bad:
+        return False
+
+    band = ig_scale.expected_band(symbol)
+    detail = ", ".join(f"{k}={v}" for k, v in sorted(bad.items()))
+    # Unconditional — the console log is the full-resolution record, and the
+    # whole reason this check exists is that the previous occurrence WAS
+    # recorded (candle_source_compare, delta_pips=-114,008,596) and nothing
+    # read it for 28 days (finding 27). Only the Telegram send is rate limited.
+    print(f"[candle_stream] BAND REJECT {symbol} ({source}) — {detail} "
+          f"outside plausible decimal band {band}; dropping this bar")
+    if _should_alert_fallback(f"band_reject:{symbol}"):
+        send_telegram(
+            f"PRICE BAND REJECT {symbol} ({source}) — {detail} outside {band}. "
+            f"Bar dropped, not buffered. Scale anomaly — check ig_scale "
+            f"classification and IG feed.",
+            level="WARN",
+        )
+    return True
+
+
 CHART_FIELDS = [
     "UTM",
     "BID_OPEN", "BID_HIGH", "BID_LOW", "BID_CLOSE",
@@ -231,13 +284,19 @@ def _rest_fetch(ig_service: IGService, symbol: str, timeframe: str, count: int) 
             continue
         if any(v != v for v in [o, h, l, c]):  # NaN check
             continue
-        candles.append({
-            "time": _normalize_rest_time(row["snapshotTime"]),
+        bar = {
             "open": ig_scale.to_decimal(symbol, float(o)),
             "high": ig_scale.to_decimal(symbol, float(h)),
             "low": ig_scale.to_decimal(symbol, float(l)),
             "close": ig_scale.to_decimal(symbol, float(c)),
-        })
+        }
+        # Same value check as the live path. A REST warm-up bar is the other
+        # way a mis-scaled price can enter the buffer, and warm-up bars are
+        # worse: they land 200 at a time and seed every indicator.
+        if _band_reject(symbol, "REST warm-up", bar):
+            continue
+        bar["time"] = _normalize_rest_time(row["snapshotTime"])
+        candles.append(bar)
     return candles
 
 
@@ -404,10 +463,16 @@ def _mid_ohlc(symbol: str, values: dict) -> tuple | None:
         h = (float(values["BID_HIGH"]) + float(values["OFR_HIGH"])) / 2
         l = (float(values["BID_LOW"]) + float(values["OFR_LOW"])) / 2
         c = (float(values["BID_CLOSE"]) + float(values["OFR_CLOSE"])) / 2
-        return (
+        converted = (
             ig_scale.to_decimal(symbol, o), ig_scale.to_decimal(symbol, h),
             ig_scale.to_decimal(symbol, l), ig_scale.to_decimal(symbol, c),
         )
+        # Value check, distinct from the scale check above. A correctly
+        # classified scale does not guarantee a sane value — see
+        # ig_scale.in_expected_band for the 2026-07-21 tick this exists for.
+        if _band_reject(symbol, "stream tick", dict(zip(("open", "high", "low", "close"), converted))):
+            return None
+        return converted
     except (KeyError, TypeError, ValueError):
         return None
 

@@ -150,6 +150,58 @@ def get_currency_code(symbol: str) -> str:
     return code
 
 
+def in_expected_band(symbol: str, decimal_value) -> bool | None:
+    """Is `decimal_value` a plausible decimal price for `symbol`?
+
+    Returns True (plausible), False (implausible), or **None (unchecked —
+    this symbol has no band)**. None is returned explicitly rather than
+    defaulting to True so a caller must decide what an unbanded symbol means;
+    a bare `if not in_expected_band(...)` would treat unchecked as a
+    violation, and `if in_expected_band(...) is False` is the correct test.
+
+    WHY THIS EXISTS — the scale check and the value check are different
+    questions, and only the first was ever asked. `is_resolved` /
+    `to_decimal` validate that a SCALE was successfully classified for the
+    symbol. Nothing validated the resulting VALUE. On 2026-07-21 a single
+    Lightstreamer tick arrived in points scale (11402.0) while classification
+    correctly held divisor=1.0 for a decimal account, so `to_decimal` was a
+    no-op and the raw points value was buffered. Fifteen minutes later it aged
+    into the `candles[-2]` slot and produced `paper_trades` id=824 at
+    -$2,500 (findings doc findings 3 and 25).
+
+    The band table it reads was already here — `_EXPECTED_DECIMAL_RANGE` was
+    consulted once at classification time and never again.
+
+    CRITICALLY, this must not be thought of as belt-and-braces on the
+    conversion (finding 26): every symbol on this account currently
+    classifies to divisor=1.0, so conversion is arithmetically inert, and the
+    bad tick was VISIBLE only for that reason. Had the account still been in
+    points-scale mode, the same tick would have been divided by 10,000 and
+    buffered as 1.1402 — plausible, in-band, and completely undetectable.
+    Detection must not depend on which scale mode the account happens to be
+    in, and the account has already flipped modes twice without anyone
+    changing a setting.
+    """
+    band = _EXPECTED_DECIMAL_RANGE.get(symbol)
+    if band is None:
+        return None
+    if decimal_value is None:
+        return None
+    try:
+        value = float(decimal_value)
+    except (TypeError, ValueError):
+        return None
+    if value != value:                      # NaN
+        return False
+    lo, hi = band
+    return lo <= value <= hi
+
+
+def expected_band(symbol: str):
+    """The plausible-decimal band for `symbol`, or None if unbanded."""
+    return _EXPECTED_DECIMAL_RANGE.get(symbol)
+
+
 def to_decimal(symbol: str, native_value):
     if native_value is None:
         return None
