@@ -1551,17 +1551,40 @@ the table will read it.
 
 ## Monitoring Gaps (outstanding)
 
-- **`candle_stream` staleness is unmonitored.** `scripts/watchdog.py` alerts
-  only on `signal_loop` heartbeat staleness. The `heartbeat` table also holds
-  `name='candle_stream'`, and nothing checks it — a genuinely dead candle
-  stream **would not page anyone**. Observed 2026-08-15: `candle_stream` last
-  beat 05:04 UTC and silent thereafter, which is correct for a weekend
-  (markets closed, no Lightstreamer ticks) and therefore indistinguishable
-  from a real failure. Fix needs a market-hours-aware staleness rule, the same
-  shape the signal_loop check already uses (Sun 22:00 – Fri 21:00 UTC).
+- ~~**`candle_stream` staleness is unmonitored.**~~ **FALSE — corrected
+  2026-08-20.** `scripts/watchdog.py::main` has called
+  `check_heartbeat(..., "candle_stream", "stale_candle_stream")` since commit
+  `1abcdf5` (**2026-07-08**), and `check_heartbeat` early-returns outside
+  Sun 22:00 – Fri 21:00 UTC, so it is already the market-hours-aware rule this
+  entry asked someone to build. The 2026-08-15 weekend observation
+  (last beat 05:04 UTC, silent after) is that gate working, not a gap. This
+  bullet was wrong for six weeks — a monitoring gap recorded as outstanding
+  while the monitor existed is the mirror image of a control believed present
+  that never fired (see Unverified Controls); both come from reading the doc
+  instead of the code.
 - **`/app/logs/daily_run.log` no longer exists**, so the dashboard's
   cron-status panel (page 01) parses a missing file. Expected consequence of
   disabling `run_daily`, cosmetic, but the panel now reads permanently stale.
+- **`candle_source_compare` now HAS a reader** (2026-08-20, commit `17c45f2`)
+  — `watchdog.py::check_candle_divergence`, per-(symbol,timeframe) threshold at
+  5× a **baked** p99 measured once over all 21,051 rows, plus a worst-of-24h
+  line in `daily_summary.py` so the normal range is visible daily. Baked, not
+  rolling: a rolling baseline widens around the anomaly it exists to catch.
+  Verified by marker test, not by silence — synthetic row id 21120
+  (`delta_pips=99999.99`) injected 2026-08-20 02:16 UTC, alert fired and sent,
+  row deleted, state cleared on the next run. `logs/watchdog_alerts.jsonl`
+  carries both the alert and an appended `marker_test` annotation naming it
+  synthetic; the log stays append-only.
+  **Do not retune to silence US100** — its ~100-pip mean divergence on both
+  timeframes is off-session yfinance staleness (the condition the 2026-07-15
+  flip fixed), and a global threshold accommodating it goes blind to FX at
+  1–2 pips. `US100 HOUR` has logged nothing since 2026-08-13T00:56 UTC, when
+  its last active strategy was deactivated — the baseline is retained for if it
+  returns. `DAX`/`BTC` have never logged a row and are named in
+  `DIVERGENCE_NO_BASELINE`; anything else unbanded alerts as UNCHECKED.
+- **`correlation_events` is still write-only** — 3,824 rows, but they are
+  per-cycle re-logs of a *standing state*, not distinct events (~130 episodes).
+  Consumer proposed, not built.
 - **51 dangling Docker images on the VPS** as of 2026-08-15, accumulated
   across rebuilds. Not pruned — noted only. Precedent exists (Jun 27 prune).
   Disk fills quietly; check before the next rebuild.
