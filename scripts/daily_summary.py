@@ -11,6 +11,7 @@ dependency on the project's Python environment being set up on the host.
 """
 import json
 import sqlite3
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -115,6 +116,50 @@ def build_summary() -> str:
                 lines.append(f"  {b['name']}: {b['last_beat']}")
     else:
         lines.append("Heartbeat: no data")
+
+    # Candle-source divergence, worst per (symbol, timeframe) in the last 24h,
+    # shown against the watchdog's alert threshold.
+    #
+    # WHY IT IS HERE: the watchdog only speaks when the threshold breaks, and a
+    # threshold nobody ever sees the normal range for is a threshold nobody can
+    # tell is miscalibrated. Seeing "US100 15MIN 412 / 2183" every morning is
+    # what makes it obvious if US100 starts creeping toward its bound, or if FX
+    # -- normally 1-2 pips -- quietly moves to 20. This is the same table that
+    # went unread for 28 days with a 114,000,000-pip row in it.
+    #
+    # Baselines are IMPORTED from watchdog.py, never copied. A second hardcoded
+    # copy of a symbol table drifting out of sync with the first is exactly how
+    # USDCAD went 7 days without a candle buffer (Bug 2).
+    lines.append("Candle source divergence (24h, worst |Δpips| / alert threshold):")
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from watchdog import DIVERGENCE_P99, DIVERGENCE_MULTIPLIER
+    except Exception as e:
+        lines.append(f"  baseline unavailable ({e})")
+        DIVERGENCE_P99 = None
+
+    if DIVERGENCE_P99 is not None:
+        cur.execute("""
+            SELECT symbol, timeframe, MAX(ABS(delta_pips)) AS worst, COUNT(*) AS n
+            FROM candle_source_compare
+            WHERE checked_at >= ? AND delta_pips IS NOT NULL
+            GROUP BY symbol, timeframe
+            ORDER BY symbol, timeframe
+        """, (since,))
+        div_rows = cur.fetchall()
+        if div_rows:
+            for r in div_rows:
+                p99 = DIVERGENCE_P99.get((r["symbol"], r["timeframe"]))
+                if p99 is None:
+                    lines.append(f"  {r['symbol']} {r['timeframe']}: "
+                                 f"{r['worst']:.2f} / UNCHECKED (no baseline)")
+                else:
+                    thr = p99 * DIVERGENCE_MULTIPLIER
+                    flag = "  ⚠️" if r["worst"] > thr else ""
+                    lines.append(f"  {r['symbol']} {r['timeframe']}: "
+                                 f"{r['worst']:.2f} / {thr:.1f} (n={r['n']}){flag}")
+        else:
+            lines.append("  no comparisons logged")
 
     conn.close()
 
