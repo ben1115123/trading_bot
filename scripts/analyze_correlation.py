@@ -168,34 +168,51 @@ def main() -> int:
                 (",".join(e["symbols"]), e["direction"]) for e in demoted).most_common():
             print(f"    {k[0]} {k[1]}: {v}")
 
-    print("\n=== COST vs FIRST-SYMBOL-ONLY COUNTERFACTUAL ===")
-    print("(normalised episodes only; a trade in several episodes is counted "
-          "once in the trade-level total)")
-    ep_actual = ep_first = 0.0
-    scored = 0
-    seen, cluster_pnls = set(), []
+    print("\n=== COST vs COUNTERFACTUAL ===")
+    # DEDUPED AT TRADE LEVEL, deliberately. Summing per episode double-counts:
+    # a position open across several episodes contributes once per episode, and
+    # with 94 episodes over ~100 distinct trades the repeats dominate the
+    # totals on BOTH arms. Every figure below is over DISTINCT trade ids.
+    #
+    # Arm A is the rule as fixed: first entry only.
+    # Arm B is what a gate would actually do -- it can only block a leg that
+    # OPENS while the cluster already exists; legs already open when the
+    # cluster forms are untouched by any entry gate. Reported because A
+    # flatters the gate by crediting it with blocking trades it could not
+    # reach.
+    by_id = {}
+    first_ids, opened_during_ids = set(), set()
     for e in kept:
         if not e["trades"]:
             continue
-        scored += 1
-        ep_actual += sum(t["pnl"] for t in e["trades"])
-        ep_first += e["trades"][0]["pnl"]        # earliest entry
         for t in e["trades"]:
-            if t["id"] not in seen:
-                seen.add(t["id"])
-                cluster_pnls.append(t["pnl"])
+            by_id[t["id"]] = t
+        first_ids.add(e["trades"][0]["id"])
+        for t in e["trades"]:
+            if datetime.fromisoformat(t["timestamp"]) >= e["start"]:
+                opened_during_ids.add(t["id"])
+    # a trade that is some episode's first entry is never treated as blockable
+    opened_during_ids -= first_ids
 
+    scored = sum(1 for e in kept if e["trades"])
     print(f"normalised episodes with attached trades: {scored}/{len(kept)}")
-    if scored:
-        delta = ep_actual - ep_first
-        print(f"  all legs taken:        ${ep_actual:8.2f}")
-        print(f"  first entry only:      ${ep_first:8.2f}")
-        print(f"  cost of the extra legs ${delta:8.2f}")
-    if cluster_pnls:
-        n = len(cluster_pnls)
-        wins = sum(1 for p in cluster_pnls if p > 0)
-        print(f"  distinct cluster trades: {n}, net ${sum(cluster_pnls):.2f}, "
-              f"expectancy ${sum(cluster_pnls)/n:.2f}/trade, WR {100*wins/n:.1f}%")
+    if not by_id:
+        actual = arm_a = arm_b = 0.0
+    else:
+        actual = sum(t["pnl"] for t in by_id.values())
+        arm_a  = sum(by_id[i]["pnl"] for i in first_ids)
+        arm_b  = actual - sum(by_id[i]["pnl"] for i in opened_during_ids)
+        n = len(by_id)
+        wins = sum(1 for t in by_id.values() if t["pnl"] > 0)
+        print(f"  distinct cluster trades: {n}, net ${actual:.2f}, "
+              f"expectancy ${actual/n:.2f}/trade, WR {100*wins/n:.1f}%")
+        print(f"  ARM A  first entry only ({len(first_ids)} trades):      "
+              f"${arm_a:8.2f}   -> extra legs {'cost' if actual < arm_a else 'gained'} "
+              f"${abs(actual-arm_a):.2f}")
+        print(f"  ARM B  block legs opening mid-cluster "
+              f"({len(opened_during_ids)} blocked): ${arm_b:8.2f}   "
+              f"-> those legs {'cost' if actual < arm_b else 'gained'} "
+              f"${abs(actual-arm_b):.2f}")
 
     print("\n=== VERDICT (against the rule fixed in this file's docstring) ===")
     if len(kept) < MIN_EPISODES_TO_DECIDE:
@@ -207,14 +224,20 @@ def main() -> int:
               f"attached trades. The events and the ledger do not join; fix "
               f"that before deciding.")
         return 0
-    if ep_actual < ep_first:
-        print(f"BUILD THE GATE — taking every leg cost ${ep_first-ep_actual:.2f} "
-              f"versus first-entry-only across {scored} normalised episodes.")
+    if actual < arm_a and actual < arm_b:
+        print(f"BUILD THE GATE — taking every leg cost ${arm_a-actual:.2f} (arm A) / "
+              f"${arm_b-actual:.2f} (arm B) across {scored} normalised episodes, "
+              f"{len(by_id)} distinct trades.")
+    elif actual >= arm_a and actual >= arm_b:
+        print(f"DO NOT BUILD THE GATE — taking every leg was ${actual-arm_a:.2f} "
+              f"(arm A) / ${actual-arm_b:.2f} (arm B) BETTER than blocking, across "
+              f"{scored} normalised episodes, {len(by_id)} distinct trades. On this "
+              f"evidence the clusters are not correlated drawdown. Keep counting.")
     else:
-        print(f"DO NOT BUILD THE GATE — taking every leg was ${ep_actual-ep_first:.2f} "
-              f"BETTER than first-entry-only across {scored} normalised episodes. "
-              f"On this evidence the clusters are diversification, not "
-              f"correlated drawdown. Keep counting.")
+        print(f"SPLIT — arm A and arm B disagree (actual ${actual:.2f}, A ${arm_a:.2f}, "
+              f"B ${arm_b:.2f}). Arm B is the faithful model of an entry gate; A "
+              f"credits the gate with blocking trades it could not reach. Do not "
+              f"build on a split result.")
     return 0
 
 
