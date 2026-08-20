@@ -46,6 +46,7 @@ TWO CORRECTIONS THIS SCRIPT APPLIES TO THE RAW TABLE
    reach the decision before it reached the code.
 """
 import argparse
+import random
 import sqlite3
 import sys
 from collections import Counter, defaultdict
@@ -194,6 +195,22 @@ def main() -> int:
     # a trade that is some episode's first entry is never treated as blockable
     opened_during_ids -= first_ids
 
+    # ARM C -- the leg that CREATED the cluster. An episode begins because a
+    # third same-side leg opened, so that leg lands just BEFORE the first
+    # logged row and escapes both arms above. It is precisely what an exposure
+    # gate checked at entry would refuse, which makes it the only arm that
+    # measures the gate's real surface.
+    forming_ids = set()
+    for e in kept:
+        pre = [t for t in e["trades"]
+               if datetime.fromisoformat(t["timestamp"]) <= e["start"]]
+        if not pre:
+            continue
+        last = max(pre, key=lambda t: t["timestamp"])
+        age = (e["start"] - datetime.fromisoformat(last["timestamp"])).total_seconds()
+        if age <= EPISODE_GAP_S:
+            forming_ids.add(last["id"])
+
     scored = sum(1 for e in kept if e["trades"])
     print(f"normalised episodes with attached trades: {scored}/{len(kept)}")
     if not by_id:
@@ -213,8 +230,61 @@ def main() -> int:
               f"({len(opened_during_ids)} blocked): ${arm_b:8.2f}   "
               f"-> those legs {'cost' if actual < arm_b else 'gained'} "
               f"${abs(actual-arm_b):.2f}")
+        arm_c = actual - sum(by_id[i]["pnl"] for i in forming_ids)
+        print(f"  ARM C  block the cluster-FORMING leg "
+              f"({len(forming_ids)} blocked): ${arm_c:8.2f}   "
+              f"-> those legs {'cost' if actual < arm_c else 'gained'} "
+              f"${abs(actual-arm_c):.2f}")
+
+    # ATTRIBUTION TEST -- the step that decides this.
+    #
+    # "Blocking these legs would have saved money" is NOT evidence that
+    # clustering is the risk. If the strategy loses money generally, then
+    # blocking ANY 45 of its trades saves money, and a correlation gate is
+    # just an expensive proxy for "stop trading a losing strategy" -- it would
+    # fire on the cluster and leave the actual loss untouched.
+    #
+    # So the cluster-forming legs are compared against random same-window
+    # samples of the SAME strategy's trades. Only if they are materially worse
+    # than that baseline is the clustering itself carrying the cost.
+    print("\n=== ATTRIBUTION — are cluster legs worse than this strategy's average? ===")
+    verdict_attributable = None
+    if forming_ids:
+        lo = min(t["timestamp"] for t in by_id.values())
+        hi = max(t["timestamp"] for t in by_id.values())
+        pool = [r["pnl"] for r in conn.execute(
+            "SELECT pnl FROM trades WHERE strategy_name = ? AND pnl IS NOT NULL "
+            "AND timestamp BETWEEN ? AND ?", (episodes[0]["strategy"], lo, hi))]
+        n = len(forming_ids)
+        obs = sum(by_id[i]["pnl"] for i in forming_ids)
+        if len(pool) > n:
+            pwr = 100 * sum(1 for p in pool if p > 0) / len(pool)
+            fwr = 100 * sum(1 for i in forming_ids if by_id[i]["pnl"] > 0) / n
+            print(f"  window {lo[:10]} -> {hi[:10]}")
+            print(f"  baseline (all {episodes[0]['strategy']} trades): n={len(pool)}, "
+                  f"net ${sum(pool):.2f}, expectancy ${sum(pool)/len(pool):.2f}, "
+                  f"WR {pwr:.1f}%")
+            print(f"  cluster-forming legs:            n={n}, "
+                  f"net ${obs:.2f}, expectancy ${obs/n:.2f}, WR {fwr:.1f}%")
+            random.seed(42)
+            draws = [sum(random.sample(pool, n)) for _ in range(20000)]
+            pct = sum(1 for d in draws if d <= obs) / len(draws)
+            print(f"  bootstrap 20k draws of {n} random same-window trades:")
+            print(f"    P(random <= observed) = {pct:.3f}  "
+                  f"(median random sum ${sorted(draws)[len(draws)//2]:.2f})")
+            verdict_attributable = pct < 0.05
+            print(f"  -> clustering {'IS' if verdict_attributable else 'is NOT'} "
+                  f"distinguishable from ordinary strategy performance")
 
     print("\n=== VERDICT (against the rule fixed in this file's docstring) ===")
+    if verdict_attributable is False:
+        print(f"DO NOT BUILD THE GATE — the cluster-forming legs are not "
+              f"distinguishable from random trades of the same strategy in the "
+              f"same window. Blocking them would have 'saved' money only because "
+              f"the strategy loses money generally. A correlation gate here is a "
+              f"proxy for a strategy problem and would leave that problem in "
+              f"place. Keep counting; fix the strategy.")
+        return 0
     if len(kept) < MIN_EPISODES_TO_DECIDE:
         print(f"INSUFFICIENT DATA — {len(kept)} normalised episodes < "
               f"{MIN_EPISODES_TO_DECIDE}. Extend collection. Do not build the gate.")
