@@ -63,6 +63,7 @@ STRATEGY_BLOCKLIST = {
     ("US500", "HOUR", "silver_bullet"),
     ("US500", "HOUR", "ny_session_momentum"),
     ("US500", "HOUR", "rsi_divergence_session"),
+    ("US500", "HOUR", "supertrend_ema_filter"),   # walk-forward REJECT, median PF 0.0 (2026-07-09)
     # US500 15MIN — confirmed failures or manual deactivations
     ("US500", "15MIN", "fvg"),                    # 30.6% WR, deactivated
     ("US500", "15MIN", "smc"),                    # 24% WR, deactivated
@@ -91,6 +92,7 @@ STRATEGY_BLOCKLIST = {
     ("EURUSD", "HOUR", "fvg"),
     ("EURUSD", "HOUR", "smc"),
     ("EURUSD", "HOUR", "silver_bullet"),
+    ("EURUSD", "HOUR", "supertrend_ema_filter"),  # walk-forward REJECT, median PF 0.0 (2026-07-09)
     # EURUSD 15MIN — failed / below promotion bar
     ("EURUSD", "15MIN", "london_breakout"),       # 35% WR, negative P&L, deactivated
     ("EURUSD", "15MIN", "silver_bullet"),         # 14 trades only

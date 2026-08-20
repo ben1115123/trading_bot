@@ -139,7 +139,7 @@ def main() -> int:
 
     episodes = collapse_episodes(raw)
     attach_trades(conn, episodes)
-    conn.close()
+    # conn stays open — the attribution test below queries the baseline pool
 
     print(f"\n=== EPISODE COLLAPSE (gap <= {EPISODE_GAP_S}s) ===")
     print(f"episodes: {len(episodes)}  (raw/episode {len(raw)/len(episodes):.1f}x)")
@@ -275,6 +275,8 @@ def main() -> int:
             verdict_attributable = pct < 0.05
             print(f"  -> clustering {'IS' if verdict_attributable else 'is NOT'} "
                   f"distinguishable from ordinary strategy performance")
+
+    conn.close()
 
     print("\n=== VERDICT (against the rule fixed in this file's docstring) ===")
     if verdict_attributable is False:

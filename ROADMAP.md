@@ -248,6 +248,24 @@ inventory is the bottleneck, not orchestration)
   (Quantpedia free tier or similar): filter for 
   FX/CFD/intraday-applicable subset; ignore papers' 
   in-sample stats; full gauntlet per candidate.
+- [ ] Liquidity-sweep reversal (ICT "Session Raid"/
+  "Judas Swing" family): mechanically defined as 
+  prior-session high/low breach + reversal 
+  confirmation, session-timed. Structurally novel 
+  vs current mean-reversion/momentum roster (trades 
+  a specific microstructure event). Full gauntlet. 
+  NOTE: ICT concepts are discretionary heuristics — 
+  the edge is in OUR mechanical definition, not the 
+  ICT label; the video's tier ranking is unverified 
+  marketing. Test the rule, ignore the branding.
+- [ ] OTE (Optimal Trade Entry) = Fib 62-79% 
+  trend-pullback entry. Test as a variant within 
+  the H4 trend-pullback hunt, not standalone — 
+  it's the same family as ema_pullback.
+- EXPLICITLY SKIP: Silver Bullet (video admits edge 
+  is in an undisclosed filter stack — overfitting 
+  risk), and discretionary order-block/FVG patterns 
+  that require human judgment to define.
 
 ## TIER 4 — REGIME ORCHESTRATION 
 (requires ≥2-3 gauntlet-passed edges; v1 portfolio 
