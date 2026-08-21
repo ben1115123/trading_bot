@@ -10,8 +10,8 @@ from filters.webhook_filters import (
     should_block_day_of_week,
     should_block_macro_event,
     should_block_session,
-    should_block_spread,
 )
+from risk import spread_gate
 from database.models import get_webhook_strategy, log_paper_trade, log_webhook_alert, update_trade_context
 
 logger = logging.getLogger(__name__)
@@ -213,11 +213,47 @@ async def webhook_endpoint(request: Request):
             _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "macro_event")
             return {"status": "filtered", "reason": "macro_event_window", "symbol": symbol}
 
+        # --- spread: revive the INPUT, replace the SHAPE ---------------------
+        #
+        # `should_block_spread(symbol, data.get("spread"))` stood here and had
+        # never blocked a single alert in its lifetime: 0 of 382 stored
+        # TradingView payloads have ever carried a "spread" key, so it
+        # short-circuited on its own fail-open guard every time (findings doc
+        # finding 15). It is not revivable by feeding it a live spread — its
+        # signature takes no sl_distance, and spread RELATIVE TO THE STOP is
+        # the predicate that matters. See risk/spread_gate.py.
+        #
+        # So the payload key is replaced by the live stream quote (the same
+        # source the signal loop samples, no extra IG call), and the predicate
+        # is replaced by the shadow ratio gate. Removing the old call changes
+        # no observable behaviour, because it has never had any.
         current_spread = safe_float(data.get("spread"))
-        if should_block_spread(symbol, current_spread):
-            logger.warning(f"[webhook] {symbol} filtered: spread_too_wide")
-            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "BLOCKED", "spread_filter")
-            return {"status": "filtered", "reason": "spread_too_wide", "symbol": symbol}
+        if current_spread is None:
+            try:
+                from bot.candle_stream import get_spread as _get_stream_spread
+                current_spread = _get_stream_spread(symbol)
+            except Exception as e:
+                logger.warning(f"[webhook] {symbol} stream spread unavailable: {e}")
+                current_spread = None
+
+        # sl_distance PROXY. The webhook has no entry price at this point —
+        # entry is whatever IG fills at, later. The SL/TP midpoint is used as
+        # the entry proxy, the same convention already used for paper rows
+        # below. BIAS IS KNOWN AND ONE-DIRECTIONAL: for a 1:2 R:R alert the
+        # true entry sits 1/3 of the way from SL to TP, not 1/2, so the
+        # midpoint OVERSTATES sl_distance and therefore UNDERSTATES the ratio.
+        # A shadow gate that under-reports is the safe direction to be wrong;
+        # do not "correct" it by assuming an R:R the payload never states.
+        _wh_sl = data.get("long_sl") if direction == "BUY" else data.get("short_sl")
+        _wh_tp = data.get("long_tp") if direction == "BUY" else data.get("short_tp")
+        _wh_sl_dist = (abs(_wh_tp - _wh_sl) / 2.0
+                       if _wh_sl is not None and _wh_tp is not None else None)
+
+        _wh_sg = spread_gate.evaluate(symbol, current_spread, _wh_sl_dist)
+        if _wh_sg["reason"]:
+            logger.warning(f"[webhook] {symbol} {_wh_sg['reason']} (midpoint sl_dist proxy)")
+            _log_wh(ts, symbol, direction, strategy_name, raw_payload, "SHADOW_SPREAD_GATE",
+                    "spread_gate_shadow", notes=_wh_sg["reason"] + " | sl_dist from SL/TP midpoint proxy")
 
         # --- strategy routing via active_strategy status ---
         strategy_row = get_webhook_strategy(symbol, strategy_name)

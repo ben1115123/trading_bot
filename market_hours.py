@@ -114,6 +114,47 @@ ENTRY_REOPEN_HOUR = 23
 # No new entries from this time on Friday, any instrument.
 FRIDAY_ENTRY_CUTOFF_MIN = 20 * 60 + 45
 
+# --- daily rollover window (added 2026-08-21) ------------------------------
+#
+# No entries in the 21:00 UTC hour, ANY instrument. IG re-posts its book at
+# the daily rollover and the quoted spread steps by an order of magnitude for
+# exactly one hour, every day. Measured from signal_log, median spread:
+#
+#            EURUSD  GBPUSD  AUDUSD  USDCAD   US500   US100
+#   00-20     0.60p   0.90p   0.60p   1.30p  0.60pt  2.00pt
+#   HOUR 21   6.30p  16.90p   9.75p  11.00p  1.50pt  5.00pt
+#   multiple  x10.5   x18.8   x16.2    x8.5    x2.5    x2.5
+#
+# Why this is a guaranteed-loss condition and not merely an expensive one:
+# _MIN_SL_DIST floors the stop at 5-6 pips (FX) / 3-4 points (indices), so at
+# hour 21 the SPREAD IS WIDER THAN THE ENTIRE STOP — 1.3-3x wider on FX. The
+# bid/ask straddle alone spans the stop and the position is closed within
+# ~60-90s. See findings doc finding 24 (amended 2026-08-21) for the mechanism
+# and the three NULL-pnl ledger holes it produced.
+#
+# Measured cost, ALL strategies and both sources, entries in this hour:
+#   14 trades, 1 winner, net -$115.47, expectancy -$8.25
+#   (vs -$1.31 for every other hour -- 6.3x worse)
+#   by strategy: williams_r 9 (0 wins), swiftalgo 4 (1 win), stoch_rsi 1 (0)
+#
+# EVIDENCE IS NOT UNIFORM ACROSS INSTRUMENTS, recorded per this module's own
+# standard. The six symbols in the table above are measured. DAX and BTC have
+# never written a spread sample, so they are included on MECHANISM grounds
+# (the widening is a property of IG's book, not of an asset class), NOT on
+# evidence. If either is ever traded again, measure before trusting this rule
+# for it.
+#
+# Deliberately a whole-hour block rather than a tapered one. Within hour 21
+# GBPUSD sits flat at 16.90p across all six 10-minute buckets, as do US500
+# (1.50pt) and US100 (5.00pt) -- a posted number, not a decaying liquidity
+# event, so there is no edge of the window that is meaningfully safer.
+#
+# NOTE: this does not rescue any strategy. Removing all 14 trades moves pooled
+# expectancy from -$1.60 to -$1.50. Its value is that the condition is
+# arithmetically lost at entry, cheap to remove, and applies to every strategy
+# that will ever run here.
+ROLLOVER_BLOCK_HOUR = 21
+
 
 def _minutes(when: datetime) -> int:
     return when.hour * 60 + when.minute
@@ -148,10 +189,19 @@ def is_entry_allowed(symbol: str, when: datetime) -> bool:
 
     Strictly narrower than is_market_open. Every rule added here is a risk
     preference and must carry its evidence.
+
+    Rules, in order: venue closed; the 21:00 UTC rollover hour; the thin
+    Sunday reopen; the Friday pre-weekend cutoff.
     """
     symbol = (symbol or "").upper()
 
     if not is_market_open(symbol, when):
+        return False
+
+    # Daily rollover — checked BEFORE the always-open short-circuit, because
+    # the rollover is a property of the broker's book rather than of the
+    # venue's calendar. A 24/7 instrument is re-quoted at rollover too.
+    if when.hour == ROLLOVER_BLOCK_HOUR:
         return False
 
     if symbol in _ALWAYS_OPEN:

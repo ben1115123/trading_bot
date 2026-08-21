@@ -19,7 +19,9 @@ from bot.notifier import send_telegram
 from bot.candle_stream import get_candles as get_stream_candles, get_spread as get_stream_spread
 from backend.backtesting.regime import classify_regimes
 from symbols import SYMBOLS
-from market_hours import is_entry_allowed, is_market_open, SESSION_REOPEN_HOUR
+from risk import spread_gate
+from market_hours import (is_entry_allowed, is_market_open, SESSION_REOPEN_HOUR,
+                          ROLLOVER_BLOCK_HOUR)
 
 CANDLE_SOURCE = os.getenv("CANDLE_SOURCE", "yfinance").lower()  # 'yfinance' (default,
                                                                  # unchanged) | 'ig_stream'
@@ -151,13 +153,24 @@ def _is_blocked(symbol: str) -> bool:
 
 
 def _block_reason(symbol: str) -> str:
-    """Why `symbol` is blocked right now, for the signal_log error column."""
+    """Why `symbol` is blocked right now, for the signal_log error column.
+
+    Reason strings are the marker test for each gate: a gate that fires must
+    leave a POSITIVE signal naming itself, never be inferred from the absence
+    of trades. Keep them distinct and keep them stable — anything grepping
+    signal_log for a specific control is matching on this string.
+    """
     now = datetime.now(timezone.utc)
     if not is_market_open(symbol, now):
         wd = now.weekday()
         if wd == 5 or (wd == 6 and now.hour < SESSION_REOPEN_HOUR):
             return "market closed — weekend"
         return "market closed — Friday session end"
+    # Checked before the reopen/pre-weekend catch-all so the rollover hour is
+    # attributable on its own rather than absorbed into a generic policy
+    # string. Ordering here MUST mirror is_entry_allowed's rule order.
+    if now.hour == ROLLOVER_BLOCK_HOUR:
+        return "entry window closed — daily rollover hour"
     return "entry window closed — thin reopen / pre-weekend policy"
 
 
@@ -614,6 +627,34 @@ def _check_symbol(symbol: str, active: dict, vix_level: float | None = None,
             tp     = round(entry - sl_dist * 2, _prec)
 
     print(f"[signal_loop] [{symbol}] {signal} — sl={sl} tp={tp}")
+
+    # --- SHADOW spread gate (report-only, blocks nothing) -------------------
+    #
+    # Uses the spread already sampled at the top of this function — no extra
+    # IG call — and the FLOORED sl_dist, i.e. the stop actually sent to IG.
+    # Threshold and the reasoning behind it live in risk/spread_gate.py; do
+    # not restate k here.
+    #
+    # SHADOW, deliberately: k=0.25 is calibrated against a record in which 837
+    # of 925 rows carry an imputed spread rather than a measured one, so the
+    # threshold is not yet trustworthy enough to refuse a trade. Promotion is
+    # a one-line flip of ENFORCE in that module, never an edit here.
+    _sg = spread_gate.evaluate(symbol, log_data.get("spread"), sl_dist)
+    if _sg["reason"]:
+        # Console log is unconditional and full-resolution (same contract as
+        # the [SL DRIFT] log): analysis sees every occurrence even when the
+        # signal_log column is later claimed by a real error.
+        print(f"[signal_loop] [{symbol}] {_sg['reason']}")
+        if log_data.get("error") is None:
+            log_data["error"] = _sg["reason"]
+        if _sg["over_ceiling"]:
+            # ratio >= 1.0 means the spread spans the whole stop — the trade
+            # is arithmetically lost at entry. Rare enough to alert on
+            # (8 occurrences in all history) and it should stay rare now that
+            # the rollover hour is blocked; if this starts firing regularly,
+            # something other than rollover is widening the book.
+            send_telegram(
+                f"SPREAD CEILING {symbol} {signal} — {_sg['reason']}", level="WARN")
 
     # Per-strategy session gate
     _gate_now    = datetime.now(timezone.utc)
