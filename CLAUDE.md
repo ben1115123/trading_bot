@@ -1323,11 +1323,21 @@ baked into every image layer; the two backups alone were 504 MB per build.
 |---|---|---|
 | `trades.bak-20260720T012352Z.db` | Before `scripts/reaudit_close_prices.py` corrected the 8 cross-symbol-contaminated rows | 565 trades, 179,413 backtest_results — **sole surviving pre-correction ledger state** |
 | `trades.bak-20260816T042148Z.db` | Before the `engine_version` migration | 906 trades, 268,117 backtest_results |
+| `trades.bak-20260817T164123Z.db` | Undocumented until 2026-08-21 — taken around the `market_hours` / finding-23 FX weekend-block work | 918 trades, 268,117 backtest_results, `integrity_check ok` |
+| `trades.bak-20260821T184131Z.db` | Before moving all four live `williams_r` instances to `paper` | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 
-Both verified `integrity_check ok` with sha256 unchanged across the move.
-**Neither is disposable.** Take new ones with the SQLite online backup API
-(`Connection.backup()`), never `cp` — `cp` on a live DB with an open WAL can
-produce a torn copy.
+All verified `integrity_check ok`. **None is disposable.** Take new ones with
+the SQLite online backup API (`Connection.backup()`), never `cp` — `cp` on a
+live DB with an open WAL can produce a torn copy.
+
+**Directory now totals ~1.1 GB** (4 files, 30 GB free on `/`). The Aug-17 file
+sat here undocumented for four days; an unlisted 320 MB file is how the next
+disk-pressure investigation starts from a wrong baseline. If a backup is taken,
+it goes in this table in the same change.
+
+`/home/ubuntu/backups` was root-owned `755` until 2026-08-21, so a backup run
+as `ubuntu` failed outright. Directory is now `ubuntu:ubuntu`; the pre-existing
+files keep their original ownership.
 
 ## Backtest Engine Parity — Stage 1 (2026-08-16)
 

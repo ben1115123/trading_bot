@@ -714,6 +714,17 @@ half of all trades, which would confound the parity before/after comparison
 that is the entire point of that sequence. Fix after the gauntlet regenerates,
 and bump `engine_version` when it lands.
 
+> **⚠️ SEVERITY AMENDED 2026-08-21 — this is not an independent constant.**
+> `MIN_SL_DIST` and finding 15's `NORMAL_SPREADS` **interact**, and the
+> interaction is the real defect. A *fixed* 5–6 pip floor is only safe while the
+> spread stays far below it — but the spread is *variable* and steps ×8.5–18.8
+> at 21:00 UTC every day, exceeding the floor by 1.3–3×. Nothing in the system
+> compares the two. Measured: 8 trades at `spread ≥ sl_distance`, **0 winners**,
+> −$74.64; the whole 21:00 hour is 14 trades, 1 winner, −$115.47. See the
+> finding 24 amendment for the mechanism and the three NULL-pnl rows it produced.
+> The deferral above still stands — but read the floor as **half of a
+> guaranteed-loss condition**, not as a lone mis-tuned number.
+
 ---
 
 ## 15. `NORMAL_SPREADS` — an uncalibrated constant behind a LIVE gate that has never fired
@@ -786,7 +797,26 @@ before/after):
    disagree about what "normal" means.
 4. Extend to all rostered symbols, not 3.
 
+> **⚠️ SEVERITY AMENDED 2026-08-21 — the filter is the wrong SHAPE, not just
+> mis-fed and mis-tuned.** This finding's own conclusion ("fixing the constant
+> alone would change nothing") is right, for a stronger reason than it gives.
+> Three independent blockers, any one of which defeats a revival:
+> 1. `NORMAL_SPREADS` holds only US500/EURUSD/DAX. GBPUSD, AUDUSD, USDCAD and
+>    US100 are absent, so `if normal and ...` fails **open** for four of the six
+>    traded symbols even if a live spread were supplied.
+> 2. EURUSD's 0.0008 blocks at 16 pips; the measured 21:00 EURUSD median is
+>    **6.3 pips**. It would not block the blowout it most needs to.
+> 3. Structural: `should_block_spread(symbol, current_spread)` takes **no
+>    `sl_distance`**. What matters is spread *relative to the stop*, which this
+>    signature cannot express. Feeding it `get_stream_spread()` fixes the dead
+>    input and still leaves the wrong predicate.
+>
+> See the finding 24 amendment: the failure this filter would need to catch is
+> `spread ≥ sl_distance` — arithmetically lost at entry, 8 occurrences, 0
+> winners.
+
 ---
+
 
 ## 16. USDCAD paper P&L understated ~1,900x — a missing dict key
 *(added 2026-08-16, Stage 2 Phase 1 — recorded, NOT fixed)*
@@ -1652,6 +1682,106 @@ Note for whoever picks this up: two other rows have a `close_time` **one second
 EARLIER** than their `timestamp` (id 728: 21:15:55 → 21:15:54; id 845:
 20:35:45 → 20:35:44). Negative holding periods. Both are thin-reopen trades
 too. Same neighbourhood, possibly the same clock/ordering defect.
+
+---
+
+### ⚠️ AMENDED 2026-08-21 — it is NOT unique, and the mechanism is now known
+
+**Two claims above are wrong.** Corrected here rather than edited away, because
+the shape of the error matters: "unique 1-of-915" is exactly the reading that
+makes a systemic defect look like a one-off.
+
+**1. Not unique — it is a pattern of three with a shared signature.**
+Of **996** CLOSED trades there are **three** NULL-`pnl` rows, not one:
+
+| id | entry (UTC) | dir | size | sl_dist | lifetime | close_price | pnl | spread at check |
+|---|---|---|---|---|---|---|---|---|
+| 941 | 2026-08-09 21:52:16 | SELL | 2.0 | 5.0p | 72s | NULL | NULL | — |
+| 993 | 2026-08-18 21:46:34 | BUY | 2.0 | 5.0p | 64s | NULL | NULL | 6.2p |
+| 1014 | 2026-08-19 21:46:02 | BUY | 2.0 | 5.0p | 69s | NULL | NULL | 11.0p |
+
+All USDCAD; all `sl_dist` **exactly 0.00050**, the `MIN_SL_DIST["USDCAD"]`
+floor, binding; all `size=2.0` (arithmetic: `10 / (0.0005 × 10000)`); all
+entered 21:46–21:52 UTC; all closed in 64–72s. `session='OFF_HOURS'`,
+day_of_week 6/1/2 — **not** a weekend artifact, so the finding-23 thin-reopen
+framing above is the wrong neighbourhood. The right one is the daily rollover.
+
+**2. The cause is two stacked defects, neither an accident.**
+
+*Defect A — the 21:00 UTC rollover blowout, unguarded.* Median spread by UTC
+hour from `signal_log`, every symbol flat for 20 hours then stepping for
+exactly one:
+
+| | EURUSD | GBPUSD | AUDUSD | USDCAD | US500 | US100 |
+|---|---|---|---|---|---|---|
+| hours 00–20 | 0.6p | 0.9p | 0.6p | 1.3p | 0.6pt | 2.0pt |
+| **hour 21** | **6.3p** | **16.9p** | **9.8p** | **11.0p** | **1.5pt** | **5.0pt** |
+| multiple | ×10.5 | ×18.8 | ×16.2 | ×8.5 | ×2.5 | ×2.5 |
+
+The stop is floored at 5–6 pips while the spread runs 6–17 pips, so **the
+spread is 1.3–3× wider than the entire stop distance** — the bid/ask straddle
+alone spans it and the position is dead on arrival. Nothing gates this:
+`should_block_spread` has never fired (finding 15) and the signal_loop path has
+no spread check at all.
+
+*Defect B — the poller commits a CLOSED row with no data.* At
+`data/positions_poller.py:162`, when `_fetch_close_data` returns `None` the
+fallback is `pos_snapshot.get(deal_id, {})`. A trade that opens and closes
+inside one 30s poll interval **never appears in any snapshot**, so both
+`.get()` calls return `None` and `close_trade(close_price=None,
+realised_pnl=None)` writes the hole. The deferred checker then retries against
+transaction history and gives up at 1440 minutes. The defect is that the
+fallback is **unconditional** — it prefers writing NULL over leaving the trade
+OPEN for a later poll.
+
+It is a race, not a rule: id **1013** (USDCAD, 21:00:58, 86s, spread 5.8p)
+*did* resolve — at **−$11.60**, a loss exceeding its own $10 nominal risk.
+
+**3. Scope beyond the three rows — the NULLs are a symptom, not the disease.**
+
+Every `williams_r` trade entered in the 21:00 hour: **12 trades, 0 winners**,
+expectancy **−$8.44** vs −$1.50 in every other hour. Across **all** strategies
+the 21:00 hour is 14 trades, 1 winner, −$115.47, expectancy −$8.25.
+
+Sub-2-minute lifetimes across all 659 `williams_r` trades: **14 trades, 0
+winners, −$107.31**, and all three NULLs sit in that bucket. By contrast the
+1–24h bucket (n=374) is the only profitable one at **+$534.29**.
+
+**4. Recovery status unchanged.** Still do not invent a P&L. The rows are 
+either recoverable from IG transaction history via
+`scripts/reaudit_close_prices.py` or must be explicitly marked unrecoverable.
+Note that reaudit already failed to match them once — that is what "gave up
+after 24h" means — so marking-unrecoverable is the likelier outcome.
+
+**5. The negative-holding-period rows are confirmed as a separate defect.**
+ids 728 and 845 stand as described above, still unexplained, still not part
+of the NULL-pnl class.
+
+### Consequence — findings 14 and 15 are NOT independent, and both are understated
+
+Finding 14 records `MIN_SL_DIST` as an uncalibrated constant. Finding 15
+records `NORMAL_SPREADS` / the dead spread filter as a separate uncalibrated
+constant. **They interact, and the interaction is the actual defect.**
+
+A floored stop is only safe while the spread stays far below it. The floor is a
+*fixed* 5–6 pips; the spread is *variable* and steps by an order of magnitude
+at a predictable time every day. Neither constant is wrong on its own terms —
+5 pips is a plausible broker minimum, and a spread filter is a reasonable idea.
+What is wrong is that **nothing in the system relates the two**: no code path
+compares the spread it is about to pay against the stop distance it is about to
+set. `should_block_spread` cannot do it — it takes no `sl_distance` argument
+and is structurally the wrong shape (see finding 15 amendment).
+
+So the correct severity is not "two mispriced constants" but **"a guaranteed-
+loss condition that the system cannot currently detect."** At `spread ≥
+sl_distance` the trade is not mispriced, it is arithmetically lost at entry.
+Measured: **8 trades at ratio ≥ 1.0, 0 winners, −$74.64.**
+
+This also reframes finding 15's severity. That finding's own conclusion — "so
+fixing the constant alone would change nothing" — is right for a stronger
+reason than it gives: the filter is not merely mis-tuned and mis-fed, it is
+**the wrong shape for the failure it would need to catch**.
+
 
 ---
 
