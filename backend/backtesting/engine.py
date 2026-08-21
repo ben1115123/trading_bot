@@ -425,7 +425,6 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
             # rule slots in ahead of max_hold when it lands.
             candles_held = i - open_trade["entry_candle_idx"]
             force_close  = max_hold_candles is not None and candles_held >= max_hold_candles
-            flat_close   = bool(sig.get("force_flat"))
             # Reversal exit is OFF by default because live FX has none — a
             # position there exits on SL or TP only. Kept as a flag rather than
             # deleted: the measured cost of live's missing reversal exit was
@@ -435,7 +434,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                 (open_trade["direction"] == "BUY"  and sig["signal"] == "SELL") or
                 (open_trade["direction"] == "SELL" and sig["signal"] == "BUY")
             )
-            should_close = last or force_close or flat_close or reverse_close
+            should_close = last or force_close or reverse_close
             if should_close:
                 ep  = open_trade["entry_price"]
                 xp  = candle["close"]
@@ -445,7 +444,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                     dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
                 except Exception:
                     dur = 0
-                exit_reason = "session_close" if flat_close else ("max_hold" if force_close else "signal")
+                exit_reason = "max_hold" if force_close else "signal"
                 trades.append({
                     "entry_time":    open_trade["entry_time"],
                     "exit_time":     candle["time"],
