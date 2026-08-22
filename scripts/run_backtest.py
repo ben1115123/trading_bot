@@ -150,7 +150,6 @@ from backend.strategies.williams_r import WilliamsRStrategy
 from backend.strategies.macd_rsi import MACDRSIStrategy
 from backend.strategies.fvg import FVGStrategy
 from backend.strategies.london_breakout import LondonBreakoutStrategy
-from backend.strategies.first_bar_breakout import FirstBarBreakoutStrategy
 from backend.strategies.smc import SMCStrategy
 from backend.strategies.silver_bullet import SilverBulletStrategy
 from backend.strategies.ny_session_momentum import NYSessionMomentumStrategy
@@ -189,7 +188,6 @@ STRATEGIES = {
     "macd_rsi":             MACDRSIStrategy,
     "fvg":                  FVGStrategy,
     "london_breakout":      LondonBreakoutStrategy,
-    "first_bar_breakout":   FirstBarBreakoutStrategy,
     "smc":                  SMCStrategy,
     "silver_bullet":        SilverBulletStrategy,
     "ny_session_momentum":  NYSessionMomentumStrategy,
@@ -322,11 +320,6 @@ PARAM_GRIDS = {
         "range_end_hour":   [7],
         "entry_window_end": [9],
     },
-    "first_bar_breakout": {
-        "buffer_points":     [0, 2, 5],
-        "tp_mode":           ["1.5R", "2R", "session_close"],
-        "entry_window_bars": [4, 8],
-    },
     "silver_bullet": {
         "kill_start":     [13],
         "kill_end":       [16],
@@ -387,11 +380,6 @@ STABILITY_GRIDS = {
         "period":     [8, 10, 12, 14, 16, 18, 21],
         "oversold":   [-95, -90, -85, -80],
         "overbought": [-20, -15, -10],
-    },
-    "first_bar_breakout": {
-        "buffer_points":     [0, 2, 5],
-        "tp_mode":           ["1.5R", "2R", "session_close"],
-        "entry_window_bars": [4, 8],
     },
 }
 
