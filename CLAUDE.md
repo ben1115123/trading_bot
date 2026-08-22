@@ -547,8 +547,8 @@ format. Removed, not edited — it was a second copy, and the reasons now live i
 | EURUSD | 15MIN | supertrend | Paper | loop   | 111 bt trades, PF 1.35          |
 | US500  | HOUR  | stoch_rsi_confluence | Paper | loop | session filter only, shadow logging — see below |
 | EURUSD | 15MIN | ny_session_momentum | Paper | loop | 37 bt trades, 75.7% WR, PF 1.64, follow mode |
-| US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50. Walk-forward (2026-07-09): FRAGILE — median PF 1.03, 53.8% windows profitable, 171 trades across 13 windows |
-| US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best. Walk-forward (2026-07-09): FRAGILE — median PF 1.12, 69.2% windows profitable (one window short of ROBUST's 70% bar), 70 trades across 13 windows. The PF 3.17 sweep result did not survive — overfit |
+| US500  | 15MIN | ema_pullback         | Paper | loop | ⛔ **PF 1.57 / 44 trades VOID — ETF-scaled cache, see finding 30.** 44 bt trades, 45.5% WR, PF 1.57, EMA8/50. Walk-forward (2026-07-09): FRAGILE — median PF 1.03, 53.8% windows profitable, 171 trades across 13 windows |
+| US100  | 15MIN | ema_pullback         | Paper | loop | ⛔ **PF 3.17 / 86%-of-combos VOID — ETF-scaled cache, see finding 30.** 86% combos profitable, PF 3.17 best. Walk-forward (2026-07-09): FRAGILE — median PF 1.12, 69.2% windows profitable (one window short of ROBUST's 70% bar), 70 trades across 13 windows. The PF 3.17 sweep result did not survive — overfit |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
 | EURUSD | 15MIN | williams_r | Paper | loop | **Demoted from live 2026-08-21**, history row 43. id 22 |
 | GBPUSD | 15MIN | williams_r | Paper | loop | **Demoted from live 2026-08-21**, history row 44. id 32 |
@@ -1438,12 +1438,41 @@ capped at 60 days, which is not enough span for a walk-forward; Twelve Data
 would need an index symbol that the free tier may not carry. **Unresolved — do
 not paper over it by re-running on the ETF files.**
 
-This is the third instance of the class: DAX (mis-scaled, below), EURUSD
+### Audit result (2026-08-22) — what is contaminated
+
+`SYMBOL_MAP` audited in full: **all 7 FX entries are correct** (they map to real
+pairs). **All 3 index entries are ETF proxies** — `US500->SPY`, `US100->QQQ`,
+`DAX->EWG`. Contamination is confined to `*_15MIN_AV.json` for those three
+symbols; **every `*_yf.json` is correctly index-scaled** (verified by price
+level). The defect is per-FILE, not per-symbol.
+
+| table (local DB) | contaminated | of | identify with |
+|---|---|---|---|
+| `backtest_results` | **1,166** | 5,329 | `symbol IN ('US500','US100','DAX') AND timeframe='15MIN' AND candles_total > 5000` |
+| `walkforward_runs` | **82** | 276 | `symbol IN ('US500','US100','DAX') AND cache_file LIKE '%_AV.json'` |
+
+Rows are **marked, not deleted**. Safe today because every one is
+`engine_version='pre-parity-v0'` and `get_backtest_results()` filters to the
+current version — they are reachable only via `engine_version=None`.
+`backtest_results` has **no cache-provenance column**, so its count is an
+inference from `candles_total`; add `cache_file` there if provenance work
+resumes. Full detail in findings doc finding 30.
+
+This is the third instance of the class: DAX (same cause, see below), EURUSD
 points-vs-decimal on the DEMO account (see Price scale quirk), and now these
 two. **Always check a cache's price level against the instrument it claims to
 be before trusting a backtest built on it.**
 
 ## ⛔ DAX candle cache — BLOCKER on any DAX work
+
+> **✅ ROOT CAUSE FOUND 2026-08-22 — it is not DAX data. It is `EWG`.**
+> `fetch_twelvedata.py`'s `SYMBOL_MAP` routes `"DAX" -> "EWG"`, the **iShares
+> MSCI Germany ETF**: USD-denominated, ~$40/share, a different constituent set
+> from the DAX index. Measured: last close **40.59**, median bar range
+> **0.060** — an ordinary $40 ETF behaving normally. **No rescaling factor can
+> repair it** (wrong instrument, wrong currency, wrong constituents). See
+> findings doc finding 30, which audits all 10 `SYMBOL_MAP` entries. The
+> original diagnosis below is retained as the observation that led here.
 
 `scripts/candle_cache/DAX_15MIN_AV.json` has a **median 15-minute high-low range
 of 0.055 index points** across 10,270 candles. That is not the DAX — a real DAX

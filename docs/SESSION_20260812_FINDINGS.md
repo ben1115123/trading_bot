@@ -2143,6 +2143,139 @@ used.
 
 ---
 
+## 29. "Explicit paths only" is necessary and NOT sufficient — check the import graph
+*(added 2026-08-22 — the rule, and the near-miss that produced it)*
+
+**The near-miss.** Commit `a7e78db` staged `scripts/run_backtest.py` by explicit
+path. That file already carried an **uncommitted** line from earlier
+exploratory work:
+
+    from backend.strategies.first_bar_breakout import FirstBarBreakoutStrategy
+
+`backend/strategies/first_bar_breakout.py` is **untracked**. It exists in one
+working tree and nowhere else. On any other machine that import raises
+`ModuleNotFoundError` at module load.
+
+**Why that is not a backtesting problem.** `scripts/run_backtest.py` looks like
+a CLI tool. It is also a dependency of the live trading loop —
+`bot/live_signal_loop.py:11`:
+
+    from scripts.run_backtest import _fetch_yfinance_candles, STRATEGIES
+
+So the failure is not confined to backtests. Importing `live_signal_loop`
+raises, and **the signal loop does not start**. The next
+`docker-compose up -d --build` would have shipped a bot that cannot boot.
+Production was never at risk only because the running container held an image
+built before the commit.
+
+**Why the existing rule did not catch it.** The standing guidance is "stage
+explicit paths only; this working tree is always dirty." That was followed. It
+is insufficient, because it protects against staging the wrong *file* and says
+nothing about a correctly-chosen file carrying someone else's uncommitted edit.
+The dirt was *inside* the path, not beside it.
+
+### THE RULE
+
+> **After staging, and before committing, run the BOT's own import inside the
+> container — for any change touching a module in `live_signal_loop`'s import
+> graph.** Not the module you edited. The bot's.
+
+    docker exec -w /app trading_bot-bot-1 python3 -c "import bot.live_signal_loop"
+
+Modules currently in that graph and therefore covered by this rule:
+`scripts/run_backtest.py`, `database/models.py`, `bot/candle_stream.py`,
+`bot/execute_trade.py`, `bot/notifier.py`, `symbols.py`, `market_hours.py`,
+`instrument_limits.py`, `risk/*`, `filters/*`. **`scripts/` is not a safe
+prefix** — that assumption is the whole finding.
+
+**How it was actually caught:** by running that exact import after copying the
+changed files into the container, rather than reasoning that a CLI-only change
+must be CLI-only. The reasoning was available and would have been wrong. This
+is the same shape as the probe rule (CLAUDE.md, "The self-invalidating probe"):
+a conclusion reached by argument, where an observation was cheap and available.
+
+**Related, and stronger where it applies:** a compile check is not enough.
+`python3 -m py_compile scripts/run_backtest.py` **passes** on the broken file —
+compilation does not resolve imports. Only execution does.
+
+---
+
+## 30. Index candle caches are ETF proxies — 1,166 stored results contaminated
+*(added 2026-08-22 — audited, rows MARKED not deleted)*
+
+`scripts/fetch_twelvedata.py`'s `SYMBOL_MAP` routes every index symbol to an
+**ETF**, not to the index. Full audit of all 10 entries:
+
+| symbol | mapped to | what that actually is | verdict |
+|---|---|---|---|
+| EURUSD, GBPUSD, USDJPY, EURGBP, NZDUSD, AUDUSD, USDCAD | `EUR/USD` etc. | the real FX pair | ✅ **OK (7/7)** |
+| **US500** | `SPY` | SPDR S&P 500 ETF, ~$729 — not `^GSPC` ~7,481 (**~10.3x**) | ❌ WRONG |
+| **US100** | `QQQ` | Invesco QQQ ETF, ~$705 — not `^NDX` ~26,000 (**~37x**) | ❌ WRONG |
+| **DAX** | `EWG` | iShares MSCI Germany ETF, **~$40, USD-denominated** — not `^GDAXI` ~24,000 EUR | ❌ WRONG |
+
+**This explains the DAX blocker.** CLAUDE.md records
+`DAX_15MIN_AV.json` as having a median 15MIN range of 0.055 points and says
+"the cache is mis-scaled, or it is not DAX data." It is not DAX data. It is
+EWG: measured last close **40.59**, median bar range **0.060**. That is an
+ordinary $40 ETF, behaving normally. The blocker was never a scaling bug — it
+was the wrong instrument, and additionally the wrong currency and a different
+constituent set, so no rescaling factor can repair it.
+
+### Scope — which files, which rows
+
+**Contaminated:** `*_15MIN_AV.json` for `US500`, `US100`, `DAX` only.
+**Clean:** every `*_15MIN_AV.json` for an FX symbol (those map to real pairs),
+and **every** `*_yf.json` — verified by price level:
+`US500_HOUR_5000_yf` 7,481.46, `US100_HOUR_5000_yf` 29,297.85,
+`DAX_HOUR_5000_yf` 25,123.97, `US500_15MIN_5000_yf` 7,581.25. **The defect is
+per-FILE, not per-symbol.** "US500 has a cache" is not the question; which
+file, from which source, is.
+
+**Stored rows (local DB — the VPS has no `walkforward_runs` rows and no cache
+directory at all):**
+
+| table | contaminated | of | identifying query |
+|---|---|---|---|
+| `backtest_results` | **1,166** | 5,329 | `symbol IN ('US500','US100','DAX') AND timeframe='15MIN' AND candles_total > 5000` |
+| `walkforward_runs` | **82** | 276 | `symbol IN ('US500','US100','DAX') AND cache_file LIKE '%_AV.json'` |
+
+`walkforward_runs` carries `cache_file`, so its 82 rows are identified
+**directly**. All 82 are `first_bar_breakout`, run 2026-07-22.
+
+⚠️ **`backtest_results` has NO cache-provenance column at all** — no
+`cache_file`, nothing. Its 1,166 rows are identified by the *inference*
+`candles_total > 5000` (AV caches are 9,000–10,285 candles; the clean yfinance
+15MIN cache is 1,560). That inference is good but it is an inference, and the
+absence of provenance on the single largest results table is its own defect.
+**Any future cache-provenance work should add `cache_file` to
+`backtest_results`.**
+
+### Marked, not deleted — and why that is safe today
+
+The rows are left in place. Two reasons they are not currently dangerous:
+**every one is `engine_version='pre-parity-v0'`**, and `get_backtest_results()`
+filters to `CURRENT_ENGINE_VERSION` by default, so nothing on a promotion path
+can reach them. They become dangerous only via `engine_version=None`, which
+dashboard page 04 passes deliberately for archive display.
+
+**Figures quoted elsewhere that are void, not merely pre-parity** — they
+describe a different instrument:
+- `ema_pullback` US500 15MIN — "44 bt trades, 45.5% WR, PF 1.57"
+- `ema_pullback` US100 15MIN — "86% of 72 combos profitable, PF 3.17 best"
+- every DAX 15MIN figure sourced from `DAX_15MIN_AV.json`
+- the 82 `first_bar_breakout` walk-forward verdicts on US100/US500
+
+### Blocks Stage 4 for two roster rows
+
+`active_strategy` ids **29** (US500 15MIN `ema_pullback`) and **30** (US100
+15MIN `ema_pullback`) cannot be re-validated. No clean fix is available:
+yfinance `^GSPC`/`^NDX` at 15MIN caps at 60 days, far short of a walk-forward
+span, and Twelve Data's free tier may not carry index symbols at all. **Do not
+paper over this by re-running on the ETF files.** Recording the block is the
+correct outcome until an index-scaled 15MIN source exists.
+
+---
+
 ## Standing rule — when to bump a model stamp
 
 Three stamps now exist: **`engine_version`** (backtest trade model),

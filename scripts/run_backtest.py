@@ -9,6 +9,7 @@ Usage:
 import argparse
 import itertools
 import json
+import sqlite3
 import os
 import sys
 import time
@@ -630,6 +631,10 @@ def main():
                         help="Take params from active_strategy for this (symbol,timeframe,strategy). "
                              "REQUIRED for any run that will be used as promotion evidence — "
                              "see findings doc finding 28.")
+    parser.add_argument("--roster-db", default=None,
+                        help="Path to the DB whose active_strategy is authoritative. "
+                             "REQUIRED IN PRACTICE with --from-roster: the roster lives on "
+                             "the VPS, and the local DB carries phantom rows. See finding 28.")
     parser.add_argument("--params", default=None,
                         help="Literal params as JSON, e.g. '{\"period\": 21}'. For exploration. "
                              "Mutually exclusive with --from-roster.")
@@ -660,7 +665,28 @@ def main():
     cli_params = None
     params_source = "file-defaults"
     if args.from_roster:
-        row = get_roster_row(args.symbol.upper(), args.timeframe.upper(), strategy_key)
+        if args.roster_db:
+            # Read the authoritative roster directly rather than through
+            # database.db, whose DATABASE_PATH is per-host. Read-only URI: a
+            # validation run must never write to the production DB it is
+            # reading the roster out of.
+            _rconn = sqlite3.connect(f"file:{args.roster_db}?mode=ro", uri=True)
+            _rconn.row_factory = sqlite3.Row
+            try:
+                _r = _rconn.execute(
+                    "SELECT * FROM active_strategy WHERE symbol=? AND timeframe=? "
+                    "AND strategy_name=? LIMIT 1",
+                    (args.symbol.upper(), args.timeframe.upper(), strategy_key)).fetchone()
+                row = dict(_r) if _r else None
+            finally:
+                _rconn.close()
+            print(f"[params] roster source: {args.roster_db}")
+        else:
+            print("[params] ⚠️  --from-roster without --roster-db reads THIS HOST's DB. "
+                  "The local dev DB carries 3 phantom active_strategy rows that match no "
+                  "deployed strategy (finding 28) — a run can succeed and silently validate "
+                  "a fiction. Pass --roster-db pointing at a copy of the VPS database.")
+            row = get_roster_row(args.symbol.upper(), args.timeframe.upper(), strategy_key)
         if row is None:
             print(f"--from-roster: no active_strategy row for "
                   f"({args.symbol.upper()}, {args.timeframe.upper()}, {strategy_key}). "
