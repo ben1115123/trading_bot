@@ -151,7 +151,28 @@ Bot container uses /app/docker-entrypoint.sh (starts cron + uvicorn)
 3. docker-compose down
 4. docker-compose up -d --build
 5. docker-compose ps             (verify all 3 up)
-6. curl localhost:8000 + curl localhost:8501
+6. curl localhost:80 + curl localhost:80/health   (both expect 200)
+
+⚠️ **Step 6 was WRONG until 2026-08-21** and read
+`curl localhost:8000 + curl localhost:8501`. **Neither port is published to
+the host.** `docker-compose.yml` exposes them container-internally
+(`8000/tcp`, `8501/tcp`, no host mapping) and only nginx maps
+`0.0.0.0:80->80/tcp`. Both of those curls return **`000` — connection refused —
+on a completely healthy stack**, so anyone following the old runbook got a
+false failure and started debugging a working system. Confirmed by doing
+exactly that on the 2026-08-21 deploy.
+
+Working checks, all verified on a healthy stack:
+```
+curl -s -o /dev/null -w '%{http_code}' localhost:80          # 200
+curl -s -o /dev/null -w '%{http_code}' localhost:80/health   # 200
+curl -s -o /dev/null -w '%{http_code}' localhost:80/webhook  # 405 = alive, POST-only
+```
+Also useful, and independent of nginx:
+`docker exec trading_bot-nginx-1 wget -qS -O /dev/null http://bot:8000/`
+— proves the bot app answers on the docker network. Note `curl` is **not
+installed inside** the bot or dashboard images, so `docker exec … curl` fails
+with `sh: 1: curl: not found` — that is a missing binary, not a dead service.
 
 Gotcha: `docker-compose restart <service>` reuses the existing
 container — it does NOT re-read .env. Changing .env (e.g. new
@@ -444,37 +465,63 @@ Other `.env` values worth knowing: `IG_ACC_TYPE=DEMO`,
 
 ## Active Strategies
 
-### Live — 6 instances (verified against `active_strategy` 2026-08-15)
+### Live — 2 instances (verified against `active_strategy` 2026-08-21)
 
-Every row below is **demo** (account Z67Y2C). `status='active'` in
-`active_strategy`. **`backtest_id` is NULL on all six** — none of them has
-recorded backtest provenance (findings doc finding 13).
+**As of 2026-08-21T18:41:31Z there are exactly TWO `status='active'` rows, and
+both are webhook swiftalgo.** No `live_signal_loop` strategy is trading live.
 
 | id | Symbol | TF | Strategy | Source | Rostered params |
 |----|--------|-----|----------|--------|-----------------|
 | 11 | EURUSD | HOUR | swiftalgo | webhook | n/a — Pine Script upstream |
 | 13 | US500 | HOUR | swiftalgo | webhook | n/a — Pine Script upstream |
-| 22 | EURUSD | 15MIN | williams_r | loop | `period=10, oversold=-90, overbought=-20` |
-| 32 | GBPUSD | 15MIN | williams_r | loop | `period=21, oversold=-90, overbought=-20` |
-| 34 | AUDUSD | 15MIN | williams_r | loop | `period=14, oversold=-85, overbought=-20` |
-| 36 | USDCAD | 15MIN | williams_r | loop | `period=14, oversold=-85, overbought=-15` |
 
-**GBPUSD id 32 runs `period=21`, not the documented 14.** The williams_r entry
-rules below this file describe `%R(14)`, and the 2026-07-09 FX expansion batch
-was run at `period=14/-85/-15` — neither matches what is actually rostered.
-This is the 4th occurrence of the params-divergence class; always pull params
-from `active_strategy` (see Critical Rules).
+Both **demo** (account Z67Y2C). `backtest_id` NULL on both — no recorded
+backtest provenance (findings doc finding 13).
 
-Detail on the four loop instances:
+### The four williams_r instances moved live → paper (2026-08-21)
 
-| Symbol | Notes |
-|--------|-------|
-| GBPUSD | Promoted 2026-06-22. FRAGILE walk-forward. $1.50 risk was halved 2026-07-07 then **restored to $10** for demo validation. No session blocks. The 2026-07-21 review gate never happened — still open |
-| EURUSD | Data-collection instance (2026-07-14), not an edge promotion. Original 2026-07-07 run REJECT (median PF 0.92, 42.9% windows); 2026-07-14 rerun with rostered params MARGINAL (median PF 1.08, 85.7% windows, 442 test trades). Discrepancy root cause irreproducible — the runs were never persisted. $10 risk |
-| USDCAD | Data-collection instance (2026-07-14), never backtested before that batch. Walk-forward REJECT (median PF 0.99, 50% windows, 410 test trades). Epic verified clean decimal scale on demo 2026-07-14. $10 risk |
-| AUDUSD | Was the **Phase-3 lead candidate** (2026-07-15) — the only roster strategy to clear a full ROBUST gauntlet. **The hard gate resolved against it 2026-08-12: Branch B, DIVERGES.** 51 post-cap clean trades, PF 0.71 vs promotion basis 1.285, WR 26.0%, net −$109.07, expectancy −$2.18/trade — the *worst* live performer of the four williams_r instances. Diagnosis: engine flattery. See ROADMAP hard gate + findings doc |
+ids **22 EURUSD**, **32 GBPUSD**, **34 AUDUSD**, **36 USDCAD**, all 15MIN, all
+`status='paper'` since `2026-08-21T18:41:31Z`.
 
-**Corrections to claims previously made in this table:**
+**Reasons are in `active_strategy_history` rows 43, 44, 45 and 46 — one per
+instance, each carrying its own live record, the parity-v2 comparison and the
+paper-not-inactive rationale. Read those rather than a summary here.** This
+file has been wrong about the roster before (US100 HOUR supertrend ran live and
+undocumented for ~8 weeks); pointing at the history table instead of restating
+it is deliberate.
+
+One-line headline only: no profitable month pooled in three, best-ever bucket
+PF 0.86, and `parity-v2` independently predicts PF < 1.0 on all four.
+
+**Why `paper` and not `inactive`** — the one thing worth stating here because
+it is a live operational fact, not history: the signal loop iterates
+`get_active_strategies(symbol)`, which is `status IN ('active','paper')`
+(`database/models.py:597`). A symbol with **no runnable row never reaches
+`_check_symbol`**, and the spread sample is taken at the top of that function
+(`live_signal_loop.py:369`) before any block check. **AUDUSD and USDCAD have no
+other runnable row**, so `inactive` would have taken their spread sampling and
+`candle_source_compare` to zero. EURUSD and GBPUSD carry other paper strategies
+and were never at risk.
+
+Verified post-change by positive signal, not silence: the 18:45 cycle logged
+`Checked this cycle (11)` including all four williams_r keys, with AUDUSD
+(`6e-05`) and USDCAD (`0.00013`) both still writing `signal_log.spread`.
+
+**Params, still authoritative, still divergent from the docs.** GBPUSD id 32
+runs `period=21`, not the `%R(14)` described further down this file, and not
+the `period=14/-85/-15` of the 2026-07-09 FX expansion batch. 4th occurrence of
+the params-divergence class — always pull params from `active_strategy`
+(see Critical Rules).
+
+| id | Symbol | Rostered params |
+|----|--------|-----------------|
+| 22 | EURUSD | `period=10, oversold=-90, overbought=-20` |
+| 32 | GBPUSD | `period=21, oversold=-90, overbought=-20` |
+| 34 | AUDUSD | `period=14, oversold=-85, overbought=-20` |
+| 36 | USDCAD | `period=14, oversold=-85, overbought=-15` |
+
+**Corrections to claims this table used to make** (retained — the claims
+outlived the rows, and the AUDUSD ones are still cited elsewhere):
 - AUDUSD "stability-map plateau (23 contiguous cells at PF>=1.1, not a spike)"
   — the contour is real (25 of 84 cells clear PF ≥ 1.1), but of those 84 cells
   the verdicts are FRAGILE 38, MARGINAL 34, REJECT 11, **ROBUST 1**. It is one
@@ -485,9 +532,11 @@ Detail on the four loop instances:
   per-window breakdown is unrecoverable. `walkforward_runs` was created
   2026-07-22, a week after the 2026-07-15 promotion.
 - The MC figures (p5=$707, p95=$2621) do reproduce exactly from stored rows.
-| EURUSD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — promoted for regime-tagged execution data. Walk-forward status: original 2026-07-07 run REJECT (median PF 0.92, 42.9% windows), corrected 2026-07-14 rerun with rostered params (period=10, oversold=-90, overbought=-20) MARGINAL (median PF 1.08, 85.7% windows, 442 test trades) — verdict boundary-sensitive, NOT an edge promotion. Discrepancy investigated: same cache (predates the original run), same params (verified via active_strategy id=22 timestamp), same window count (7=7) ruling out a --count difference, no engine/strategy code changed since — root cause irreproducible because walk-forward runs were never persisted (no DB row, no saved output); likely a --session-filter or --max-hold CLI flag difference in the original invocation. $10 risk |
-| USDCAD | 15MIN | williams_r | Live | loop   | Data-collection instance (2026-07-14) — never backtested before this batch. Walk-forward: REJECT (median PF 0.99, 50% windows, 410 test trades, default params period=14/oversold=-85/overbought=-15 — no prior rostered config existed). NOT an edge promotion — running live on demo purely for regime-tagged execution data. Epic CS.D.USDCAD.MINI.IP verified clean decimal scale (bid=1.41468, TRADEABLE) on demo (Z67Y2C) 2026-07-14; newly registered in ig_scale.py and execute_trade.py EPIC_CONFIG. $10 risk |
-| AUDUSD | 15MIN | williams_r | Live | loop   | **Phase-3 lead candidate** (2026-07-15) — promoted paper→demo-live on full-stack validation, NOT a data-collection instance: walk-forward ROBUST (median PF 1.285, 83.3% windows profitable, 6 windows — corrected for the plateau-center params below; the original -15 config's 100%-windows/MARGINAL number was a different cell), stability-map plateau (23 contiguous cells at PF>=1.1, not a spike), permutation test 96th percentile vs synthetic noise, Monte Carlo positive at every percentile (p5=$707 to p95=$2621 on $500/$10-risk, 1000 paths). Params corrected period=14/oversold=-85/**overbought=-20** (was -15 — the rostered row predated the stability map; -20 is the plateau center). Epic CS.D.AUDUSD.MINI.IP verified clean decimal scale (bid=0.6987, TRADEABLE) on demo (Z67Y2C) 2026-07-15; newly registered in ig_scale.py/execute_trade.py EPIC_CONFIG (was paper-only). $10 risk (demo — no bankroll to protect; live sizing per the MC ruin table below comes at Phase 5) |
+
+*(A duplicated fragment of an older three-row version of this table sat here
+until 2026-08-21, restating the EURUSD/USDCAD/AUDUSD notes in a stale column
+format. Removed, not edited — it was a second copy, and the reasons now live in
+`active_strategy_history`.)*
 
 ### Paper
 | Symbol | TF    | Strategy   | Mode  | Source | Notes                          |
@@ -501,6 +550,13 @@ Detail on the four loop instances:
 | US500  | 15MIN | ema_pullback         | Paper | loop | 44 bt trades, 45.5% WR, PF 1.57, EMA8/50. Walk-forward (2026-07-09): FRAGILE — median PF 1.03, 53.8% windows profitable, 171 trades across 13 windows |
 | US100  | 15MIN | ema_pullback         | Paper | loop | 86% combos profitable, PF 3.17 best. Walk-forward (2026-07-09): FRAGILE — median PF 1.12, 69.2% windows profitable (one window short of ROBUST's 70% bar), 70 trades across 13 windows. The PF 3.17 sweep result did not survive — overfit |
 | GBPUSD | 15MIN | ema_pullback         | Paper | loop | 25 bt trades, 64% WR, PF 2.00 |
+| EURUSD | 15MIN | williams_r | Paper | loop | **Demoted from live 2026-08-21**, history row 43. id 22 |
+| GBPUSD | 15MIN | williams_r | Paper | loop | **Demoted from live 2026-08-21**, history row 44. id 32 |
+| AUDUSD | 15MIN | williams_r | Paper | loop | **Demoted from live 2026-08-21**, history row 45. id 34 |
+| USDCAD | 15MIN | williams_r | Paper | loop | **Demoted from live 2026-08-21**, history row 46. id 36 |
+
+**13 `status='paper'` rows total** (ids 6, 22, 23, 24, 25, 26, 28, 29, 30, 31,
+32, 34, 36). Count verified on the VPS 2026-08-21.
 
 ### bb_squeeze EURUSD paper P&L — CORRECTED (2026-08-12)
 **The −$2,453.93 / 32-trade figure was wrong wherever it appeared.** It is one
@@ -1222,10 +1278,58 @@ confirmed.** Four instances surfaced in the 2026-08-12 session alone.
    is baked from `scripts/crontab` at build time (`Dockerfile:18`). Editing the
    container file works until the next `up -d --build` silently restores the
    baked copy. This is why the 2026-08-15 deploy exists at all.
-4. **A probe that invalidates its own precondition returns a false negative.**
-   A background check sampled a sentinel file 32 seconds *after* the cleanup
-   step had deleted it, and reported `MARKER_ABSENT` for an event that had
-   demonstrably occurred. The probe was measuring its own teardown.
+4. **A probe that cannot observe the working state returns a false negative.**
+   Two instances so far — see "The self-invalidating probe" below, which is now
+   its own rule rather than a footnote to this list.
+
+### The self-invalidating probe — a rule with a checkable step
+
+**Two instances, both of which reported a clean negative about something that
+was in fact working:**
+
+1. **Sampled after its own teardown (2026-08-12).** A background check read a
+   sentinel file 32 seconds *after* the cleanup step had deleted it, and
+   reported `MARKER_ABSENT` for an event that had demonstrably occurred. The
+   probe was measuring its own teardown.
+2. **Ran in a process that could not hold the answer (2026-08-21).**
+   `docker exec … python3 -c "from bot.candle_stream import get_spread; ..."`
+   returned `None` for every symbol, which was read as "the stream is not warm
+   after the rebuild". It was warm. `get_spread` reads a **module-level buffer
+   populated by the Lightstreamer thread inside the long-running uvicorn
+   process**; a one-shot `exec` starts a *fresh* interpreter whose buffer is
+   empty by construction and can never be anything else. The probe could not
+   have returned a non-`None` value no matter how healthy the system was.
+
+**THE RULE — do this before trusting any probe result:**
+
+> **State what the probe would show if the thing under test were WORKING, then
+> confirm the probe is able to observe that state at all.**
+
+If you cannot describe the passing observation, or the probe cannot reach it,
+the result carries no information — a negative from such a probe is
+indistinguishable from a broken system, and will usually be read as one.
+
+Two failure modes to check for by name, because both have now happened here:
+
+- **Wrong time.** The probe runs after the artifact is gone (instance 1), or
+  before it is created. Read every probe result against the timestamps of the
+  setup and cleanup around it.
+- **Wrong process / wrong address space.** The probe looks somewhere the state
+  provably does not live (instance 2). In-memory state — module globals, warm
+  buffers, caches, thread-owned data — belongs to **one process**. A separate
+  `exec`, a fresh interpreter, a different container, or a cron job cannot see
+  it. Reach it through something that crosses the boundary: the DB, a log line,
+  an HTTP endpoint the live process serves, or an artifact it writes.
+
+Worked example of the fix, same session: the stream question was settled not by
+re-running the `exec`, but by POSTing a webhook with **no** `spread` key and
+watching the *live uvicorn process* log
+`SHADOW spread gate: ratio 1.200 ... (spread=1.2)`. That observation is only
+producible by a warm buffer, and it was made inside the process that owns one.
+
+This rule is the mirror of the marker test below. The marker test says *do not
+infer success from absence*; this one says *do not infer failure from absence
+either*, until you have shown the probe could have seen success.
 
 ### The remedy — the marker test
 When disabling something, prove the disable took effect with a **positive
@@ -1477,7 +1581,22 @@ log explicitly when the candidate pool is empty *and why* (zero rows at
 `engine_version=X`), so a silent selector can be told apart from a starved one
 by a positive signal rather than inferred from nothing happening.
 
-## ⚠️ WEEKEND CHECK OUTSTANDING — FX market-hours block (deployed 2026-08-17)
+## ⏳ CONTROLS AWAITING FIRST REAL FIRE
+
+Two gates are deployed and **verified only against constructed timestamps**.
+Neither has ever fired in production. Per the marker-test rule, their silence
+proves nothing until each has been observed once with a positive signal.
+
+| control | deployed | first reachable | grep `signal_log.error` for |
+|---|---|---|---|
+| FX weekend block | 2026-08-17 | **Sat 2026-08-22** | `market closed — weekend` |
+| 21:00 rollover gate | 2026-08-21 | **Mon 2026-08-24 21:00–21:59 UTC** | `entry window closed — daily rollover hour` |
+
+Tick these off below when observed. Delete neither section until both are
+confirmed — a control recorded as verified when it never fired is the same
+error as a monitoring gap recorded as outstanding while the monitor existed.
+
+## ⚠️ CHECK 1 — FX market-hours block (deployed 2026-08-17, due Sat 2026-08-22)
 
 `_is_blocked` never blocked FX. `MARKET_CLOSE` holds only US500/US100/DAX/BTC,
 so every FX symbol hit `.get(symbol) is None → return False` before reaching
@@ -1491,7 +1610,7 @@ verified so far used *constructed* timestamps. This control has never once
 fired for FX in production, so — per the marker-test rule in Unverified
 Controls — its silence proves nothing on its own.
 
-On the first Saturday after 2026-08-17, confirm all three:
+**That Saturday is 2026-08-22.** Confirm all three:
 
 1. FX symbols log `BLOCKED` in `signal_log` with reason
    `market closed — weekend` (not the old `near market close`)
@@ -1506,8 +1625,79 @@ block check and the blocked branch still calls `log_signal_check`; that
 ordering is load-bearing and commented as such, because the thin reopen is the
 most expensive window we have and the one we least want to go blind on.
 
+**What ABSENCE would mean.** Zero FX rows carrying `market closed — weekend`
+on Saturday is **not** evidence the block works — it is equally consistent with
+the loop not running at all. Positive control first: confirm `signal_log` has
+**any** rows on 2026-08-22. Rows present and none carrying the reason → the
+block is broken. No rows at all → the loop was down and the test did not run;
+reschedule, do not conclude. (`candle_stream`'s heartbeat legitimately goes
+quiet at weekends — `watchdog.check_heartbeat` early-returns outside
+Sun 22:00 – Fri 21:00 UTC — so a silent candle_stream is the gate working, not
+a fault. `signal_loop` should keep beating.)
+
 Until that observation exists, this control is verified only against
 constructed timestamps.
+
+## ⚠️ CHECK 2 — 21:00 UTC rollover gate (deployed 2026-08-21, due Mon 2026-08-24)
+
+`market_hours.is_entry_allowed` refuses entries in the 21:00 UTC hour, **all
+instruments**, checked before the `_ALWAYS_OPEN` short-circuit so BTC is
+covered. Rationale, evidence table and the DAX/BTC-are-mechanism-not-evidence
+caveat live in the `market_hours.py` comment; do not restate them here.
+
+**Verified so far: 33 marker assertions, in the deployed image, ALL AGAINST
+CONSTRUCTED `datetime` VALUES.** It has never fired on a real clock.
+
+**Why Monday and not this weekend** — the gate is genuinely unreachable before
+then, so its silence until Monday is expected and means nothing:
+
+| | `is_entry_allowed` | `is_market_open` | who blocks |
+|---|---|---|---|
+| Fri 2026-08-21 21:30 | False | **False** | venue already shut |
+| Sat 2026-08-22 21:30 | False | False | venue shut |
+| Sun 2026-08-23 21:30 | False | True | the **Sunday reopen** rule (23:00), not this one |
+| **Mon 2026-08-24 21:30** | **False** | True | **this gate** ← first genuine exercise |
+
+### On Mon 2026-08-24, after 22:00 UTC, confirm all four
+
+1. `signal_log` rows exist in 21:00–21:59 UTC with
+   `error = 'entry window closed — daily rollover hour'` — the **exact** string,
+   distinct from `'entry window closed — thin reopen / pre-weekend policy'`.
+   Getting the pre-weekend string instead means the rollover branch is being
+   shadowed by an earlier rule and the ordering in `_block_reason` has drifted
+   from `is_entry_allowed`.
+2. **Zero** `trades` rows with `substr(timestamp,12,2) = '21'` on that date.
+3. `signal_log.spread` **non-null** on FX rows inside the blocked window —
+   sampling must continue through the block. Same load-bearing ordering as
+   CHECK 1: the sample is taken before the block check and the blocked branch
+   still calls `log_signal_check`. The rollover hour is the widest-spread hour
+   of the day and the single most valuable hour to keep sampling.
+4. `signal_loop` heartbeat kept beating through a fully-blocked cycle.
+
+**What ABSENCE would mean — read this before concluding anything.** No rows
+carrying that reason on Monday is **not** evidence the gate works. It is
+equally consistent with:
+- no strategy being `_is_due` during that hour (15MIN cadence, so plausible);
+- the roster being all-paper — *paper strategies still reach `_check_symbol`
+  and still log*, so this should not suppress it, but confirm rather than
+  assume;
+- the container not carrying the code.
+
+Distinguish them with a positive control before drawing a conclusion: confirm
+`signal_log` has **any** rows at all in that hour on that date. If it has rows
+and none carry the reason, the gate is broken. If it has no rows at all, the
+loop was not checking and the test simply did not run — reschedule, do not
+conclude.
+
+### Also awaiting first fire: the shadow ratio gate
+
+`risk/spread_gate.py`, `ENFORCE=False`, k=0.25. It only evaluates on an actual
+BUY/SELL, so it is unexercised until a signal lands. It sits before the
+paper/live branch, so a **paper** signal exercises it. Look for
+`SHADOW spread gate:` in the bot log or in `signal_log.error`. It must
+**never** appear as the cause of a skipped trade while `ENFORCE` is False — if
+a trade is ever missing and this string is the only explanation, the shadow
+gate has been promoted by accident.
 
 ## 🚦 GATE — do not build the spread table before these are all true
 
