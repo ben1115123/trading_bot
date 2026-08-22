@@ -1831,6 +1831,131 @@ paper/live branch, so a **paper** signal exercises it. Look for
 a trade is ever missing and this string is the only explanation, the shadow
 gate has been promoted by accident.
 
+## Stage 4 re-validation — WHERE IT RUNS AND HOW RESULTS COME HOME
+
+**Decided 2026-08-22, before any run.** A run whose results have no defined path
+home is how the `walkforward_runs` gap happened twice: the 2026-07-15 AUDUSD
+promotion has no persisted walk-forward because the table did not exist yet, and
+the EURUSD REJECT-vs-MARGINAL discrepancy is permanently unresolvable because no
+run recorded its candles. **Define the import before the export.**
+
+### Where it runs: LOCALLY, not on the VPS
+
+- The VPS has **no `scripts/candle_cache/` directory at all**. Seeding it means
+  either putting ~36 MB of caches in the repo tree — where `Dockerfile:11`
+  `COPY . .` bakes them into **every image layer**, the same problem that made
+  the two DB backups cost 504 MB per build — or adding a bind mount, i.e. a
+  `docker-compose.yml` change to run a batch job.
+- The caches, the merged `fetch_twelvedata` incremental path and the
+  `TWELVEDATA_API_KEY` all already live locally.
+- Stage 4 is a batch job. It has no reason to run inside the trading container.
+
+**Accepted cost, knowingly:** this deepens the local-vs-VPS corpus split
+(finding 11). The import step below is what stops it becoming permanent.
+
+### The roster comes from the VPS, via a small snapshot
+
+The local `active_strategy` holds **3 phantom rows** matching no deployed
+strategy, and `--from-roster` without `--roster-db` will happily resolve them —
+demonstrated: `US100 HOUR stoch_rsi` resolves locally to phantom id=2 with
+`period=14`. See finding 28.
+
+```
+# on the VPS
+python3 scripts/export_roster.py --out /tmp/roster.db     # 20 KB, not 321 MB
+# locally
+scp ubuntu@<host>:/tmp/roster.db ./roster.db
+python3 scripts/run_backtest.py … --from-roster --roster-db ./roster.db
+```
+
+`export_roster.py` writes `active_strategy` plus a `snapshot_provenance` table
+recording source host, absolute source path, git HEAD and row count — a roster
+file with no origin is indistinguishable from the phantom one it replaces.
+
+### The import step — SCOPED, NOT BUILT. Build before Stage 4 executes.
+
+**What comes home:** only rows produced by the run — `backtest_results` and
+`walkforward_runs` where `engine_version = CURRENT_ENGINE_VERSION` **and**
+`run_at` / `created_at >= <batch start>`. Nothing else. The local DB also holds
+5,329 pre-parity `backtest_results` and 276 `walkforward_runs`, 1,166 and 82 of
+which are ETF-contaminated (finding 30); **none of that crosses**.
+
+**In what form:** a standalone sqlite file with the same two table schemas, same
+column names and order — `stage4_<UTCstamp>.db`. Same shape as
+`export_roster.py`, and for the same reason: a file that can be inspected before
+it is trusted.
+
+⛔ **NEVER copy the local `trades.db` over the VPS one.** It would destroy the
+live `trades`, `paper_trades`, `signal_log` and `active_strategy` tables. The
+import is additive, row by row, or it does not happen.
+
+**How rows are stamped.** Each already carries `engine_version`, `spread_model`,
+`spread_table_sha` and `params_source` (roster / literal / grid / file-default).
+The import must additionally record that the row was **produced off-host**:
+`produced_on` (hostname), `imported_at`, and the `roster_snapshot` git HEAD the
+params came from.
+
+`walkforward_runs` can hold that in `extra_json` today. **`backtest_results`
+cannot — it has no such field, and no cache-provenance columns either.** That is
+finding 31, and it means the two pieces of work are the same piece: the columns
+finding 31 proposes (`cache_file`, `cache_candle_count`, `cache_date_start`,
+`cache_date_end`) are exactly what an imported row needs to be auditable.
+**Build finding 31's migration first**, then the import.
+
+**Import rules, all refusals rather than warnings:**
+1. Refuse any row whose `engine_version` ≠ current — never mix trade models.
+2. Refuse any row whose `spread_model` ≠ current — spread is a parameter, and a
+   name can be kept while the numbers change (that is what `spread_table_sha`
+   is for; compare it too).
+3. Insert **without `id`** so the VPS autoincrement assigns fresh ones. Local
+   ids are meaningless there and would collide.
+4. **Idempotent**: skip a row whose natural key already exists —
+   `(strategy_name, symbol, timeframe, params_json, run_at)` for
+   `backtest_results`, plus `run_type` and `cache_file` for `walkforward_runs`.
+   The microsecond timestamps make these effectively unique. Re-running the
+   import must be a no-op, not a duplicate.
+5. `Connection.backup()` the VPS DB first, never `cp` (open WAL → torn copy),
+   and record the backup in the Database Backups table in the same change.
+6. Read back and report counts after inserting. Do not infer success from the
+   absence of an exception — see Unverified Controls.
+
+**Verification, before trusting the first import:** an insert → read-back →
+delete write test against the VPS, exactly as was done for `walkforward_runs` on
+2026-08-22. That test found `spread_table_sha` was NULL on every row ever
+written, which code-reading had missed.
+
+## ⚠️ UNDEPLOYED COMMITS — repo and running image DIFFER
+
+**As of 2026-08-22 the container image is BEHIND `origin/main`.** Recorded here
+because undocumented drift between the repo and the running image is its own
+hazard class: every "verify the deploy" step in this file assumes they match.
+
+| | |
+|---|---|
+| running image | `sha256:5dc09d70ff5b`, built **2026-08-21 19:10 UTC** |
+| image contains up to | `f4875d3` (rollover gate + shadow spread gate) |
+| `origin/main` is at | `66e4d54` and later |
+| undeployed | `7d6e961`, `1d3725d`, `66e4d54`, and the Stage 4 prerequisite commits |
+
+**What is undeployed is CLI and docs only** — `run_backtest.py`, `models.py`
+(additive `get_roster_row`), engine/robustness provenance, findings and this
+file. No signal-loop, webhook, poller or execution behaviour differs between
+image and repo.
+
+**Not urgent, and deliberately not deployed for its own sake.** The bot's import
+was verified against the new code via `docker cp`
+(`live_signal_loop import OK, STRATEGIES: 34`), so the next rebuild is known safe
+— that check is now mandatory, see finding 29.
+
+⚠️ **Consequences while the drift stands:**
+- `docker exec … python3 scripts/run_backtest.py --from-roster` fails with
+  `unrecognized arguments` — the container's `/app` copy predates the flag.
+- Any in-container file copied in by hand is lost on the next rebuild (see
+  Unverified Controls instance 3).
+
+**Clear this entry when the next deploy lands**, and re-verify the crontab md5
+anchor at the same time.
+
 ## 🚦 GATE — do not build the spread table before these are all true
 
 The market-open filter shipped 2026-08-17 (`get_spread_samples(market_open_only=True)`,

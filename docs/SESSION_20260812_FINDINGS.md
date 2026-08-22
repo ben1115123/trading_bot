@@ -2276,6 +2276,89 @@ correct outcome until an index-scaled 15MIN source exists.
 
 ---
 
+## 31. The table the selector reads has LESS provenance than the one it doesn't
+*(added 2026-08-22 — recorded, fix SCOPED not built)*
+
+**The asymmetry is the finding.** Auditing the ETF-cache contamination
+(finding 30) required identifying which stored rows came from which candle
+file. Two tables, two outcomes:
+
+| table | rows | provenance | how the contaminated rows were identified |
+|---|---|---|---|
+| `walkforward_runs` | 276 | `cache_file`, `cache_candle_count`, `cache_date_start`, `cache_date_end` | **directly** — `WHERE cache_file LIKE '%_AV.json'`, exact, 82 rows |
+| `backtest_results` | **5,329** | **none** | **inferred** — `WHERE candles_total > 5000`, 1,166 rows |
+
+`backtest_results` is the larger table by 19x. It is also **the one
+`scripts/score_strategies.py:44` reads via `get_backtest_results()`**, whose
+scores `scripts/select_strategy.py` ranks to decide promotions. The smaller
+table, which no promotion path consults, is the one that can prove where its
+numbers came from.
+
+**Why the inference worked, and why that is not good enough.**
+`candles_total > 5000` separates the AV caches (9,000–10,285 candles) from the
+clean yfinance 15MIN cache (1,560). The reasoning is sound and the boundary is
+wide. But it is reasoning about a **fact that should have been recorded**: the
+row knows how many candles it saw and does not know which file they came from.
+Change the fetch size once and the discriminator silently stops working, with
+no error and no way to notice — the same shape as every uncalibrated-constant
+finding in this document.
+
+Contrast the fingerprint `walkforward_runs` already carries, added precisely
+because a prior discrepancy proved unrecoverable without it: the EURUSD
+REJECT-vs-MARGINAL disagreement could not be resolved because no run had
+recorded which candles produced it (see `insert_walkforward_run`'s docstring).
+That lesson was applied to one table and not the other.
+
+### Scope of the fix — NOT urgent, but it rides the next engine change
+
+**Add to `backtest_results` the same four columns `walkforward_runs` has:**
+
+    cache_file          TEXT
+    cache_candle_count  INTEGER
+    cache_date_start    TEXT
+    cache_date_end      TEXT
+
+`scripts/run_backtest.py` already computes exactly this as `fingerprint` via
+`_cache_fingerprint(candles, cache_file_name)` and passes it to
+`_persist_wf_run`. It is **not** passed to `insert_backtest_result`. So the
+value already exists at the call site; only the plumbing is missing.
+
+**Migration shape** — follow the existing `ALTER TABLE … ADD COLUMN` pattern in
+`database/db.py` (the same one that added `engine_version` / `spread_model` /
+`spread_table_sha`, verified working on a real DB 2026-08-22):
+
+    for col, defn in [("cache_file", "TEXT"), ("cache_candle_count", "INTEGER"),
+                      ("cache_date_start", "TEXT"), ("cache_date_end", "TEXT")]:
+        try: cursor.execute(f"ALTER TABLE backtest_results ADD COLUMN {col} {defn}")
+        except Exception: pass
+
+**⛔ BACKFILL NULL. DO NOT INVENT PROVENANCE.** Existing rows never recorded
+which file they used. A plausible reconstruction from `candles_total` and
+`run_at` would be a guess wearing the costume of a record — the same error as
+inventing a P&L for the NULL-pnl trades (finding 24) or backfilling
+`resolved_at` (finding 21). NULL is the honest value and it is also the useful
+one: it distinguishes "produced before provenance existed" from "produced with
+provenance", which is exactly the question a reader needs answered.
+
+Note this differs from the `engine_version` migration, which backfilled
+`'pre-parity-v0'` rather than NULL. That was correct there because the value
+was *known* — every pre-migration row was demonstrably produced by that engine.
+Here the value is not known. **Backfill a fact, never a reconstruction.**
+
+**No `engine_version` bump.** Adding provenance columns changes nothing about
+how a trade is entered, sized, exited or priced, so two runs over the same
+candles still produce identical trades and P&L. Per the standing rule below,
+that is not a bump. It rides along in whatever commit next touches the engine.
+
+**Why "not urgent" is defensible here:** the 1,166 contaminated rows are all
+`pre-parity-v0`, and `get_backtest_results()` filters to the current version by
+default, so the selector cannot reach them today. The urgency arrives the
+moment Stage 4 starts writing `parity-v2` rows — **every new row should carry
+provenance from the first one**, because retrofitting it later reproduces
+exactly this finding one engine version further on.
+
+---
+
 ## Standing rule — when to bump a model stamp
 
 Three stamps now exist: **`engine_version`** (backtest trade model),
