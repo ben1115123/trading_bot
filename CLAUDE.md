@@ -1402,6 +1402,47 @@ scores written → then null/replace. Not before, and never as cleanup.
 The selector is inert at both layers right now (see Selector Disabled), which is
 what makes the deferral safe. That inertness is load-bearing until this is done.
 
+## ⛔ US500 / US100 15MIN caches are ETF prices — BLOCKER, same class as DAX
+
+`scripts/candle_cache/US500_15MIN_AV.json` and `US100_15MIN_AV.json` were
+fetched through `scripts/fetch_twelvedata.py`, whose `SYMBOL_MAP` routes
+**`"US500" -> "SPY"`** and **`"US100" -> "QQQ"`**. Those are **ETFs, not the
+indices**. Measured 2026-08-22:
+
+| cache | last close | median 15MIN bar range | real index |
+|---|---|---|---|
+| `US500_15MIN_AV.json` (SPY) | **729.08** | 1.42 | ^GSPC ≈ **7,481** (~10.3x) |
+| `US100_15MIN_AV.json` (QQQ) | **705.54** | 2.20 | ^NDX ≈ 26,000 (~37x) |
+| `US500_HOUR_5000_yf.json` (^GSPC) | 7,481.46 | 21.45 | correct |
+
+**Consequences, identical in shape to the DAX blocker below:**
+- `MIN_SL_DIST["US500"] = 3.0` against a median bar range of **1.42** — the
+  floor binds on most bars, exactly the pathology that makes DAX unusable.
+  `US100` is 4.0 against 2.20.
+- `VALUE_PER_POINT` is 1.0 for both, meaning "one index point". A point of SPY
+  is not a point of ^GSPC, so every lot size and P&L on these candles is off by
+  the scale factor.
+- The HOUR cache is fine — it came from yfinance `^GSPC`. **The defect is
+  per-file, not per-symbol**, so "US500 has a cache" is not the question; which
+  file, from which source, is.
+
+**Retroactively taints recorded numbers.** The `ema_pullback` figures in this
+file — US500 15MIN "44 bt trades, 45.5% WR, PF 1.57" and US100 15MIN "86% of 72
+combos profitable, PF 3.17 best" — were produced on ETF-scaled candles. Treat
+them as void, not merely pre-parity.
+
+**Blocks Stage 4 for `active_strategy` ids 29 (US500 15MIN ema_pullback) and
+30 (US100 15MIN ema_pullback)** until the caches are re-fetched from an index
+source and the scale verified against IG. yfinance `^GSPC`/`^NDX` at 15MIN is
+capped at 60 days, which is not enough span for a walk-forward; Twelve Data
+would need an index symbol that the free tier may not carry. **Unresolved — do
+not paper over it by re-running on the ETF files.**
+
+This is the third instance of the class: DAX (mis-scaled, below), EURUSD
+points-vs-decimal on the DEMO account (see Price scale quirk), and now these
+two. **Always check a cache's price level against the instrument it claims to
+be before trusting a backtest built on it.**
+
 ## ⛔ DAX candle cache — BLOCKER on any DAX work
 
 `scripts/candle_cache/DAX_15MIN_AV.json` has a **median 15-minute high-low range
