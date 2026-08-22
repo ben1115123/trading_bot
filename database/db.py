@@ -77,7 +77,11 @@ def init_db():
             sharpe_ratio     REAL,
             benchmark_return REAL,
             params_json      TEXT,
-            engine_version   TEXT NOT NULL DEFAULT 'pre-parity-v0'
+            engine_version   TEXT NOT NULL DEFAULT 'pre-parity-v0',
+            cache_file         TEXT,
+            cache_candle_count INTEGER,
+            cache_date_start   TEXT,
+            cache_date_end     TEXT
         )
     """)
 
@@ -210,6 +214,45 @@ def init_db():
     for col, defn in [
         ("spread_model",     "TEXT NOT NULL DEFAULT 'flat-roundtrip-dollars-UNCALIBRATED'"),
         ("spread_table_sha", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE backtest_results ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
+
+    # Migrate backtest_results: candle-cache provenance — the same four columns
+    # walkforward_runs has carried since it was created. Finding 31: the table
+    # the selector actually reads had LESS provenance than the one it does not,
+    # which is why the ETF-cache contamination (finding 30) could be identified
+    # EXACTLY in walkforward_runs (`cache_file LIKE '%_AV.json'`, 82 rows) but
+    # only INFERRED in backtest_results (`candles_total > 5000`, 1,166 rows) —
+    # reasoning about a fact that should have been recorded.
+    #
+    # Runs AFTER the CREATE above, per finding 18: on a fresh DB an ALTER that
+    # precedes its CREATE is silently swallowed by the except and the column
+    # never appears.
+    #
+    # ⛔ BACKFILL IS NULL, DELIBERATELY. This differs from the engine_version
+    # migration directly above, which backfilled 'pre-parity-v0'. That value was
+    # KNOWN — every pre-migration row was demonstrably produced by that engine.
+    # Here the value is NOT known: existing rows never recorded which file they
+    # used, and reconstructing it from candles_total + run_at would be a guess
+    # wearing the costume of a record (same error as inventing P&L for the
+    # NULL-pnl trades, finding 24, or backfilling resolved_at, finding 21).
+    # NULL is the honest value and also the useful one — it distinguishes
+    # "produced before provenance existed" from "produced with provenance",
+    # which is the question a reader actually needs answered. Hence plain TEXT/
+    # INTEGER with no DEFAULT, unlike the NOT NULL DEFAULT stamps above.
+    #
+    # NO engine_version BUMP. Provenance columns change nothing about how a
+    # trade is entered, sized, exited or priced, so two runs over the same
+    # candles still produce identical trades and P&L. Per the standing stamp
+    # rule, that is not a bump.
+    for col, defn in [
+        ("cache_file",         "TEXT"),
+        ("cache_candle_count", "INTEGER"),
+        ("cache_date_start",   "TEXT"),
+        ("cache_date_end",     "TEXT"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE backtest_results ADD COLUMN {col} {defn}")

@@ -248,19 +248,29 @@ def insert_backtest_result(result: dict) -> int:
                  candles_total, candles_train, candles_test,
                  total_trades, win_rate, total_profit, max_drawdown,
                  sharpe_ratio, benchmark_return, params_json, strategy_type,
-                 engine_version, spread_model, spread_table_sha)
+                 engine_version, spread_model, spread_table_sha,
+                 cache_file, cache_candle_count, cache_date_start, cache_date_end)
             VALUES
                 (:strategy_name, :symbol, :timeframe, :run_at,
                  :candles_total, :candles_train, :candles_test,
                  :total_trades, :win_rate, :total_profit, :max_drawdown,
                  :sharpe_ratio, :benchmark_return, :params_json, :strategy_type,
-                 :engine_version, :spread_model, :spread_table_sha)
+                 :engine_version, :spread_model, :spread_table_sha,
+                 :cache_file, :cache_candle_count, :cache_date_start, :cache_date_end)
         """, {
             **result,
             "engine_version":   result.get("engine_version", CURRENT_ENGINE_VERSION),
             "spread_model":     result.get("spread_model", CURRENT_SPREAD_MODEL),
             "spread_table_sha": result.get("spread_table_sha",
                                            spread_table_sha(result.get("spread_table"))),
+            # Candle-cache provenance (finding 31). Defaults to NULL rather than
+            # to anything derived: a caller that does not know which file it
+            # read must leave the field empty, because a reconstructed value is
+            # indistinguishable from a recorded one once it is in the column.
+            "cache_file":         result.get("cache_file"),
+            "cache_candle_count": result.get("cache_candle_count"),
+            "cache_date_start":   result.get("cache_date_start"),
+            "cache_date_end":     result.get("cache_date_end"),
         })
         conn.commit()
         return cursor.lastrowid

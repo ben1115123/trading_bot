@@ -393,7 +393,22 @@ def create_ig_session() -> IGService:
 
 
 def _save_run(strategy_class, symbol, timeframe, result, params,
-              strategy_type: str = "swing") -> int:
+              strategy_type: str = "swing", fingerprint: dict = None) -> int:
+    """Persist one backtest_results row plus its trades.
+
+    fingerprint: the _cache_fingerprint() dict for the candles this run saw.
+        Finding 31 — backtest_results is the table score_strategies() reads and
+        select_strategy() ranks, and until 2026-08-23 it recorded how MANY
+        candles it saw and not WHICH FILE they came from. The value already
+        existed at the call site and was already passed to _persist_wf_run; only
+        this plumbing was missing. Omitting it writes NULLs, which is the honest
+        record of "produced without provenance" — never reconstruct it here.
+
+    engine/spread stamps come from the engine RESULT, not from the constants.
+    insert_backtest_result would otherwise fall back to spread_table_sha(None)
+    -> NULL, the identical defect that was found on every walkforward_runs row
+    ever written before 2026-08-22.
+    """
     trades   = result["trades"]
     win_rate = calc_win_rate(trades)
     profit   = calc_total_profit(trades)
@@ -416,6 +431,9 @@ def _save_run(strategy_class, symbol, timeframe, result, params,
         "benchmark_return": result["benchmark_return"],
         "params_json":      json.dumps(params),
         "strategy_type":    strategy_type,
+        **{k: result[k] for k in ("engine_version", "spread_model", "spread_table_sha")
+           if k in result},
+        **(fingerprint or {}),
     }
     backtest_id = insert_backtest_result(row)
     insert_backtest_trades([{**t, "backtest_id": backtest_id} for t in trades])
@@ -887,7 +905,7 @@ def main():
         for r in sweep_results:
             params = r["params"]
             bid = _save_run(strategy_class, args.symbol, args.timeframe, r, params,
-                            strategy_type=args.type)
+                            strategy_type=args.type, fingerprint=fingerprint)
             _print_run(strategy_class.name, args.symbol, args.timeframe, r, params, bid)
 
         print(f"Saved {len(sweep_results)} runs to database.")
@@ -895,15 +913,23 @@ def main():
               f"sweep. Best-looking result may be due to chance — validate promising "
               f"candidates out-of-sample (e.g. --walk-forward) before promoting.")
     else:
-        strategy = strategy_class()
-        params   = strategy.params
-        print(f"Running single backtest with params={params}\n")
+        # cli_params is honoured here for the same reason every other stage
+        # honours it: this is the ONLY path that writes backtest_results, the
+        # table score_strategies() reads. Until 2026-08-23 it constructed
+        # strategy_class() with no params, so `--from-roster` printed
+        # "[params] from roster: ..." and then stored a row built from FILE
+        # DEFAULTS -- the banner and the row disagreed, silently, on the one
+        # table a promotion decision consults. Same class as finding 31: a
+        # record that does not say what actually produced it.
+        params   = cli_params if cli_params is not None else strategy_class().params
+        strategy = strategy_class(params=params)
+        print(f"Running single backtest with params={params}  [{params_source}]\n")
 
         result = run_backtest(strategy, candles, args.symbol,
                               max_hold_candles=args.max_hold,
                               session_filter=args.session_filter)
         bid    = _save_run(strategy_class, args.symbol, args.timeframe, result, params,
-                           strategy_type=args.type)
+                           strategy_type=args.type, fingerprint=fingerprint)
         _print_run(strategy_class.name, args.symbol, args.timeframe, result, params, bid)
         print(f"Saved to database (backtest_id={bid}).")
 
