@@ -1589,8 +1589,13 @@ proves nothing until each has been observed once with a positive signal.
 
 | control | deployed | first reachable | grep `signal_log.error` for |
 |---|---|---|---|
-| FX weekend block | 2026-08-17 | **Sat 2026-08-22** | `market closed — weekend` |
+| FX weekend block | 2026-08-17 | ✅ **observed Sat 2026-08-22** | `market closed — weekend` |
 | 21:00 rollover gate | 2026-08-21 | **Mon 2026-08-24 21:00–21:59 UTC** | `entry window closed — daily rollover hour` |
+
+CHECK 1 was observed on 2026-08-22 and passed — with one of its own criteria
+found to be mis-specified; see the result block. CHECK 2 is still pending, plus
+one follow-up on CHECK 1 (spread sampling through the **Sunday** reopen, which
+is the window that actually tests it).
 
 Tick these off below when observed. Delete neither section until both are
 confirmed — a control recorded as verified when it never fired is the same
@@ -1624,6 +1629,49 @@ non-null on FX rows during the blocked window. The sample is taken before the
 block check and the blocked branch still calls `log_signal_check`; that
 ordering is load-bearing and commented as such, because the thin reopen is the
 most expensive window we have and the one we least want to go blind on.
+
+### ✅ OBSERVED Sat 2026-08-22 05:27 UTC — 3 of 4 pass, 4th criterion was WRONG
+
+First real weekend after the deploy. **The block works.**
+
+- **Positive control:** 266 `signal_log` rows exist on 2026-08-22, so the loop
+  was running and the test genuinely ran.
+- **Criterion 1 PASS.** All 266 rows carry `signal='BLOCKED'` and
+  `error='market closed — weekend'` — exactly that string, nothing else, and
+  all four FX symbols present: EURUSD 116, GBPUSD 44, AUDUSD 22, USDCAD 22
+  (plus US500 40, US100 22).
+- **Criterion 2 PASS.** Zero `trades` rows on 2026-08-22. This is the control
+  that had never once fired for FX before 2026-08-17 — 21 weekend trades were
+  placed under the old code.
+- **Criterion 3 PASS.** `signal_loop` heartbeat current (05:25:59) through
+  fully-blocked cycles.
+- **Criterion 4 — the criterion itself was wrong, not the code.**
+  `signal_log.spread` is **NULL on all 266 rows**. This is NOT the load-bearing
+  ordering failing. The ordering is correct — the sample is still taken before
+  the block check. There is simply **nothing to sample**: the Lightstreamer
+  stream disconnects at the Friday close (`candle_stream` heartbeat last beat
+  `2026-08-21T22:00:00`), so `get_stream_spread` has no quote and correctly
+  returns `None`. A spread from a shut book is not a quote anyone could have
+  traded on — which is exactly what `market_hours.is_market_open` exists to say.
+
+**The criterion conflated two different blocked windows**, and as written it
+would have reported a false failure every Saturday:
+
+| blocked window | venue | stream | spread expected |
+|---|---|---|---|
+| Saturday, all day | **shut** | down | **NULL — correct, nothing to sample** |
+| Sunday 20:00–22:59 UTC reopen | **open** | up | **non-NULL — this is the real test** |
+
+The load-bearing ordering only matters where the venue is open and *we* decline
+to enter. That is the Sunday reopen, not Saturday. **Re-test criterion 4 on
+Sunday 2026-08-23 between 20:00 and 22:59 UTC**: FX `signal_log` rows should
+carry `error='entry window closed — thin reopen / pre-weekend policy'` **with
+`spread` non-null**. If spread is NULL *there*, the ordering has genuinely
+broken.
+
+This is the self-invalidating-probe rule applied to a written check: on
+Saturday the probe cannot observe the passing state at all, so its negative
+carried no information about the thing it claimed to test.
 
 **What ABSENCE would mean.** Zero FX rows carrying `market closed — weekend`
 on Saturday is **not** evidence the block works — it is equally consistent with
