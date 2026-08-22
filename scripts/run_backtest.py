@@ -122,7 +122,7 @@ from trading_ig import IGService
 
 from ig_env import get_ig_credentials
 import backend.backtesting.engine as engine_mod
-from backend.backtesting.engine import (
+from backend.backtesting.engine import (provenance, 
     fetch_candles, run_backtest, run_parameter_sweep, run_walk_forward, run_stability_map,
     WF_TRAIN_MONTHS, WF_MIN_WINDOWS,
 )
@@ -150,6 +150,7 @@ from backend.strategies.williams_r import WilliamsRStrategy
 from backend.strategies.macd_rsi import MACDRSIStrategy
 from backend.strategies.fvg import FVGStrategy
 from backend.strategies.london_breakout import LondonBreakoutStrategy
+from backend.strategies.first_bar_breakout import FirstBarBreakoutStrategy
 from backend.strategies.smc import SMCStrategy
 from backend.strategies.silver_bullet import SilverBulletStrategy
 from backend.strategies.ny_session_momentum import NYSessionMomentumStrategy
@@ -166,7 +167,8 @@ from backend.strategies.kama_crossover import KAMACrossoverStrategy
 from backend.strategies.ema_ribbon_pullback import EMARibbonPullbackStrategy
 from backend.strategies.hull_momentum import HullMomentumStrategy
 from backend.strategies.supertrend_ema_filter import SupertrendEMAFilterStrategy
-from database.models import insert_backtest_result, insert_backtest_trades, insert_walkforward_run
+from database.models import (insert_backtest_result, insert_backtest_trades,
+                             insert_walkforward_run, get_roster_row)
 
 STRATEGIES = {
     "rsi":        RSIStrategy,
@@ -187,6 +189,7 @@ STRATEGIES = {
     "macd_rsi":             MACDRSIStrategy,
     "fvg":                  FVGStrategy,
     "london_breakout":      LondonBreakoutStrategy,
+    "first_bar_breakout":   FirstBarBreakoutStrategy,
     "smc":                  SMCStrategy,
     "silver_bullet":        SilverBulletStrategy,
     "ny_session_momentum":  NYSessionMomentumStrategy,
@@ -319,6 +322,11 @@ PARAM_GRIDS = {
         "range_end_hour":   [7],
         "entry_window_end": [9],
     },
+    "first_bar_breakout": {
+        "buffer_points":     [0, 2, 5],
+        "tp_mode":           ["1.5R", "2R", "session_close"],
+        "entry_window_bars": [4, 8],
+    },
     "silver_bullet": {
         "kill_start":     [13],
         "kill_end":       [16],
@@ -379,6 +387,11 @@ STABILITY_GRIDS = {
         "period":     [8, 10, 12, 14, 16, 18, 21],
         "oversold":   [-95, -90, -85, -80],
         "overbought": [-20, -15, -10],
+    },
+    "first_bar_breakout": {
+        "buffer_points":     [0, 2, 5],
+        "tp_mode":           ["1.5R", "2R", "session_close"],
+        "entry_window_bars": [4, 8],
     },
 }
 
@@ -472,8 +485,22 @@ def _cache_fingerprint(candles: list, cache_file: str) -> dict:
 
 def _persist_wf_run(run_type, strategy_name, symbol, timeframe, params, fingerprint,
                     windows=None, verdict=None, median_pf=None, pct_profitable=None,
-                    extra=None) -> int:
+                    extra=None, params_source=None, prov=None) -> int:
+    # params_source rides in extra_json rather than a new column: it is
+    # provenance about the run, and walkforward_runs already carries the cache
+    # fingerprint there in spirit. A reader checking whether a verdict describes
+    # the deployed configuration looks here.
+    extra = dict(extra or {})
+    extra["params_source"] = params_source
+    # Provenance from the engine result, not from the constant. Before
+    # 2026-08-22 nothing passed spread_table, so insert_walkforward_run's
+    # default hashed None and spread_table_sha was NULL on every row ever
+    # written -- the tamper-detection the column exists for did not exist.
+    prov = dict(prov or {})
     return insert_walkforward_run({
+        **({"engine_version": prov["engine_version"]} if prov.get("engine_version") else {}),
+        **({"spread_model": prov["spread_model"]} if prov.get("spread_model") else {}),
+        **({"spread_table_sha": prov["spread_table_sha"]} if prov.get("spread_table_sha") else {}),
         "run_type":       run_type,
         "strategy_name":  strategy_name,
         "symbol":         symbol,
@@ -611,6 +638,13 @@ def main():
                         help="Min median PF for a stability-map cell to count toward cluster regions")
     parser.add_argument("--top-n", type=int, default=5,
                         help="Top plateau cells to auto-MC when --stability-map + --monte-carlo")
+    parser.add_argument("--from-roster", action="store_true",
+                        help="Take params from active_strategy for this (symbol,timeframe,strategy). "
+                             "REQUIRED for any run that will be used as promotion evidence — "
+                             "see findings doc finding 28.")
+    parser.add_argument("--params", default=None,
+                        help="Literal params as JSON, e.g. '{\"period\": 21}'. For exploration. "
+                             "Mutually exclusive with --from-roster.")
     args = parser.parse_args()
 
     strategy_key = args.strategy.lower()
@@ -619,6 +653,49 @@ def main():
         sys.exit(1)
 
     strategy_class = STRATEGIES[strategy_key]
+
+    # --- parameter resolution -------------------------------------------------
+    #
+    # findings doc finding 28: until 2026-08-22 there was no way to express the
+    # rostered configuration here, so walk-forward, Monte Carlo and permutation
+    # all silently ran strategy_class() file defaults. GBPUSD 15MIN williams_r is
+    # rostered period=21 against a class default of 14 — validating it without
+    # this produced a verdict for a strategy that has never traded.
+    #
+    # Provenance travels with the result. `params_source` is persisted on every
+    # walkforward_runs row so a reader can tell a roster-validated verdict from
+    # an exploratory one without re-deriving it.
+    if args.from_roster and args.params:
+        print("--from-roster and --params are mutually exclusive.")
+        sys.exit(1)
+
+    cli_params = None
+    params_source = "file-defaults"
+    if args.from_roster:
+        row = get_roster_row(args.symbol.upper(), args.timeframe.upper(), strategy_key)
+        if row is None:
+            print(f"--from-roster: no active_strategy row for "
+                  f"({args.symbol.upper()}, {args.timeframe.upper()}, {strategy_key}). "
+                  f"Refusing to fall back to file defaults — that is the bug this flag exists "
+                  f"to prevent (findings doc finding 28).")
+            sys.exit(1)
+        raw = row.get("params_json")
+        if not raw:
+            print(f"--from-roster: active_strategy id={row.get('id')} has params_json NULL. "
+                  f"Nothing to validate against. Refusing to guess.")
+            sys.exit(1)
+        cli_params = json.loads(raw) if isinstance(raw, str) else raw
+        params_source = f"roster:active_strategy.id={row.get('id')}"
+        print(f"[params] from roster: active_strategy id={row.get('id')} "
+              f"status={row.get('status')!r} -> {cli_params}")
+    elif args.params:
+        cli_params = json.loads(args.params)
+        params_source = "cli-literal"
+        print(f"[params] literal from --params: {cli_params}")
+    else:
+        print(f"[params] ⚠️  FILE DEFAULTS ({strategy_class(params=None).params}). "
+              f"NOT roster-validated — do not use this run as promotion evidence. "
+              f"Pass --from-roster for that.")
 
     candles = None
     if args.source == "alphavantage":
@@ -657,9 +734,29 @@ def main():
     fingerprint = _cache_fingerprint(candles, cache_file_name)
 
     if args.stability_map:
-        engine_mod.RISK_PER_TRADE = 10.0  # match the $10-risk account used by MC downstream
+        # NOTE: a line here used to read `engine_mod.RISK_PER_TRADE = 10.0`.
+        # It was DEAD as of parity-v1, which removed engine.py's module-level
+        # RISK_PER_TRADE literal and moved sizing to
+        # risk_manager.get_risk_per_trade(symbol) — so the assignment merely
+        # created an attribute nothing reads, while reading as though risk were
+        # being configured here. Removed 2026-08-22. Per-symbol risk now comes
+        # from RISK_PER_TRADE_OVERRIDE via the engine's own sizing path.
         if strategy_key not in STABILITY_GRIDS:
+            # A missing grid must never read as "the stability stage passed".
+            # Persist an explicit REDUCED_GAUNTLET marker row so the absence is
+            # a positive record rather than a silent gap — same reasoning as
+            # the marker test in CLAUDE.md's Unverified Controls. A reader
+            # querying walkforward_runs for this strategy now finds a row that
+            # says the stage was deliberately not run, and why.
             print(f"No STABILITY_GRIDS entry for '{strategy_key}'. Available: {list(STABILITY_GRIDS)}")
+            print("Recording a REDUCED_GAUNTLET marker row rather than exiting silently.")
+            _persist_wf_run("stability_map", strategy_class.name, args.symbol, args.timeframe,
+                            cli_params if cli_params is not None else {}, fingerprint,
+                            verdict="REDUCED_GAUNTLET",
+                            extra={"reason": "no STABILITY_GRIDS entry for this strategy",
+                                   "stage_skipped": "stability_map",
+                                   "available_grids": sorted(STABILITY_GRIDS)},
+                            params_source=params_source, prov=provenance())
             sys.exit(1)
         grid = STABILITY_GRIDS[strategy_key]
         combos = 1
@@ -683,7 +780,8 @@ def main():
                             cell["params"], fingerprint,
                             verdict=cell["verdict"], median_pf=cell["median_pf"],
                             pct_profitable=cell["pct_profitable"],
-                            extra={"neighbor_avg_pf": cell.get("neighbor_avg_pf")})
+                            extra={"neighbor_avg_pf": cell.get("neighbor_avg_pf")},
+                            params_source="stability-grid", prov=stability)
         print(f"Persisted {len(stability['cells'])} cells to walkforward_runs.")
 
         if args.monte_carlo:
@@ -693,37 +791,39 @@ def main():
                   f"(MC every parameter set, not just one):\n")
             for cell in ranked:
                 print(f"  {cell['params']}  (plateau neighbor_avg={cell['neighbor_avg_pf']})")
-                mc = bootstrap_mc(cell["combined_trades"], n_iter=args.mc_iter)
+                mc = bootstrap_mc(cell["combined_trades"], n_iter=args.mc_iter,
+                                  engine_version=stability.get("engine_version"))
                 _print_mc(mc)
                 _persist_wf_run("monte_carlo", strategy_class.name, args.symbol, args.timeframe,
-                                cell["params"], fingerprint, extra=mc)
+                                cell["params"], fingerprint, extra=mc,
+                                params_source="stability-grid", prov=stability)
         return
 
     if args.monte_carlo and not args.walk_forward:
-        engine_mod.RISK_PER_TRADE = 10.0
-        strategy = strategy_class()
-        params   = strategy.params
+        params = cli_params if cli_params is not None else strategy_class().params
         wf = run_walk_forward(strategy_class, candles, args.symbol, params=params,
                               max_hold_candles=args.max_hold, session_filter=args.session_filter)
         print(f"Base walk-forward: median PF={wf['median_pf']}  verdict={wf['verdict']}\n")
-        mc = bootstrap_mc(wf["combined_trades"], n_iter=args.mc_iter)
+        mc = bootstrap_mc(wf["combined_trades"], n_iter=args.mc_iter,
+                          engine_version=wf.get("engine_version"))
         _print_mc(mc)
         _persist_wf_run("monte_carlo", strategy_class.name, args.symbol, args.timeframe,
                         params, fingerprint, verdict=wf["verdict"], median_pf=wf["median_pf"],
-                        pct_profitable=wf["pct_profitable"], extra=mc)
+                        pct_profitable=wf["pct_profitable"], extra=mc,
+                        params_source=params_source, prov=wf)
         if not args.permutation:
             return
 
     if args.permutation:
-        strategy = strategy_class()
-        params   = strategy.params
+        params = cli_params if cli_params is not None else strategy_class().params
         print(f"Permutation test ({args.perm_iter} synthetic runs)...\n")
         perm = permutation_test(strategy_class, candles, args.symbol, params, n_iter=args.perm_iter,
                                 max_hold_candles=args.max_hold, session_filter=args.session_filter)
         _print_permutation(perm)
         _persist_wf_run("permutation", strategy_class.name, args.symbol, args.timeframe,
                         params, fingerprint, verdict=perm["real_verdict"],
-                        median_pf=perm["real_median_pf"], extra=perm)
+                        median_pf=perm["real_median_pf"], extra=perm,
+                        params_source=params_source, prov=perm)
         return
 
     if args.walk_forward:
@@ -741,19 +841,20 @@ def main():
                 _print_walk_forward(strategy_class.name, args.symbol, args.timeframe, wf, params)
                 _persist_wf_run("walk_forward", strategy_class.name, args.symbol, args.timeframe,
                                 params, fingerprint, windows=wf["windows"], verdict=wf["verdict"],
-                                median_pf=wf["median_pf"], pct_profitable=wf["pct_profitable"])
+                                median_pf=wf["median_pf"], pct_profitable=wf["pct_profitable"],
+                                params_source="param-sweep-grid", prov=wf)
             print(f"Overfitting reminder: {combos} parameter combinations were walk-forward "
                   f"tested. Even walk-forward results can overfit across a wide sweep — "
                   f"treat top results as candidates, not conclusions.")
         else:
-            strategy = strategy_class()
-            params   = strategy.params
+            params = cli_params if cli_params is not None else strategy_class().params
             wf = run_walk_forward(strategy_class, candles, args.symbol, params=params,
                                   max_hold_candles=args.max_hold, session_filter=args.session_filter)
             _print_walk_forward(strategy_class.name, args.symbol, args.timeframe, wf, params)
             _persist_wf_run("walk_forward", strategy_class.name, args.symbol, args.timeframe,
                             params, fingerprint, windows=wf["windows"], verdict=wf["verdict"],
-                            median_pf=wf["median_pf"], pct_profitable=wf["pct_profitable"])
+                            median_pf=wf["median_pf"], pct_profitable=wf["pct_profitable"],
+                            params_source=params_source, prov=wf)
         return
 
     if args.sweep:

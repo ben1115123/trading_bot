@@ -44,6 +44,12 @@ SYMBOL_MAP = {
     "US100":  "QQQ",
     "GBPUSD": "GBP/USD",
     "USDJPY": "USD/JPY",
+    "EURGBP": "EUR/GBP",
+    "NZDUSD": "NZD/USD",
+    # Merged in from an uncommitted VPS-side edit, 2026-08-22. Both machines
+    # had diverging uncommitted changes to these two dicts; this is the union.
+    "AUDUSD": "AUD/USD",
+    "USDCAD": "USD/CAD",
 }
 
 # Number of 5000-candle batches per symbol (paginated via end_date)
@@ -54,10 +60,14 @@ BATCH_COUNT = {
     "US100":  2,
     "GBPUSD": 6,
     "USDJPY": 6,
+    "EURGBP": 6,
+    "NZDUSD": 6,
+    "AUDUSD": 6,
+    "USDCAD": 6,
 }
 
 
-def _request(td_symbol: str, end_date: str = None) -> dict:
+def _request(td_symbol: str, end_date: str = None, start_date: str = None) -> dict:
     api_key = os.getenv("TWELVEDATA_API_KEY")
     if not api_key:
         raise RuntimeError("TWELVEDATA_API_KEY not set in .env")
@@ -69,6 +79,8 @@ def _request(td_symbol: str, end_date: str = None) -> dict:
     }
     if end_date:
         params["end_date"] = end_date
+    if start_date:
+        params["start_date"] = start_date
     resp = requests.get(BASE_URL, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -93,10 +105,42 @@ def _parse_candles(data: dict) -> list:
     return candles
 
 
-def fetch_symbol(symbol: str, sleep_before_first: bool) -> list:
-    td_symbol = SYMBOL_MAP[symbol]
-    num_batches = BATCH_COUNT[symbol]
+def _load_existing_cache(symbol: str) -> list:
+    path = CACHE_DIR / f"{symbol}_{TIMEFRAME}_AV.json"
+    if not path.exists():
+        return []
+    with open(path) as f:
+        return json.load(f)
 
+
+def fetch_symbol(symbol: str, sleep_before_first: bool, incremental: bool = False) -> list:
+    td_symbol = SYMBOL_MAP[symbol]
+
+    if incremental:
+        existing = _load_existing_cache(symbol)
+        if existing:
+            last_ts = existing[-1]["time"]
+            print(f"Incremental mode: {len(existing):,} cached candles, latest={last_ts}")
+            if sleep_before_first:
+                print(f"Sleeping {SLEEP_SECONDS}s (rate limit)...")
+                time.sleep(SLEEP_SECONDS)
+            print(f"Fetching {symbol} {TIMEFRAME} ({td_symbol}) latest batch (start_date={last_ts})...")
+            data = _request(td_symbol, start_date=last_ts)
+            new_candles = _parse_candles(data)
+            added = [c for c in new_candles if c["time"] > last_ts]
+            print(f"  {len(new_candles):,} candles returned, {len(added):,} new since {last_ts}")
+            if not added:
+                print(f"  No new candles — cache already up to date.")
+                return existing
+            all_candles = existing + added
+            seen = {}
+            for c in all_candles:
+                seen[c["time"]] = c
+            return sorted(seen.values(), key=lambda c: c["time"])
+        else:
+            print(f"No existing cache for {symbol} — falling back to full fetch.")
+
+    num_batches = BATCH_COUNT[symbol]
     all_candles = []
     end_date = None
     for batch in range(1, num_batches + 1):
@@ -134,6 +178,8 @@ def main():
                         help="Comma-separated symbols (default: EURUSD,US500,DAX,US100)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print configs without making API calls")
+    parser.add_argument("--incremental", action="store_true",
+                        help="Only fetch candles newer than the existing cache (1 API call per symbol)")
     args = parser.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")]
@@ -155,7 +201,7 @@ def main():
 
     summary = []
     for i, symbol in enumerate(symbols):
-        candles = fetch_symbol(symbol, sleep_before_first=(i > 0))
+        candles = fetch_symbol(symbol, sleep_before_first=(i > 0), incremental=args.incremental)
 
         out_path = CACHE_DIR / f"{symbol}_{TIMEFRAME}_AV.json"
         with open(out_path, "w") as f:

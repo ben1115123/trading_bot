@@ -632,6 +632,36 @@ def get_webhook_strategy(symbol: str, strategy_name: str) -> dict | None:
         conn.close()
 
 
+def get_roster_row(symbol: str, timeframe: str, strategy_name: str) -> dict | None:
+    """The active_strategy row for one (symbol, timeframe, strategy_name), any status.
+
+    Keyed on the table's full UNIQUE constraint, unlike get_webhook_strategy,
+    which omits timeframe and would happily return US500 HOUR williams_r when
+    asked about EURUSD 15MIN williams_r.
+
+    Status is NOT filtered. A validation run needs the parameters of the row as
+    rostered, and demoting a strategy to paper or inactive does not change which
+    configuration its recorded evidence describes.
+
+    Exists because of findings doc finding 28: scripts/run_backtest.py had no
+    way to read the roster at all, so every non-sweep validation stage silently
+    used strategy-class file defaults. That is the 5th instance of the
+    promoted-params-differ-from-validated-params class.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM active_strategy
+            WHERE symbol = ? AND timeframe = ? AND strategy_name = ?
+            LIMIT 1
+        """, (symbol, timeframe, strategy_name))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def log_correlation_event(strategy_name: str, direction: str, symbols: list) -> None:
     conn = get_connection()
     try:

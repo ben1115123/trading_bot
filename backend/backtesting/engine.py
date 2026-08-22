@@ -1,6 +1,8 @@
 import itertools
 import math
 from datetime import datetime, timezone
+from engine_version import CURRENT_ENGINE_VERSION
+from spread_model import CURRENT_SPREAD_MODEL, spread_table_sha
 
 from backend.backtesting.metrics import (
     calc_win_rate, calc_max_drawdown, calc_sharpe_ratio,
@@ -153,6 +155,27 @@ def fetch_candles(ig_service, symbol: str, timeframe: str, count: int) -> list:
             candles.append({"time": row["snapshotTime"], "open": float(o), "high": float(h), "low": float(l), "close": float(c)})
 
     return candles
+
+
+def provenance() -> dict:
+    """Stamp describing WHICH MODEL produced a result, travelling with the result.
+
+    engine_version  = structure (how a trade is entered/sized/exited/priced)
+    spread_model    = the name of the spread treatment
+    spread_table_sha = a CONTENT HASH of the actual SPREAD_COSTS numbers
+
+    The hash matters because spread is a parameter, not structure: someone can
+    edit SPREAD_COSTS and every backtest number moves while engine_version does
+    not. Until 2026-08-22 no caller ever passed the table, so spread_table_sha
+    was NULL on every row in both backtest_results and walkforward_runs — the
+    exact protection it exists to provide did not exist. Found by a write test,
+    not by reading the code.
+    """
+    return {
+        "engine_version":   CURRENT_ENGINE_VERSION,
+        "spread_model":     CURRENT_SPREAD_MODEL,
+        "spread_table_sha": spread_table_sha(SPREAD_COSTS),
+    }
 
 
 def _in_us_session(time_str: str) -> bool:
@@ -313,6 +336,7 @@ def run_backtest(strategy, candles: list, symbol: str,
         "ambiguous_bars":    ambiguous_bars,
         "intrabar_priority": intrabar_priority,
         "reversal_exit":     reversal_exit,
+        **provenance(),
     }
 
 
@@ -425,6 +449,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
             # rule slots in ahead of max_hold when it lands.
             candles_held = i - open_trade["entry_candle_idx"]
             force_close  = max_hold_candles is not None and candles_held >= max_hold_candles
+            flat_close   = bool(sig.get("force_flat"))
             # Reversal exit is OFF by default because live FX has none — a
             # position there exits on SL or TP only. Kept as a flag rather than
             # deleted: the measured cost of live's missing reversal exit was
@@ -434,7 +459,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                 (open_trade["direction"] == "BUY"  and sig["signal"] == "SELL") or
                 (open_trade["direction"] == "SELL" and sig["signal"] == "BUY")
             )
-            should_close = last or force_close or reverse_close
+            should_close = last or force_close or flat_close or reverse_close
             if should_close:
                 ep  = open_trade["entry_price"]
                 xp  = candle["close"]
@@ -444,7 +469,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                     dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
                 except Exception:
                     dur = 0
-                exit_reason = "max_hold" if force_close else "signal"
+                exit_reason = "session_close" if flat_close else ("max_hold" if force_close else "signal")
                 trades.append({
                     "entry_time":    open_trade["entry_time"],
                     "exit_time":     candle["time"],
@@ -604,6 +629,7 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
         "ambiguous_bars": wf_ambiguous_bars,
         "intrabar_priority": intrabar_priority,
         "reversal_exit": reversal_exit,
+        **provenance(),
     }
 
 
@@ -628,4 +654,4 @@ def run_stability_map(strategy_class, candles: list, symbol: str, param_grid: di
             "combined_pnl":    wf["combined_pnl"],
             "combined_trades": wf["combined_trades"],
         })
-    return {"keys": keys, "grid": param_grid, "cells": cells}
+    return {"keys": keys, "grid": param_grid, "cells": cells, **provenance()}

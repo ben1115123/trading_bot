@@ -17,6 +17,7 @@ import math
 import random
 
 from backend.backtesting.engine import run_walk_forward
+from engine_version import CURRENT_ENGINE_VERSION
 
 _TOTAL_ACCOUNT = 500.0
 _RISK_PER_TRADE = 10.0
@@ -128,8 +129,28 @@ def find_clusters(stability_result: dict, threshold: float = 1.1) -> list:
     return clusters
 
 
+class UnstampedTradesError(RuntimeError):
+    """bootstrap_mc was handed a trade list with no declared engine_version.
+
+    This function is the ONE stage of the gauntlet that never calls the engine —
+    it resamples a P&L list. So it will happily bootstrap trades produced by any
+    model, and insert_walkforward_run then stamps the row with the CURRENT
+    engine_version by default. A pre-parity trade list could therefore be
+    resampled and persisted as parity-v2 evidence.
+
+    Until 2026-08-22 that was prevented only by call-site convention: the CLI
+    always happened to pass a freshly-computed walk-forward result. This project
+    has been bitten four times by conventions that held until they didn't (see
+    CLAUDE.md, Unverified Controls), so provenance is now REQUIRED rather than
+    assumed. The caller must declare which model produced the trades, and the
+    only honest source for that value is the engine result dict the trades came
+    from (`wf["engine_version"]`).
+    """
+
+
 def bootstrap_mc(trades: list, n_iter: int = 1000, account: float = _TOTAL_ACCOUNT,
-                 ruin_fraction: float = _RUIN_FRACTION, seed: int = None) -> dict:
+                 ruin_fraction: float = _RUIN_FRACTION, seed: int = None,
+                 engine_version: str = None) -> dict:
     """Bootstrap resampling (with replacement) of the out-of-sample trade
     P&L list — the standard Monte Carlo technique for equity-path risk
     (Vince/van Tharp style). Each of n_iter synthetic paths draws len(trades)
@@ -137,10 +158,27 @@ def bootstrap_mc(trades: list, n_iter: int = 1000, account: float = _TOTAL_ACCOU
     curve from that. Reports P&L and max-drawdown distributions, plus
     risk-of-ruin: % of paths whose max dollar drawdown exceeds
     ruin_fraction * account."""
+    # Provenance gate. Deliberately raises rather than defaulting: a silent
+    # default here is exactly the laundering path described in
+    # UnstampedTradesError, and a default that is usually right is the kind of
+    # thing that stays wrong for months.
+    if not engine_version:
+        raise UnstampedTradesError(
+            "bootstrap_mc requires engine_version — pass the value from the engine "
+            "result the trades came from, e.g. bootstrap_mc(wf['combined_trades'], "
+            "engine_version=wf['engine_version']). Refusing to assume "
+            f"{CURRENT_ENGINE_VERSION!r}.")
+    if engine_version != CURRENT_ENGINE_VERSION:
+        raise UnstampedTradesError(
+            f"bootstrap_mc got trades produced under engine_version "
+            f"{engine_version!r}, but the current model is "
+            f"{CURRENT_ENGINE_VERSION!r}. Resampling across trade models produces "
+            f"a distribution that describes neither. Regenerate the trades.")
+
     pnls = [t["pnl"] for t in trades]
     n = len(pnls)
     if n == 0:
-        return {"error": "no trades to resample"}
+        return {"error": "no trades to resample", "engine_version": engine_version}
 
     rng = random.Random(seed)
     ruin_threshold = account * ruin_fraction
@@ -169,6 +207,7 @@ def bootstrap_mc(trades: list, n_iter: int = 1000, account: float = _TOTAL_ACCOU
 
     return {
         "n_trades": n, "n_iter": n_iter, "account": account, "risk_per_trade": _RISK_PER_TRADE,
+        "engine_version": engine_version,
         "pnl_p5":  _percentile(total_pnls, 0.05), "pnl_p25": _percentile(total_pnls, 0.25),
         "pnl_median": _percentile(total_pnls, 0.50),
         "pnl_p75": _percentile(total_pnls, 0.75), "pnl_p95": _percentile(total_pnls, 0.95),
@@ -246,4 +285,13 @@ def permutation_test(strategy_class, candles: list, symbol: str, params: dict,
         "synthetic_pf_median":  _percentile(synthetic_sorted, 0.50),
         "percentile":           percentile,
         "edge_confirmed":       percentile > 95,
+        # Provenance rides with the result, same contract as bootstrap_mc.
+        # Taken from the real run rather than the constant, so a stale engine
+        # import cannot silently relabel it.
+        "engine_version":       real_wf.get("engine_version"),
+        "spread_model":         real_wf.get("spread_model"),
+        "spread_table_sha":     real_wf.get("spread_table_sha"),
+        # p-value resolution is 1/(n_iter+1); a percentile claim finer than that
+        # is not expressible. At n_iter=200 the floor is p=0.005; at 50, p=0.020.
+        "p_value_floor":        round(1.0 / (n_iter + 1), 5),
     }

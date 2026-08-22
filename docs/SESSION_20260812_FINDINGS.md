@@ -2081,6 +2081,68 @@ not mechanical fixes.
 
 ---
 
+## 28. Re-validation would validate the WRONG PARAMETERS — no `--params` flag exists
+*(added 2026-08-22 — recorded, HARD BLOCKER on Stage 4)*
+
+**Fifth instance of the promoted-params-differ-from-validated-params class**,
+and the first where the divergence is built into the validation tool itself
+rather than into a single roster row.
+
+`scripts/run_backtest.py` has **no `--params` argument**. Confirmed: the
+`add_argument("--params"` count in that file is zero. Three of the four
+gauntlet stages therefore construct the strategy from **file defaults**:
+
+| stage | line | how params are obtained |
+|---|---|---|
+| walk-forward (non-sweep) | `:762-763` | `strategy = strategy_class(); params = strategy.params` |
+| Monte Carlo | `:716-717` | same |
+| permutation | `:733-734` | same |
+| walk-forward (`--sweep`) | `:750` | iterates `PARAM_GRIDS`, ignores the roster |
+| stability map | — | iterates `STABILITY_GRIDS`, ignores the roster |
+
+**Not one path reads `active_strategy`.** There is no way to express "validate
+the configuration that is actually rostered" through this CLI.
+
+**Concrete consequence, already true today.** `active_strategy` id 32 —
+GBPUSD 15MIN `williams_r` — is rostered `period=21`. `WilliamsRStrategy`'s
+defaults are `period=14`. Re-validating it through the CLI as written produces
+a verdict for `period=14`: a strategy that has never traded. The verdict would
+be recorded against the row, stamped `parity-v2`, and read later as evidence
+about the deployed configuration. It would not be.
+
+**Why this outranks the cost estimate.** The whole point of Stage 4 is to
+replace evidence produced by a model that did not match live. Running it
+without `--params` reproduces the identical failure one layer up: correct
+engine, wrong strategy. It converts "we have no valid evidence" into "we have
+invalid evidence that looks valid" — strictly worse, because the second state
+does not announce itself.
+
+**Prior instances of the class** (this is the 5th):
+1. 2026-06/07 — williams_r EURUSD live params differ from class defaults
+2. 2026-07-14 — 3rd occurrence noted in CLAUDE.md's Critical Rules
+3. 2026-07-15 — AUDUSD promoted at `overbought=-20` while the rostered row
+   still carried `-15`; the stability map and the roster disagreed
+4. 2026-08-15 — GBPUSD id 32 found running `period=21` against docs and
+   against the 2026-07-09 expansion batch, both of which say 14
+5. **this one** — the validation tool cannot express the roster at all
+
+**The rule this keeps violating** is already written in CLAUDE.md's Critical
+Rules: *"Any analysis of a rostered strategy must pull its real params from
+`active_strategy` first — never assume file defaults."* Four instances were
+humans failing to follow it. This one is the tooling making it impossible to
+follow. **A rule that the tool cannot express is not a rule, it is a hope.**
+
+**Fix: build `--params` before any Stage 4 run.** Preferred shape is not a
+free-form JSON string — that just relocates the transcription error — but a
+flag that names the roster row and reads it:
+`--from-roster` resolving `(symbol, timeframe, strategy)` against
+`active_strategy` and failing loudly if no row exists. A literal
+`--params '{...}'` should also exist for exploration, but the roster path is
+what a validation run must use, and the persisted row must record which was
+used.
+
+---
+
 ## Standing rule — when to bump a model stamp
 
 Three stamps now exist: **`engine_version`** (backtest trade model),
