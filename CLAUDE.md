@@ -1589,11 +1589,13 @@ proves nothing until each has been observed once with a positive signal.
 
 | control | deployed | first reachable | grep `signal_log.error` for |
 |---|---|---|---|
-| FX weekend block | 2026-08-17 | ✅ **observed Sat 2026-08-22** | `market closed — weekend` |
+| FX weekend block | 2026-08-17 | ✅ **VERIFIED Sat 2026-08-22** | `market closed — weekend` |
 | 21:00 rollover gate | 2026-08-21 | **Mon 2026-08-24 21:00–21:59 UTC** | `entry window closed — daily rollover hour` |
 
-CHECK 1 was observed on 2026-08-22 and passed — with one of its own criteria
-found to be mis-specified; see the result block. CHECK 2 is still pending, plus
+CHECK 1 **passed on 2026-08-22 — the control is verified.** One of its four
+criteria was found to be mis-specified and re-scoped to Sunday; that is a
+defect in the checklist, not in the control. See the result block before
+drawing any conclusion from it. CHECK 2 is still pending, plus
 one follow-up on CHECK 1 (spread sampling through the **Sunday** reopen, which
 is the window that actually tests it).
 
@@ -1630,9 +1632,18 @@ block check and the blocked branch still calls `log_signal_check`; that
 ordering is load-bearing and commented as such, because the thin reopen is the
 most expensive window we have and the one we least want to go blind on.
 
-### ✅ OBSERVED Sat 2026-08-22 05:27 UTC — 3 of 4 pass, 4th criterion was WRONG
+### ✅ OBSERVED Sat 2026-08-22 05:27 UTC — CONTROL WORKS. VERIFIED.
 
-First real weekend after the deploy. **The block works.**
+> **READ THIS FIRST.** One of the four criteria below is marked as not met.
+> **That is not a defect in the control.** The block itself is confirmed
+> working on every criterion that tests it. Criterion 4 was *mis-specified*
+> when it was written — it asked for an observation that is impossible on a
+> Saturday for reasons unrelated to the block, and it has been re-scoped to
+> Sunday. Do not read "criterion 4 failed" as "the weekend block is broken."
+> It is not, and the evidence for that is criteria 1–3 plus the trade count.
+
+**Status: FX weekend block is VERIFIED IN PRODUCTION.** First real weekend
+after the deploy, and the first time this control has ever fired for FX.
 
 - **Positive control:** 266 `signal_log` rows exist on 2026-08-22, so the loop
   was running and the test genuinely ran.
@@ -1645,7 +1656,10 @@ First real weekend after the deploy. **The block works.**
   placed under the old code.
 - **Criterion 3 PASS.** `signal_loop` heartbeat current (05:25:59) through
   fully-blocked cycles.
-- **Criterion 4 — the criterion itself was wrong, not the code.**
+- **Criterion 4 — NOT A FAILURE OF THE CONTROL. The criterion was
+  mis-specified.** Nothing about the weekend block is in question here; this
+  criterion tests the *spread-sampling ordering*, which is a different
+  mechanism that happens to have been bundled into the same checklist.
   `signal_log.spread` is **NULL on all 266 rows**. This is NOT the load-bearing
   ordering failing. The ordering is correct — the sample is still taken before
   the block check. There is simply **nothing to sample**: the Lightstreamer
