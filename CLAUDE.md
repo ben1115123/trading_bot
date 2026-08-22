@@ -1499,15 +1499,33 @@ baked into every image layer; the two backups alone were 504 MB per build.
 | `trades.bak-20260816T042148Z.db` | Before the `engine_version` migration | 906 trades, 268,117 backtest_results |
 | `trades.bak-20260817T164123Z.db` | Undocumented until 2026-08-21 — taken around the `market_hours` / finding-23 FX weekend-block work | 918 trades, 268,117 backtest_results, `integrity_check ok` |
 | `trades.bak-20260821T184131Z.db` | Before moving all four live `williams_r` instances to `paper` | 996 trades, 268,117 backtest_results, `integrity_check ok` |
+| `trades.bak-20260821T190857Z.db` | **Undocumented until 2026-08-22** — taken minutes after the williams_r demotion, purpose unrecorded | 996 trades, 268,117 backtest_results, `integrity_check ok` |
+| `trades.bak-20260822T180436Z.db` | Taken by `scripts/import_stage4.py` before the Stage 4 import write test (rule 5) | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 
 All verified `integrity_check ok`. **None is disposable.** Take new ones with
 the SQLite online backup API (`Connection.backup()`), never `cp` — `cp` on a
 live DB with an open WAL can produce a torn copy.
 
-**Directory now totals ~1.1 GB** (4 files, 30 GB free on `/`). The Aug-17 file
+**Directory now totals ~1.7 GB** (6 files, 29 GB free on `/`). The Aug-17 file
 sat here undocumented for four days; an unlisted 320 MB file is how the next
 disk-pressure investigation starts from a wrong baseline. If a backup is taken,
 it goes in this table in the same change.
+
+**It happened again.** `trades.bak-20260821T190857Z.db` was found unlisted on
+2026-08-22, one day after the rule above was written into this table — and its
+*purpose* is now unrecoverable, which is the part that matters. Its contents are
+byte-identical in row counts to the 18:41 backup taken 27 minutes earlier, so
+it is very probably a second pre-deploy snapshot from the same session, but
+"very probably" is exactly what a record exists to replace. `import_stage4.py`
+now prints a warning naming this table on every backup it takes; that is a
+prompt, not a guarantee.
+
+⚠️ **Whoever writes the next backup: the VPS `database/trades.db` is owned by
+`root`, not `ubuntu`.** A backup or import run as `ubuntu` on the host fails
+with `sqlite3.OperationalError: attempt to write a readonly database`. Run it
+inside the bot container (`docker exec trading_bot-bot-1 …`, same file via the
+shared `./database` volume) or as root. Discovered by the failure on
+2026-08-22, not by reading permissions.
 
 `/home/ubuntu/backups` was root-owned `755` until 2026-08-21, so a backup run
 as `ubuntu` failed outright. Directory is now `ubuntu:ubuntu`; the pre-existing
@@ -1924,37 +1942,57 @@ delete write test against the VPS, exactly as was done for `walkforward_runs` on
 2026-08-22. That test found `spread_table_sha` was NULL on every row ever
 written, which code-reading had missed.
 
-## ⚠️ UNDEPLOYED COMMITS — repo and running image DIFFER
+## ✅ DEPLOY 2026-08-22 — drift CLEARED
 
-**As of 2026-08-22 the container image is BEHIND `origin/main`.** Recorded here
-because undocumented drift between the repo and the running image is its own
-hazard class: every "verify the deploy" step in this file assumes they match.
+The repo/image drift recorded here from 2026-08-21 is **resolved**. Kept as a
+short record rather than deleted, because "the image matches the repo" is an
+assumption every verify-the-deploy step in this file makes, and the date it
+became true again is worth knowing.
 
 | | |
 |---|---|
-| running image | `sha256:5dc09d70ff5b`, built **2026-08-21 19:10 UTC** |
-| image contains up to | `f4875d3` (rollover gate + shadow spread gate) |
-| `origin/main` is at | `66e4d54` and later |
-| undeployed | `7d6e961`, `1d3725d`, `66e4d54`, and the Stage 4 prerequisite commits |
+| running image | `sha256:42f5585b3e34`, built **2026-08-22 18:07 UTC** |
+| image contains | `591dc3a` — same as `origin/main` at deploy time |
+| carried in | `7d6e961`, `1d3725d`, `66e4d54`, `3708a49`, plus `d6f1c8c` (finding 31 columns) and `591dc3a` (Stage 4 export/import) |
 
-**What is undeployed is CLI and docs only** — `run_backtest.py`, `models.py`
-(additive `get_roster_row`), engine/robustness provenance, findings and this
-file. No signal-loop, webhook, poller or execution behaviour differs between
-image and repo.
+**Post-deploy verification — every item a positive observation, none inferred
+from silence:**
 
-**Not urgent, and deliberately not deployed for its own sake.** The bot's import
-was verified against the new code via `docker cp`
-(`live_signal_loop import OK, STRATEGIES: 34`), so the next rebuild is known safe
-— that check is now mandatory, see finding 29.
+- committed `scripts/crontab` md5 **`aea93925651e8ee24ce7d52e70b3434d`**, and
+  in-container `/etc/cron.d/trading-bot` matches byte-for-byte. The disable
+  survived the rebuild.
+- **finding 29's rule**: `bot.live_signal_loop` imports in the deployed image,
+  `STRATEGIES: 34`. `main`, `webhook.receiver` and `data.positions_poller` all
+  import clean too.
+- `docker exec … scripts/run_backtest.py --help` now offers **`--from-roster`
+  and `--roster-db`**, which failed with `unrecognized arguments` before this
+  deploy.
+- stamps unchanged: **`parity-v2` / `paper-v2` /
+  `flat-roundtrip-dollars-UNCALIBRATED`**.
+- `localhost:80` 200, `/health` 200, `/webhook` 405. All three containers up.
+- both heartbeats beating after the restart (`signal_loop` 18:09:18,
+  `candle_stream` 18:08:32), a 15-key cycle logged, and `signal_log.spread` is
+  **non-null on AUDUSD (0.00053) and USDCAD (0.00061)**.
 
-⚠️ **Consequences while the drift stands:**
-- `docker exec … python3 scripts/run_backtest.py --from-roster` fails with
-  `unrecognized arguments` — the container's `/app` copy predates the flag.
-- Any in-container file copied in by hand is lost on the next rebuild (see
-  Unverified Controls instance 3).
+⚠️ **Do not read that last spread observation as CHECK 1's criterion 4.** It is
+a Saturday: the venue is shut, and those numbers exist only because the
+container restart re-warmed the stream from a **closed book**. Pre-deploy the
+same column was NULL on all six symbols for the whole day. It proves the
+sampling path survived the deploy — nothing more. Criterion 4 still needs the
+**Sunday reopen**, per the CHECK 1 result block.
 
-**Clear this entry when the next deploy lands**, and re-verify the crontab md5
-anchor at the same time.
+⚠️ **The restart burned IG historical-data quota** re-warming every buffer:
+`error.public-api.exceeded-account-historical-data-allowance` on GBPUSD/15MIN,
+USDCAD/15MIN, US100/15MIN, US500/15MIN and US500/HOUR, all falling back to
+yfinance. Expected, deduped per the 2026-07-16 cooldown, and self-clearing —
+but a weekday rebuild pays this cost during live hours, so prefer weekends.
+
+Note for anyone probing a deployed container: `python3 -c "import
+webhook.receiver"` **creates a fresh IG session on import** (documented gotcha).
+Three such probes in a row on 2026-08-22 produced three session recreations and
+a run of `[ig_scale] market fetch failed` lines on the FX epics. That is the
+probe's own cost, not a fault in the deploy — but it is a real cost, so probe
+imports sparingly.
 
 ## 🚦 GATE — do not build the spread table before these are all true
 
@@ -2042,9 +2080,12 @@ the table will read it.
 - **`correlation_events` is still write-only** — 3,824 rows, but they are
   per-cycle re-logs of a *standing state*, not distinct events (~130 episodes).
   Consumer proposed, not built.
-- **51 dangling Docker images on the VPS** as of 2026-08-15, accumulated
-  across rebuilds. Not pruned — noted only. Precedent exists (Jun 27 prune).
-  Disk fills quietly; check before the next rebuild.
+- **26 dangling Docker images on the VPS** as of 2026-08-22 (was recorded as 51
+  on 2026-08-15; the count is lower now, and nothing in this repo records a
+  prune between those dates — so either one happened undocumented or the
+  earlier figure was miscounted. Do not treat the trend as reassuring). Not
+  pruned. Precedent exists (Jun 27 prune). With `/home/ubuntu/backups` at
+  1.7 GB and 29 GB free, disk is not pressing — check before the next rebuild.
 
 ## Infrastructure Incidents
 2026-08-15: Selector-disable deploy (commit 9e5f21a). `run_daily` 06:00 cron
