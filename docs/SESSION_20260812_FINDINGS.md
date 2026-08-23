@@ -2317,7 +2317,38 @@ describe a different instrument:
 15MIN `ema_pullback`) cannot be re-validated. No clean fix is available:
 yfinance `^GSPC`/`^NDX` at 15MIN caps at 60 days, far short of a walk-forward
 span, and Twelve Data's free tier may not carry index symbols at all. **Do not
-paper over this by re-running on the ETF files.** Recording the block is the
+paper over this by re-running on the ETF files.**
+
+### ⛔ "Fix the mapping" is the obvious WRONG conclusion — measured 2026-08-23
+
+`SYMBOL_MAP` reads as carelessness. **It was not.** The free tier does not
+carry the indices, and whoever wrote it picked what the tier permitted. Probed
+live against the project's own `TWELVEDATA_API_KEY`:
+
+| symbol tried | result |
+|---|---|
+| `SPX` | `code=404` — *"This symbol is available starting with the Grow or Venture plan"* |
+| `NDX` | `code=404` — same paid-plan gate |
+| `IXIC` | `code=404` — *"symbol or figi parameter is missing or invalid"* |
+| `GDAXI` | `code=404` — invalid symbol |
+| `DAX` | **200 OK — and it is a $47 ETF on NASDAQ** (`type=ETF, exch=NASDAQ, currency=USD, close=47.27`) |
+| `SPY` | 200 OK, `type=ETF`, 765.69 |
+
+**`DAX` is the trap.** It resolves, returns clean 15MIN candles, and is not the
+DAX index — a *different* wrong instrument from the `EWG` already cached.
+Anyone "fixing" the mapping by trying the obvious ticker gets a plausible file
+and a second contamination with a fresh signature.
+
+**So editing `SYMBOL_MAP` cannot fix this at the tier we hold.** The real
+options are a paid Twelve Data plan, IG REST backfill (correct scale,
+allowance-bound — see CLAUDE.md "IG Historical Allowance"), or accepting HOUR
+only, where yfinance `^GSPC`/`^NDX`/`^GDAXI` reach 730 days and are already
+correct. Yahoo's own refusal at 15m is explicit: *"The requested range must be
+within the last 60 days."*
+
+*(Strongest home for this note is a comment at `SYMBOL_MAP` itself, where
+someone reaching for the wrong fix will be looking. Not added —
+`scripts/fetch_twelvedata.py` was outside this change's agreed file set.)* Recording the block is the
 correct outcome until an index-scaled 15MIN source exists.
 
 ---
@@ -2793,6 +2824,221 @@ than appended after it — and that is what turned a suspected rogue process int
 a clock measurement. **A row whose id says "middle of the batch" and whose
 timestamp says "five minutes later" is not a mystery about the writer; it is a
 statement about the clock.**
+
+---
+
+## 35. The IG quota meter rode on every response and nothing read it — and the collector that drained it produced ZERO output
+
+*(added 2026-08-23. Collector disabled same day; allowance logging shipped. The
+`MIN_SL_DIST` half is finding 36.)*
+
+**Same class as finding 27 (write-only sinks), inverted.** There the data was
+written and had no reader. Here the data arrived on the wire, was parsed, and
+was dropped one line before use.
+
+IG returns the remaining weekly historical-data budget on **every successful**
+`/prices` response:
+
+```
+{"prices": [...], "instrumentType": "INDICES",
+ "allowance": {"remainingAllowance": ..., "totalAllowance": ...,
+               "allowanceExpiry": <seconds>}}
+```
+
+Both consumers did `result.get("prices")` and discarded the rest:
+`backend/backtesting/engine.py::fetch_candles` and
+`bot/candle_stream.py::_rest_fetch`. So the one budget shared by the backtest
+path, the collector and the live warm-up was **unmeasured**, and **nobody knew
+when it resets** — a number that was in hand on every call.
+
+### What that concealed
+
+`scripts/collect_candles.py`, cron `*/15`, measured 2026-08-23:
+
+| | |
+|---|---|
+| `/app/logs/candles.log` | **222 lines, 222 quota errors, ZERO successes** — the entire life of the 2026-08-22 image |
+| `/app/scripts/candle_cache/` | **did not exist in the container** — not "wiped on rebuild", never created |
+| budget | 3 symbols x `FETCH_COUNT` 50 x 96 runs/day = **14,400 points/day = 100,800/week** |
+| allowance | **10,000/week** → **10.08x over**, exhausted in **~16.7 hours** |
+| waste | asks for 50 candles every 15 minutes to gain 1 — **~98%** |
+
+**This was a live-path defect, not housekeeping.** With the allowance at zero,
+`candle_stream`'s warm-up and gap-backfill both fall through to yfinance on
+every pair, observed directly in the bot log:
+
+```
+[candle_stream] IG historical-data quota exceeded for EURUSD/15MIN -- falling back to yfinance
+[candle_stream] gap backfill US500/HOUR: buffer now 201 (source=yfinance (quota fallback))
+```
+
+**`CANDLE_SOURCE=ig_stream` was only half true: IG ticks, yfinance seed data.**
+The 2026-07-15 flip exists precisely because off-session yfinance is stale on
+indices — so the collector was re-introducing the failure mode the flip was
+meant to remove, while producing nothing.
+
+The fallback masked it perfectly. Every pair warmed, every buffer filled, no
+alert beyond a 6-hourly deduped WARN. The system looked healthy because the
+degradation had a working substitute.
+
+### A second, narrower bug found in the same log
+
+Warm-up on the 2026-08-22 restart:
+
+```
+[candle_stream] warm-up got nothing for US500/15MIN (source=IG REST)
+[candle_stream] warm-up got nothing for US500/HOUR  (source=IG REST)
+[candle_stream] warm-up got nothing for US100/15MIN (source=IG REST)
+[candle_stream] warm-up got nothing for USDCAD/15MIN (source=IG REST)
+```
+
+`_rest_fetch` returns `None` (rather than raising `_QuotaExceeded`) on empty
+prices and on `ig_scale.is_resolved(symbol) == False`. Only the raise triggers
+the yfinance fallback, so **those four buffers were left empty** with no
+fallback attempted. Gap-backfill happened to fill them minutes later. **The
+fallback is asymmetric: quota → substitute, every other failure → silence.**
+Recorded, not fixed.
+
+### Fixed on 2026-08-23
+
+- `ig_allowance.py` (repo root, stdlib-only, same safe-import contract as
+  `symbols.py` / `engine_version.py` / `instrument_limits.py`). Parses v2
+  top-level and v3 `metadata`-nested allowance blocks, computes `resets_at`
+  from `allowanceExpiry`, **never raises** — a diagnostic that can break the
+  warm-up it instruments is worse than no diagnostic. It reports and does
+  **not** throttle: a caller wanting to reserve budget reads `remaining` and
+  decides. Putting a refusal in a logging helper would let it stop a warm-up.
+- Called from both sites, tagged by source so the two consumers of the one
+  budget are distinguishable — the collector starving `candle_stream` is
+  invisible if both print the same prefix.
+- Collector cron line commented in `scripts/crontab` with the arithmetic
+  inline, plus an in-container edit so the burn stopped the same day without a
+  rebuild (a rebuild was forbidden — CHECK 1's Sunday reopen was hours away,
+  see the prospective marker rule).
+
+**Still unknown, and the backfill plan is a guess until they exist:** IG's max
+`numpoints` per request, and how far back `MINUTE_15` reaches per epic. Both
+were untestable on 2026-08-23 because `numpoints=1` on three separate epics was
+refused outright. **Measure after the allowance resets** — and the reset time
+is now knowable only because the first successful response will print it.
+
+---
+
+## 36. `MIN_SL_DIST` had provenance available from the API the whole time — and DAX sits BELOW the broker minimum
+
+*(added 2026-08-23. Values pulled live. **Deliberately NOT changed** — see the
+sequencing note.)*
+
+Finding 14 records `MIN_SL_DIST` as an uncalibrated table with no provenance,
+noting IG's `minNormalStopOrLimitDistance` was "never read back". It is
+returned on **every** `fetch_market_by_epic` snapshot — the same call
+`ig_scale.init_price_scales` already makes per epic at session creation, so the
+number was arriving on a call the system already pays for.
+
+**Costs no historical-data allowance** — this is the markets endpoint, not
+`/prices`. It was pulled for every traded epic on 2026-08-23 while the
+historical quota was at zero.
+
+`minStop` is in **POINTS**; converted to price units via the instrument's own
+`onePipMeans` (`1 Index Point` for indices, `0.0001` for FX minis, `0.01` for
+JPY):
+
+| symbol | IG minStop | unit basis | = price units | ours | ratio | verdict |
+|---|---|---|---|---|---|---|
+| US500 | 1.0 | 1 Index Point | 1.0 | 3.0 | 3.00x | ok, conservative |
+| US100 | 4.0 | 1 Index Point | 4.0 | 4.0 | **1.00x** | **at the line, zero margin** |
+| **DAX** | **8.0** | 1 Index Point | **8.0** | **5.0** | **0.63x** | ❌ **BELOW broker minimum** |
+| EURUSD | 2.0 | 0.0001 | 0.00020 | 0.00050 | 2.50x | ok |
+| GBPUSD | 4.0 | 0.0001 | 0.00040 | 0.00060 | 1.50x | ok |
+| AUDUSD | 2.0 | 0.0001 | 0.00020 | 0.00050 | 2.50x | ok |
+| USDCAD | 4.0 | 0.0001 | 0.00040 | 0.00050 | 1.25x | ok, thin |
+| USDJPY | 2.0 | 0.01 | 0.020 | 0.050 | 2.50x | ok |
+| EURGBP | 2.0 | 0.0001 | 0.00020 | 0.00050 | 2.50x | ok |
+| NZDUSD | 4.0 | 0.0001 | 0.00040 | **absent** | — | **not in the table** |
+| BTC | 1.0 | **PERCENTAGE** | ~774 @ bid 77,474 | **absent** | — | **unrepresentable** |
+| XAUUSD | — | — | — | 1.50 | — | **no epic in `_EPICS`, uncheckable** |
+
+`minControlledRiskStopDistance` is uniformly larger (US500 4.0, DAX 25.0,
+US100 10.0) and does **not** apply — it governs guaranteed stops, which this
+system does not use.
+
+### Three things this table says beyond the DAX cell
+
+1. **DAX 5.0 vs 8.0 is live-affecting *conditionally*, and the condition is
+   currently false.** DAX has **no runnable `active_strategy` row**, so no DAX
+   order has ever been rejected by it and none can be today. But the floor is
+   the value the engine and the live loop would both use the moment a DAX
+   strategy runs, and it would be rejected broker-side at the floor. **DAX is
+   now blocked twice over** — this, and the EWG cache (finding 30).
+2. **NZDUSD and BTC are absent, which is finding 20's asymmetry again.**
+   `MIN_SL_DIST` is read via `.get(symbol, ...)` at all three call sites
+   (`engine.py:235/240`, `live_signal_loop.py:613`,
+   `execute_trade.py:352`), so an unregistered symbol silently gets `0.0` or
+   the raw distance rather than a `KeyError`. NZDUSD has been walk-forwarded.
+   Every instrument-table divergence found so far has been an **absence**, never
+   a contradiction — see finding 20's standing rule.
+3. **BTC's minimum is a PERCENTAGE, not points.** A flat per-symbol price
+   distance **cannot express it** at any value. This is a **model-shape
+   defect, not a missing value** — see the named group below. Adding a BTC row
+   to `MIN_SL_DIST` would look like a fix and be wrong at every setting.
+4. **US100 sits at exactly 1.00x IG's minimum — zero margin.** 4.0 against 4.0,
+   where every other symbol carries 1.25x–3.00x headroom. At parity **any
+   rounding down produces a broker rejection**: `execute_trade.py` rounds the
+   reanchored stop to `_SYMBOL_DECIMALS` precision, and a floor-bound stop
+   landing a hair under 4.0 is refused by IG rather than clipped. No change
+   now — but **US100 must not stay at parity** when `MIN_SL_DIST` is revisited
+   after Stage 4. It is the one row whose current value is not conservative.
+
+### Why nothing is changed yet
+
+Same reasoning as findings 14, 15 and 20. `MIN_SL_DIST` binds on **45–55% of FX
+entries** and therefore drives sizing on roughly half of them. Changing it
+mid-sequence confounds the parity before/after the whole engine sequence exists
+to measure, and it sits on the live execution path.
+
+**Sequence: record now → Stage 4 → then decide, as a live change with its own
+verification.** Fold in `execute_trade.py`'s fourth copy (finding 20) at the
+same time, add NZDUSD, resolve XAUUSD's missing epic, and decide separately how
+BTC's percentage rule is represented. Not housekeeping.
+
+**Standing note for whoever does it:** these are DEMO-account values. Epic
+properties have already been shown to differ **by account** on this system
+(`ig_scale`, EURUSD decimal on LIVE vs points on DEMO). Re-pull against LIVE
+before applying anything derived from this table there.
+
+---
+
+## Model-shape defects — a named group. NO CALIBRATION FIXES THESE.
+
+*(named 2026-08-23)*
+
+Distinct from the uncalibrated-parameter group (`SPREAD_COSTS`, `MIN_SL_DIST`,
+`NORMAL_SPREADS` — findings 14 and 15). Those hold a **wrong number** and are
+repaired by measuring the right one. These hold a number **of the wrong
+shape**: the quantity cannot be represented at any setting.
+
+| # | the model | the quantity | why no value works |
+|---|---|---|---|
+| 36 | `MIN_SL_DIST[symbol]` — one flat price distance | IG's BTC minimum is **`unit: PERCENTAGE`, value 1.0** | a percentage of a moving price is not a constant. Correct at one price level and wrong at every other — ~774 at bid 77,474, needing a rewrite on every move |
+| gate | `SPREAD_COSTS[symbol]` — one round-trip constant | entry and exit spreads **differ**: a position held Fri 20:45 → Sun 23:00 exits at reopen spreads of 10–17 pips, while `is_entry_allowed` bars the entry | a single scalar cannot say "cheap in, expensive out." Filtering the sample differently does not help — the field has one slot |
+
+**The tell, and the reason this group is worth naming:** both look like
+calibration problems and both attract a calibration fix. Someone measures the
+BTC minimum at today's price and writes a number; someone recalibrates
+`SPREAD_COSTS` from a clean sample. Each produces a value defensible on the day
+it is written and silently wrong afterwards — and each **closes the finding**
+while leaving the defect in place.
+
+**Test before proposing a number:** *is there any single value of this field
+that is correct in every case it covers?* If no, the field is the defect.
+Widen the type — a per-symbol rule object rather than a float, an entry/exit
+pair rather than a round-trip scalar — or state that the symbol is out of scope
+for the model. Do not pick a value.
+
+Neither is urgent: BTC does not trade and has no strategy, and the spread
+asymmetry is already recorded in `get_spread_samples`' docstring where the
+table's builder will read it. Both are named so the next person recognises the
+shape before reaching for a constant.
 
 ---
 

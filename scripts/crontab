@@ -8,5 +8,26 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Stage E — resolve webhook outcomes, 06:10 UTC
 10 6 * * * root cd /app && /usr/local/bin/python3 scripts/resolve_webhook_outcomes.py >> /app/logs/webhook_outcomes.log 2>&1
 
-# Candle collector every 15min — appends to scripts/candle_cache/{SYMBOL}_15MIN_IG.json
-*/15 * * * * root cd /app && /usr/local/bin/python3 scripts/collect_candles.py >> /app/logs/candles.log 2>&1
+# Candle collector — DISABLED 2026-08-23. Do NOT re-enable in this form.
+#
+# It never produced a single candle and it starved the live path.
+#   - /app/logs/candles.log: 222 lines, 222 x
+#     error.public-api.exceeded-account-historical-data-allowance, ZERO successes,
+#     across the entire life of the 2026-08-22 image.
+#   - /app/scripts/candle_cache/ DID NOT EXIST in the container. Not "wiped on
+#     rebuild" — never created. There was no output to lose.
+#   - Budget: 3 symbols x FETCH_COUNT 50 x 96 runs/day = 14,400 points/day =
+#     100,800/week against a 10,000/week IG allowance. 10.08x over. The weekly
+#     allowance is gone in ~16.7 hours, and ~98% of every request is waste — it
+#     asks for 50 candles every 15 minutes to gain 1.
+#   - LIVE-PATH CONSEQUENCE, which is why this is not housekeeping: with the
+#     allowance at zero, bot/candle_stream.py's warm-up and gap-backfill both
+#     fall through to yfinance on every pair. CANDLE_SOURCE=ig_stream was only
+#     half true — IG ticks, yfinance seed data.
+#
+# Re-enabling requires a different design, not this line: hourly at numpoints=6
+# (~3,024/week) or 4-hourly at numpoints=20 (~2,520/week), writing to the
+# volume-mounted ./database rather than an image layer, and self-throttling on
+# the remainingAllowance that every successful response already carries.
+# See CLAUDE.md "IG historical allowance".
+#*/15 * * * * root cd /app && /usr/local/bin/python3 scripts/collect_candles.py >> /app/logs/candles.log 2>&1

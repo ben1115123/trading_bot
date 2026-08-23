@@ -36,6 +36,7 @@ from database.models import get_active_strategies, upsert_heartbeat
 from scripts.run_backtest import STRATEGIES, _fetch_yfinance_candles
 from bot.notifier import send_telegram
 from symbols import SYMBOLS
+from ig_allowance import log_allowance
 
 # -------------------------
 # Config
@@ -264,6 +265,13 @@ def _rest_fetch(ig_service: IGService, symbol: str, timeframe: str, count: int) 
             raise _QuotaExceeded(str(e)) from e
         print(f"[candle_stream] REST fetch failed {symbol}/{timeframe}: {e}")
         return None
+
+    # The one place the live path can see how much of the shared weekly IG
+    # budget is left. Report only — deciding to stop is the caller's, not a
+    # logging helper's. Nothing is logged on the quota-exceeded path above
+    # because a 403 carries no allowance block; the only way to learn the
+    # reset time is a request that SUCCEEDS.
+    log_allowance("candle_stream REST", result, symbol, timeframe)
 
     prices_raw = result.get("prices")
     if not prices_raw:

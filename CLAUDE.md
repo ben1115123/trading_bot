@@ -262,11 +262,11 @@ requires undoing **both** — uncommenting the cron line AND reverting the code.
 
 **Layer 1 — cron.** `scripts/crontab`: the `0 6 * * *` `run_daily.py` line is
 commented out, carrying the DISABLED note from the 2026-08-12 in-container
-edit. Cron file now has exactly two active lines:
+edit. **As of 2026-08-23 the cron file has exactly ONE active line** — the
+`*/15` candle collector was disabled the same day (see IG Historical Allowance):
 
 ```
 10 6 * * * root ... scripts/resolve_webhook_outcomes.py >> /app/logs/webhook_outcomes.log
-*/15 * * * * root ... scripts/collect_candles.py >> /app/logs/candles.log
 ```
 
 **Layer 2 — code.** `scripts/select_strategy.py`:
@@ -301,12 +301,20 @@ unreachable — `_select_for_symbol` filters to `timeframe == "HOUR"` before the
 blocklist check, so every 15MIN/5MIN tuple has never been evaluated.
 
 **Verification anchors after any rebuild:**
-- committed `scripts/crontab` md5 `aea93925651e8ee24ce7d52e70b3434d`
-  (blob `fe4ff2584c8dbfb4188bffdd6cf5b044316d135c`)
+- committed `scripts/crontab` md5 **`0f1cc206193f5d30341c3db530357b06`** as of
+  2026-08-23 (was `aea93925651e8ee24ce7d52e70b3434d` from 2026-08-15 until the
+  collector was disabled; blob `fe4ff2584c8dbfb4188bffdd6cf5b044316d135c`)
 - in-container `/etc/cron.d/trading-bot` must match byte-for-byte —
   `Dockerfile:18` is a plain `cp`, no transformation
 - the pre-fix Method A value was `d7565feade7ac71356579e686b887a1b`; seeing it
   again means a rebuild reverted the disable
+- the 2026-08-23 collector disable was applied by **`docker cp`** into the
+  running container, not by a rebuild (CHECK 1's Sunday reopen was hours away —
+  see the prospective marker rule). Verified after the copy: in-container
+  `/etc/cron.d/trading-bot` md5 is **`0f1cc206193f5d30341c3db530357b06`**,
+  byte-identical to the committed file, so a rebuild restores exactly what is
+  already running. Per Unverified Controls instance 3 the copy is lost on
+  rebuild; the committed file is what makes it permanent.
 
 ## Claude Code SSH Permissions
 ✅ SSH, run docker, git pull, check logs, restart containers
@@ -942,6 +950,10 @@ Weekend close: auto-closes US500/US100/DAX at 20:40 UTC Friday
 - Live trading: IG Markets API only
   IG historical API: 10,000 points/week — reserved for
   live execution only, never for backtesting
+  ⚠️ **The reservation was not being honoured.** `collect_candles.py` was
+  taking 100,800 points/week of a 10,000/week budget and returning nothing,
+  which pushed `candle_stream`'s warm-up onto yfinance. Disabled 2026-08-23 —
+  see IG Historical Allowance.
 
 ### CANDLE_SOURCE flip: yfinance → ig_stream (2026-07-15)
 Live signal-loop candle source flipped from yfinance to ig_stream in
@@ -1523,11 +1535,33 @@ capped at 60 days, which is not enough span for a walk-forward; Twelve Data
 would need an index symbol that the free tier may not carry. **Unresolved — do
 not paper over it by re-running on the ETF files.**
 
+**✅ RESOLVED 2026-08-23 — "may not carry" is now measured, and the answer is
+no.** Probed with the project key: `SPX` and `NDX` both return *"This symbol is
+available starting with the Grow or Venture plan"*; `IXIC`/`GDAXI` are invalid
+symbols; **`DAX` on Twelve Data is a $47 NASDAQ ETF**, not the index. The
+SPY/QQQ/EWG map was not carelessness — it is what the free tier permits.
+**ids 29 and 30 stay blocked**, and there is no substitution available this
+week at any tier we hold.
+
+**If index exposure must be tested now, HOUR is the honest route.** yfinance 1h
+reaches 730 days and `US500_HOUR_5000_yf.json` is genuine `^GSPC` at index
+scale — that cache is fine and always was. 15MIN indices are unavailable, and
+saying so is better than running the gauntlet on ETF candles and stamping the
+output `parity-v2`. See IG Historical Allowance for the full source table.
+
 ### Audit result (2026-08-22) — what is contaminated
 
 `SYMBOL_MAP` audited in full: **all 7 FX entries are correct** (they map to real
 pairs). **All 3 index entries are ETF proxies** — `US500->SPY`, `US100->QQQ`,
-`DAX->EWG`. Contamination is confined to `*_15MIN_AV.json` for those three
+`DAX->EWG`.
+
+⛔ **DO NOT "just fix the mapping" — measured 2026-08-23, it cannot be fixed at
+this tier.** `SPX` and `NDX` return *"available starting with the Grow or
+Venture plan"*; `IXIC`/`GDAXI` are invalid symbols; and **`DAX` on Twelve Data
+resolves 200 OK to a $47 NASDAQ ETF** — a *different* wrong instrument from
+`EWG`, which is how a "fix" produces a second contamination with a fresh
+signature. Whoever wrote `SYMBOL_MAP` picked what the free tier permitted; this
+was never carelessness. Full probe table in findings doc finding 30. Contamination is confined to `*_15MIN_AV.json` for those three
 symbols; **every `*_yf.json` is correctly index-scaled** (verified by price
 level). The defect is per-FILE, not per-symbol.
 
@@ -1766,6 +1800,49 @@ proves nothing until each has been observed once with a positive signal.
 |---|---|---|---|
 | FX weekend block | 2026-08-17 | ✅ **VERIFIED Sat 2026-08-22** | `market closed — weekend` |
 | 21:00 rollover gate | 2026-08-21 | **Mon 2026-08-24 21:00–21:59 UTC** | `entry window closed — daily rollover hour` |
+| collector disable → IG warm-up | 2026-08-23 | **after the allowance resets** | see CHECK 3 below |
+
+## ⚠️ CHECK 3 — does the warm-up reach IG once the collector stops burning?
+
+**The collector disable is verified. What it was supposed to BUY is not.** Two
+different claims, and only the first has evidence:
+
+| claim | status | evidence |
+|---|---|---|
+| the collector no longer runs | ✅ **VERIFIED 2026-08-23 14:31 UTC** | marker test, below |
+| `candle_stream` warm-up now reaches IG instead of yfinance | ⏳ **NOT OBSERVABLE YET** | — |
+
+**Marker test result (positive signal, not silence).** A one-shot cron line was
+added in the same edit that commented the collector, scheduled 6 minutes out,
+`%` escaped as `\%`:
+- it **fired at `2026-08-23T14:31:01Z`** → cron was alive and had re-read
+  `/etc/cron.d/trading-bot` after the change;
+- the `*/15` collector run due at **14:30 did not fire** — `candles.log` stayed
+  at 243 lines with mtime `14:15:04`, its last pre-edit write.
+
+Cron demonstrably working and reading that exact file in the same window, so
+the 14:30 no-show is a real disable rather than a dead daemon. Marker line
+removed immediately after observation; in-container md5 back to the committed
+value.
+
+**Why the second claim cannot be checked today — and must not be faked.** The
+allowance is a **rolling weekly budget that is currently at zero**; stopping
+the drain does not refill it. Warm-up only runs on container start or stream
+reconnect. So a restart right now would fall back to yfinance **no matter how
+correct the fix is** — the probe cannot reach the passing state. That is the
+self-invalidating-probe rule exactly, and a rebuild today is separately
+forbidden (CHECK 1's Sunday reopen, CHECK 2 on Monday).
+
+**What PASSING looks like, stated before the observation:** on the first
+warm-up after the allowance resets, the bot log shows
+`[candle_stream] warm-up US500/15MIN: 200 candles (source=IG REST)` —
+`source=IG REST`, **not** `source=yfinance (quota fallback)` — and
+`[ig_allowance] candle_stream REST ...` prints a non-zero `remaining` with a
+`resets_at`. That log line is only producible by a successful IG fetch.
+
+**Do not read a yfinance fallback before the reset as a failure of this
+change.** And do not restart the container to force the check — take the next
+warm-up that happens anyway.
 
 CHECK 1 **passed on 2026-08-22 — the control is verified.** One of its four
 criteria was found to be mis-specified and re-scoped to Sunday; that is a
@@ -2423,6 +2500,103 @@ a single round-trip constant and **cannot express an asymmetric entry/exit
 cost**, so this is not fixable by filtering differently — it needs a different
 model shape. Recorded in `get_spread_samples`' docstring where whoever builds
 the table will read it.
+
+## IG Historical Allowance — the collector is DISABLED (2026-08-23)
+
+**10,000 price points per week, per account, rolling.** One budget shared by
+three consumers: `candle_stream` warm-up/backfill (the live path),
+`engine.fetch_candles` (backtests), and — until 2026-08-23 —
+`scripts/collect_candles.py`.
+
+### The collector is off. Do NOT re-enable it in its old form.
+
+| | |
+|---|---|
+| `/app/logs/candles.log` | **222 lines, 222 quota errors, ZERO successes**, whole life of the 2026-08-22 image |
+| `/app/scripts/candle_cache/` | **did not exist in the container** — never created, so there was no output to lose |
+| its budget | 3 symbols x `FETCH_COUNT` 50 x 96 runs/day = **14,400/day = 100,800/week** = **10.08x** the allowance |
+| exhaustion | **~16.7 hours**, then zero for the rest of the week |
+| waste | 50 candles requested every 15 min to gain 1 — **~98%** |
+
+**Live-path consequence, which is why this was not housekeeping:** with the
+allowance at zero, `candle_stream._warm_up` and `_backfill_gap` fall through to
+yfinance on **every pair**. `CANDLE_SOURCE=ig_stream` was only half true — IG
+ticks, **yfinance seed data**. The 2026-07-15 flip exists because off-session
+yfinance is stale on indices, so the collector was quietly reintroducing the
+exact failure the flip removed, while producing nothing. Findings doc finding 35.
+
+A workable design, for whenever it is rebuilt: **hourly at `numpoints=6`
+(~3,024/week)** or 4-hourly at `numpoints=20` (~2,520/week), writing to the
+volume-mounted `./database` (a `candles` table with `UNIQUE(symbol,timeframe,
+time)`) rather than an image layer, and self-throttling on `remainingAllowance`
+so the live path keeps a reserve. `scripts/candle_cache/` is **not** a volume
+(`docker-compose.yml` mounts only `./database`) — anything written there dies
+with the image layer.
+
+### The allowance is now logged — `ig_allowance.py`
+
+IG returns `allowance{remainingAllowance, totalAllowance, allowanceExpiry}` on
+**every successful** `/prices` response. Both consumers did
+`result.get("prices")` and dropped the rest, so the shared budget was
+unmeasured and **the reset time was unknown**. Now parsed and printed at both
+sites, tagged by source:
+
+```
+[ig_allowance] candle_stream REST US500/15MIN: remaining=9800 of 10000 (2.0% used), resets_at=...
+```
+
+Reports, does **not** throttle — a caller wanting to reserve budget reads
+`remaining` and decides. A logging helper that can refuse is a logging helper
+that can stop a warm-up. Never raises; stdlib-only, zero project imports (same
+safe-import contract as `symbols.py` / `engine_version.py` /
+`instrument_limits.py`, because `engine.py` imports it).
+
+⚠️ **The reset time is only learnable from a request that SUCCEEDS.** A 403
+carries no allowance block. Nothing will print until the budget resets.
+
+### 🔭 TWO UNKNOWNS — measure after the allowance resets, before planning backfill
+
+Both were untestable on 2026-08-23: `numpoints=1` on three separate epics was
+refused outright.
+
+1. **Max `numpoints` per request** on `/prices/{epic}/{resolution}/{numpoints}`.
+2. **How far back `MINUTE_15` reaches per epic.** The whole index-backfill plan
+   (~17,000 points per index symbol for a 10-month walk-forward span, ~51,000
+   for all three ≈ 5 weeks of full allowance) is a **guess** until this exists.
+
+### Related, recorded not fixed
+
+`_rest_fetch`'s fallback is **asymmetric**: quota exhaustion raises
+`_QuotaExceeded` and gets yfinance; empty prices or an unresolved `ig_scale`
+return `None` and get **nothing**. On the 2026-08-22 restart that left US500
+15MIN+HOUR, US100 15MIN and USDCAD 15MIN with empty buffers and no fallback
+attempted (`warm-up got nothing ... source=IG REST`). Gap-backfill covered it
+minutes later, by luck.
+
+### Index data — where this leaves it
+
+**IG serves all three indices at correct index scale** (verified live 2026-08-23
+via market snapshots, which cost no historical allowance): US500 bid 7671.16,
+US100 29289.2, DAX 26108.4 — against ETF caches of 729 / 706 / 40.59.
+
+But nothing serves them at **15MIN over a walk-forward span** today:
+
+| source | 15MIN indices | why not |
+|---|---|---|
+| Twelve Data free tier | ❌ | `SPX`/`NDX` → *"available starting with the Grow or Venture plan"*; `IXIC`/`GDAXI` invalid; **`DAX` resolves to a $47 NASDAQ ETF**. The SPY/QQQ/EWG map was what the free tier permits — fixing `SYMBOL_MAP` alone fixes nothing |
+| yfinance | ❌ | Yahoo: *"The requested range must be within the last 60 days"* at 15m. ~1,560 bars vs the ~10 months `WF_TRAIN_MONTHS=6` + `WF_MIN_WINDOWS=4` needs |
+| IG REST | ⏳ | correct scale, but allowance at zero and depth unmeasured |
+| stream persistence | ⏳ | free and correct, but **forward-only** (~400 index bars/week ≈ 43 weeks to 10 months) |
+
+✅ **yfinance 1h reaches 730 days, so US500/US100/DAX HOUR are correctly scaled
+and backtestable TODAY** (`US500_HOUR_5000_yf.json` is `^GSPC`, verified). Only
+15MIN is broken.
+
+**Do not mix sources inside one cache file.** Twelve Data before date X and IG
+after is two instruments in one file — the DAX/ETF defect with a subtler
+signature. One source per symbol, recorded in the `cache_file` provenance
+columns (`d6f1c8c`).
+
 
 ## Monitoring Gaps (outstanding)
 

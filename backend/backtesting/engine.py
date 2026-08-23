@@ -11,6 +11,7 @@ from backend.backtesting.metrics import (
 from backend.backtesting.regime import classify_regimes
 from risk_manager import get_risk_per_trade
 from instrument_limits import MIN_SL_DIST, VALUE_PER_POINT
+from ig_allowance import log_allowance
 
 WF_TRAIN_MONTHS        = 6
 WF_TEST_MONTHS         = 1
@@ -112,6 +113,11 @@ def fetch_candles(ig_service, symbol: str, timeframe: str, count: int) -> list:
         resolution=resolution,
         numpoints=count,
     )
+
+    # IG returns the remaining weekly historical-data budget on every
+    # successful response. This call site discarded it from the day it was
+    # written — see ig_allowance for what that cost.
+    log_allowance("engine.fetch_candles", result, symbol, timeframe)
 
     prices_raw = result.get("prices")
     if prices_raw is None:
