@@ -2591,6 +2591,8 @@ a predicate that asserts nothing.
 claim is found false, the first question is *"is this a coverage claim, and can
 it be made enforceable?"* rather than only *"what should the doc say?"*.
 
+---
+
 ## 33. Two verification queries have now been wrong in the direction that MANUFACTURES a finding
 
 *(added 2026-08-23)*
