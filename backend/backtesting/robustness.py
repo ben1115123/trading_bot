@@ -336,6 +336,14 @@ def permutation_test(strategy_class, candles: list, symbol: str, params: dict,
     return {
         "real_median_pf":       real_pf,
         "real_verdict":         real_wf["verdict"],
+        # The REAL leg's per-window breakdown. Without it `real_median_pf` and
+        # `real_verdict` are a verdict stored without its inputs — the same
+        # defect fixed on the stability map in 40d716b, in the stage that
+        # carries the percentile claim. Lower severity there because this leg is
+        # deterministic and therefore regenerable, but "regenerable" is not
+        # "checkable", and the whole point of persisting a verdict is to be able
+        # to check it later without re-running anything.
+        "real_windows":         real_wf["windows"],
         "n_iter":               n_iter,
         "synthetic_median_pfs": synthetic_pfs,
         "synthetic_pf_median":  _percentile(synthetic_sorted, 0.50),

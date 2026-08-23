@@ -905,8 +905,14 @@ def main():
                                 max_hold_candles=args.max_hold, session_filter=args.session_filter,
                                 seed=seed)
         _print_permutation(perm)
+        # windows= is the REAL walk-forward's breakdown, so the stored verdict can
+        # be rechecked from the row rather than only by re-running. The 200
+        # synthetic runs' windows are deliberately NOT stored: their unit of
+        # analysis is the distribution of medians, which extra_json already
+        # carries in full, and 200 window lists would bloat the row for nothing.
         _persist_wf_run("permutation", strategy_class.name, args.symbol, args.timeframe,
-                        params, fingerprint, verdict=perm["real_verdict"],
+                        params, fingerprint, windows=perm["real_windows"],
+                        verdict=perm["real_verdict"],
                         median_pf=perm["real_median_pf"], extra=perm,
                         params_source=params_source, prov=perm)
         return

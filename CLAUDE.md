@@ -2220,11 +2220,16 @@ Stage 4. Kept in full because *what they were* is the reusable lesson.
   `models.update_walkforward_extra`, which **merges rather than replaces** so it
   can never drop `params_source` or an import stamp.
 
-**Remaining asymmetry, recorded not fixed:** `monte_carlo` and `permutation`
-rows still persist with `windows_json` NULL — 6 of the 91 rows in a batch. MC
-legitimately has no windows; the permutation row does have an underlying
-walk-forward whose verdict cannot be rechecked from the row. Its `extra_json`
-carries the full synthetic distribution, so it is not the same severity.
+**✅ The permutation row's windows were fixed too** (2026-08-23). It stores the
+REAL walk-forward's per-window breakdown, so **both legs of the row are now
+checkable from the row alone**: `median_pf` rebuilds from `windows_json`
+(1.0784, exact), and `percentile` rebuilds from `synthetic_median_pfs` (100.0,
+exact). The 200 synthetic runs' windows are deliberately NOT stored — their unit
+of analysis is the distribution of medians, which `extra_json` already carries in
+full, and 200 window lists would bloat the row for nothing.
+
+`monte_carlo` rows still carry `windows_json` NULL, correctly: a bootstrap
+resamples a P&L list and has no windows to record.
 
 **The pre-fix rehearsal rows are KEPT AND MARKED, not deleted** — 91 rows on
 each of local and VPS now carry `extra_json.superseded_by` and
