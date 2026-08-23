@@ -2439,6 +2439,31 @@ did. None was checkable by reading the doc; every one required reading the code
 or watching the system. That is the argument for the marker test applying to
 documentation, not only to controls.
 
+### The generalisable move: make the property ENFORCEABLE so the doc cannot drift from it
+
+The seed fix did not just correct the doc — it made the documented property a
+thing the code refuses to run without. `UnseededRunError` means the sentence
+"this run was seeded" can never again be true in prose and false in the process.
+**Documentation drifts; a raise does not.** Assessed against the other five:
+
+| # | instance | enforceable the same way? | what it would take |
+|---|---|---|---|
+| 1 | **`SPREAD_COSTS` / `MIN_SL_DIST` / `NORMAL_SPREADS` uncalibrated** (findings 14, 15) | **YES — strongest candidate.** | The values already have a provenance stamp mechanism (`spread_model`, `spread_table_sha`). Make the *name* carry the claim — a table named `...-UNCALIBRATED` should be refused by any code path feeding a promotion decision, exactly as `score_strategies` already raises on mixed `engine_version`. The doc then cannot claim calibration the code does not have, because a calibrated name would be required to get past the gate. |
+| 2 | **spread filter listed as an active webhook protection, has never blocked** (finding 15) | **YES, cheaply.** | A control that has never fired is indistinguishable from a control that cannot fire. Count fires; a filter with zero lifetime activations against a non-zero evaluation count is a positive, queryable signal. `webhook_log` already stores the block reason — this is a query, not new instrumentation. Related: the shadow spread gate in `risk/spread_gate.py` is already in the "awaiting first fire" list for this reason. |
+| 3 | **`collect_candles` recorded as disabled while firing every 15 min** | **PARTLY.** | Cron state cannot be asserted from inside the app, but the *effect* can: a job documented as disabled that is still writing rows is detectable by checking for recent writes to the table it populates. That is the marker test as a standing query rather than a one-off. The committed-crontab md5 anchor already covers the config half. |
+| 4 | **"all US100 strategies blocklisted" when the tuple that mattered was absent** | **YES, and it is the cleanest.** | `SYMBOL_BLOCKLIST` vs `STRATEGY_BLOCKLIST` is exactly the allowlist-by-omission trap. A `blocklist_covers(symbol)` predicate that returns True only when a symbol is blocked *symbol-wide* would let the doc's claim be asserted rather than described — and would have caught the 2026-06-16 promotion. |
+| 5 | **`utils/telegram_alert.py` listed as to-build for five weeks after alerting shipped** | **NO.** | A stale to-do list is not a code property. Nothing to enforce; this one is a documentation-hygiene failure and only a review catches it. |
+
+**Four of six are enforceable, one partly, one not.** The common shape of the
+four: the doc asserts *coverage* ("this is calibrated", "this is blocked", "this
+protects"), and coverage is a predicate the code can evaluate about itself. The
+two that resist enforcement assert *history or intent* ("this cron was
+disabled", "this is still to build"), which the code has no access to.
+
+**None of this is built.** Recorded so that the next time a doc claim is found
+false, the question asked is "can this claim be made enforceable?" rather than
+only "what should the doc say?".
+
 ---
 
 ## 33. Two verification queries have now been wrong in the direction that MANUFACTURES a finding
@@ -2534,6 +2559,100 @@ consequences, one already mitigated:
 
 2. **Any future "what ran when" reconstruction must use `id`, not `created_at`.**
    Ids are monotonic by construction; the timestamps are not.
+
+### Blast-radius audit — every timestamp-RANGE query in the codebase
+
+*(audit 2026-08-23, REPORT ONLY. Nothing below is fixed. The only change made
+is the `--since-margin-minutes` already applied to `export_stage4.py`.)*
+
+**First, the distinction that decides which sites are exposed.** A column is
+only a clock reading if it is set by `datetime.now()` at insert. Columns holding
+a *business* time — a candle time, a broker fill time, a hand-entered time — are
+not clock readings and are not affected by clock drift, though they have their
+own ordering hazards.
+
+| column | set by | a clock reading? |
+|---|---|---|
+| `signal_log.checked_at` | `datetime.now()` at insert (`models.py:188`) | **yes** |
+| `candle_source_compare.checked_at` | `now()` default (`models.py:717/765`) | **yes** |
+| `walkforward_runs.created_at` | `now()` default | **yes** — where finding 34 was seen |
+| `backtest_results.run_at` | `now()` in `_save_run` | **yes** |
+| `heartbeat.last_beat` | `now()` at upsert | **yes** |
+| `trades.timestamp` | `data.get("timestamp", now())` — callers pass candle/broker/user time | **no** |
+| `paper_trades.candle_time` | the candle | **no** |
+
+#### The sites
+
+| # | site | window | under-inclusion fails how? | direction |
+|---|---|---|---|---|
+| 1 | `bot/live_signal_loop._resolve_pending_paper_trades` — `_RESOLUTION_HORIZON`, 14d | `now - signal_dt` in Python | **LOUD-ish.** A clock jump forward makes a row look older; at +5:09 against a 14-day horizon that is 0.03% of the window, so it can only matter for a row already within 5 minutes of expiry. The row would terminate `EXPIRED` — a terminal outcome, visible, and wrong. | premature expiry |
+| 2 | same function — candle window derived from `signal_dt` | slice of fetched history | **not clock-dependent.** `signal_dt` is `candle_time`, a business time from the row, compared against candle timestamps from yfinance. Neither side is the local clock. This is the one the finding-22 fix made correct, and it stays correct. | n/a |
+| 3 | `scripts/watchdog.check_heartbeat` — stale >20min | `now - last_beat` | **DANGEROUS DIRECTION, and it is the loudest failure here.** `now` from the watchdog host, `last_beat` written by the container. A +5:09 jump on the *reader* adds 5 min to a 20-min threshold → **false 💀 SIGNAL LOOP STALE alert**. Fails toward a false alarm, which is the cheap side. The opposite jump would suppress a real alert for one 10-min cron tick. | false positive |
+| 4 | `scripts/watchdog.check_candle_divergence` — 60min lookback | `checked_at >= now-60min` | **SILENT.** Under-inclusion drops rows from the window and the worst-of-60min shrinks → a real divergence spike can go unreported. Prints "no candle comparisons in last 60min" if the window empties, which is a partial tell, but a *partially* emptied window says nothing. | missed alert |
+| 5 | `scripts/daily_summary` — 24h | `timestamp >= since`, `close_time >= since` | **SILENT, and both columns are business times, so clock drift is not the exposure** — `timestamp` is candle/broker time. A wrong `since` under-counts trades in a report nobody reconciles. | undercount |
+| 6 | `data/positions_poller._get_deferred` — `close_time > datetime('now','-24 hours')` | **SQLite's** `now`, not Python's | **SILENT, and note the different clock.** `datetime('now')` reads the same OS clock inside the container. Under-inclusion drops a trade from the deferred-P&L retry list permanently — it is never retried, and the row keeps `pnl IS NULL`. This is the mechanism already recorded as the NULL-pnl USDCAD cause (finding 24 amendment), by a different route. | permanent NULL pnl |
+| 7 | `database/models.get_spread_samples` — `checked_at >= since` | caller-supplied | **SILENT.** Under-inclusion shrinks the calibration pool. The spread-table GATE counts samples and hours, so a *large* loss trips criterion 3 or 4; a small loss silently biases the median. | biased calibration |
+| 8 | `risk/daily_loss` — `date(close_time) = ?` | **equality on a DATE, not a range** | **SILENT but tiny.** A +5:09 jump near midnight UTC could read the wrong day and reset a $75 budget early. `close_time` is broker time, not the local clock, so the exposure is the `?` argument only. | limit resets early |
+| 9 | `scripts/export_stage4` | `run_at`/`created_at >= since` | **SILENT — this is finding 34's original case.** MITIGATED by `--since-margin-minutes`, default 10. | missing rows |
+| 10 | `models.get_recent_*` / dashboards 07, 09 (`timestamp >= ?`) | display windows | **SILENT, cosmetic.** Wrong count on a chart. | undercount |
+| 11 | `scripts/analyze_correlation` — `timestamp BETWEEN ? AND ?` | analysis | **SILENT.** Episode boundaries shift. Report-only tool, not a gate. | analysis skew |
+| 12 | in-memory cooldowns: `candle_stream` fallback dedup (6h), `live_signal_loop` SL-DRIFT alert (6h), `watchdog` `_should_alert` (60min) | `now - last` | **LOUD-benign.** A jump re-arms or delays an alert once. Anti-spam only. | duplicate/missing alert |
+
+**The pattern across the table: every genuinely silent case is a
+MISSED-something** — a missed alert, a missed sample, a missed row, a missed
+retry. Not one of them produces a wrong *number* that looks right; they produce
+an absent observation. That is the same failure the marker test exists for, and
+it means clock drift here is invisible to any check that reads the result rather
+than the window.
+
+**Row 6 is the one to fix first if any of these are ever fixed**, because its
+under-inclusion is permanent rather than per-tick: a trade dropped from the
+deferred-P&L window is never retried.
+
+### Is the VPS affected? MEASURED, not assumed.
+
+The one-instant comparison of `date -u` on both hosts does not settle an
+intermittent fault — per the self-invalidating-probe rule, a probe that samples
+once cannot see a fault that appears occasionally. **The test that does settle
+it is the one that found the fault locally**: id-vs-timestamp monotonicity over
+a column that is a clock reading, across enough rows that a 4.4% violation rate
+could not hide.
+
+Run read-only against production 2026-08-23:
+
+| table | rows | span | id/time violations |
+|---|---|---|---|
+| `signal_log.checked_at` | **88,011** | 2026-04-30 → 08-23 | **0** |
+| `candle_source_compare.checked_at` | 22,021 | 2026-07-08 → 08-21 | **0** |
+| `trades.timestamp` | 996 | 2026-04-22 → 08-21 | 40 — **not a clock signal**, see below |
+
+**Power of the test:** locally the rate was 8 in 181 rows (4.4%). At that rate
+`signal_log` would show roughly 3,900 violations. It shows zero. `signal_log`
+writes ~11 rows per 5-minute cycle, so a 5-minute forward jump necessarily
+spans several cycles and must produce violations if it occurs. The test could
+see the fault, and does not.
+
+**The `trades` violations are not the clock.** 38 of 40 have `source='ig_import'`
+as the later-id row — historical trades backfilled by `sync_ig_trades.py`, which
+inserts old business timestamps under new ids, exactly as designed. The other
+two: a `manual` XAUUSD row with a hand-entered space-separated timestamp, and a
+`live_signal_loop` BTC row stamped `2026-05-08T15:00:00` — on the hour, no
+microseconds, i.e. a **candle time**. `trades.timestamp` is a business time and
+carries no information about the clock. *(My first pass reported these 40 as a
+possible VPS clock signal before checking what populates the column — a fourth
+instance of finding 33's pattern, caught the same way.)*
+
+**Conclusion: local-only, on the evidence available.** `timedatectl` reports
+`System clock synchronized: yes`, `NTP service: active`, and 110k production
+rows across four months show no violation. WSL2's guest clock resyncing against
+the Windows host is the known mechanism and matches the constant +5:09 offset.
+
+**What would change this conclusion:** a single id/time violation appearing in
+`signal_log` or `candle_source_compare`. Both tables are already written
+continuously, so the monitor already exists — the query is three lines and needs
+no new instrumentation. It is NOT added here (report only), but it is the
+cheapest possible watch, and it belongs in `watchdog.py` if this is ever
+revisited.
 
 ### The chase is the lesson
 
