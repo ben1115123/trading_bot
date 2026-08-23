@@ -642,6 +642,17 @@ def main():
                              "structure, compare real result's percentile vs the synthetic distribution")
     parser.add_argument("--mc-iter",   type=int, default=1000, help="Monte Carlo iterations (default 1000)")
     parser.add_argument("--perm-iter", type=int, default=200,  help="Permutation test iterations (default 200)")
+    # Reproducibility is the DEFAULT, not an option. Before 2026-08-23 nothing
+    # passed a seed, so every permutation and Monte Carlo figure this CLI ever
+    # produced was a one-off: re-running the identical gauntlet moved the
+    # permutation percentile 98.5 -> 99.0 and every one of five ruin cells.
+    # `--seed none` is still available and is stored as None, which marks the
+    # result reproducible=False — deliberately nondeterministic is a legitimate
+    # choice; silently nondeterministic is not.
+    parser.add_argument("--seed", default="42",
+                        help="RNG seed for the stochastic stages (permutation, Monte Carlo). "
+                             "Default 42 so runs are reproducible. Pass 'none' for a "
+                             "deliberately nondeterministic run (stored as seed=None).")
     parser.add_argument("--cluster-threshold", type=float, default=1.1,
                         help="Min median PF for a stability-map cell to count toward cluster regions")
     parser.add_argument("--top-n", type=int, default=5,
@@ -729,6 +740,14 @@ def main():
         print(f"[params] ⚠️  FILE DEFAULTS ({strategy_class(params=None).params}). "
               f"NOT roster-validated — do not use this run as promotion evidence. "
               f"Pass --from-roster for that.")
+
+    seed = None if str(args.seed).lower() in ("none", "null", "") else int(args.seed)
+    if seed is None:
+        print("[seed] ⚠️  NONE — this run is deliberately nondeterministic. Its "
+              "permutation/Monte Carlo numbers will NOT reproduce, and every row it "
+              "writes is stamped reproducible=false.")
+    else:
+        print(f"[seed] {seed} — stochastic stages reproducible from this value.")
 
     candles = None
     if args.source == "alphavantage":
@@ -855,6 +874,7 @@ def main():
             for cell in ranked:
                 print(f"  {cell['params']}  (plateau neighbor_avg={cell['neighbor_avg_pf']})")
                 mc = bootstrap_mc(cell["combined_trades"], n_iter=args.mc_iter,
+                                  seed=seed,
                                   engine_version=stability.get("engine_version"))
                 _print_mc(mc)
                 _persist_wf_run("monte_carlo", strategy_class.name, args.symbol, args.timeframe,
@@ -868,6 +888,7 @@ def main():
                               max_hold_candles=args.max_hold, session_filter=args.session_filter)
         print(f"Base walk-forward: median PF={wf['median_pf']}  verdict={wf['verdict']}\n")
         mc = bootstrap_mc(wf["combined_trades"], n_iter=args.mc_iter,
+                          seed=seed,
                           engine_version=wf.get("engine_version"))
         _print_mc(mc)
         _persist_wf_run("monte_carlo", strategy_class.name, args.symbol, args.timeframe,
@@ -881,7 +902,8 @@ def main():
         params = cli_params if cli_params is not None else strategy_class().params
         print(f"Permutation test ({args.perm_iter} synthetic runs)...\n")
         perm = permutation_test(strategy_class, candles, args.symbol, params, n_iter=args.perm_iter,
-                                max_hold_candles=args.max_hold, session_filter=args.session_filter)
+                                max_hold_candles=args.max_hold, session_filter=args.session_filter,
+                                seed=seed)
         _print_permutation(perm)
         _persist_wf_run("permutation", strategy_class.name, args.symbol, args.timeframe,
                         params, fingerprint, verdict=perm["real_verdict"],

@@ -2359,6 +2359,194 @@ exactly this finding one engine version further on.
 
 ---
 
+## 32. `seed=42` was documented for four weeks. Nothing ever passed a seed.
+
+*(added 2026-08-23 — FIXED same day)*
+
+CLAUDE.md's Phase-5 Sizing Reference has recorded, since 2026-07-15:
+
+> Bootstrap MC (5000 paths, shared resampled paths across configs, **seed=42**)
+
+`scripts/run_backtest.py` has never passed a seed to `bootstrap_mc` or to
+`permutation_test`. Both defaulted to `seed: int = None`, so both built
+`random.Random(None)` — seeded from the OS entropy pool, different every run.
+**The documented seed describes a parameter the code never received.**
+
+**Measured, not inferred.** Two runs of the identical gauntlet on identical
+candles with identical params, 20 minutes apart:
+
+| | run 1 | run 2 |
+|---|---|---|
+| permutation percentile | 98.5 | **99.0** |
+| synthetic PF median | 0.87765 | **0.86635** |
+| MC risk-of-ruin, 5 plateau cells | 66.8 / 71.4 / 74.9 / 77.5 / 85.1 | **68.6 / 71.8 / 77.5 / 79.1 / 86.1** |
+
+The deterministic leg was stable (`real_median_pf` 1.0784 both times), which is
+what makes this hard to notice: only the stochastic stages drift, and they drift
+by a few points — plausible-looking movement, not obvious corruption.
+
+### Why this hid, and why it is worse than an ordinary missing-provenance bug
+
+**The rows are internally consistent.** The permutation row stores all 200
+synthetic medians; recomputing the percentile from them reproduces the stored
+value *exactly*. Any audit that checks a row against its own contents passes.
+The row is **auditable but not regenerable** — a failure mode invisible to the
+reconstruction test that catches finding 31's class.
+
+This is the mirror image of the stability-map defect fixed the same day, and
+the two together define the shape of the check that is actually needed:
+
+| | can the row be audited from its own contents? | can the number be produced again? |
+|---|---|---|
+| stability cells (pre-fix) | ✗ inputs discarded | ✓ deterministic |
+| permutation / MC (pre-fix) | ✓ full distribution stored | ✗ unseeded |
+| both, post-fix | ✓ | ✓ |
+
+**Consequence.** The parity-v2 regeneration of the risk-of-ruin table — the
+finding that invalidates the 2026-07-15 numbers — was itself produced by an
+unseeded run. The evidence overturning an unreproducible number was
+unreproducible. That does not change the conclusion (the gap to 5.58% is two
+orders of magnitude wider than the run-to-run drift), but it did have to be
+regenerated under a recorded seed before it could stand as a measurement.
+
+### The fix
+
+`seed` is now a required decision on both functions, enforced by a sentinel
+rather than a default: `UnseededRunError` if the caller does not pass one.
+`seed=None` remains legal, means "deliberately nondeterministic", is **stored as
+None**, and stamps the result `reproducible: False` — visibly different from a
+seeded run rather than indistinguishable from one. The CLI's `--seed` defaults
+to **42**, so reproducibility is the default rather than an option, and
+`--seed none` opts out loudly.
+
+Verified by regeneration, in both directions, because **a seed that changes
+nothing is as broken as no seed**: same seed twice → every distribution field
+identical; different seed → every field moves.
+
+### Sixth instance of the class
+
+Documentation asserting a control or property the code does not implement. Prior
+instances: `RISK_PER_TRADE` comment claiming live parity; the "spread filter"
+listed as an active webhook protection that has never blocked an alert (finding
+15); `collect_candles` recorded as disabled while firing every 15 minutes;
+"all US100 strategies blocklisted" when the tuple that mattered was never in the
+set; `utils/telegram_alert.py` listed as to-build for five weeks after the
+alerting shipped as `bot/notifier.py`.
+
+**The pattern is not carelessness — it is that all six were plausible.** Each
+described something the system *should* do and that a reader would assume it
+did. None was checkable by reading the doc; every one required reading the code
+or watching the system. That is the argument for the marker test applying to
+documentation, not only to controls.
+
+---
+
+## 33. Two verification queries have now been wrong in the direction that MANUFACTURES a finding
+
+*(added 2026-08-23)*
+
+Both caught before reaching a document, both by the same reflex — the number
+looked wrong in a way the code could not explain, so the query was re-read
+before the result was believed.
+
+**Instance 1 — `WHERE rowid = 1` matched nothing.** A refusal-path test updated
+a fixture with `UPDATE backtest_results SET engine_version='parity-v1' WHERE
+rowid=1`. `id` is `INTEGER PRIMARY KEY AUTOINCREMENT`, so `rowid` IS `id`, and
+the ids were 5330/5331. Zero rows updated. The import then correctly accepted a
+fixture that was never corrupted, and the result read as **"the engine_version
+refusal does not fire"** — a false negative that would have been recorded as a
+broken safety gate.
+
+**Instance 2 — a comparison query missing its lower bound.** Comparing two
+gauntlet batches, the permutation query bounded only `created_at < batch2` and
+picked up a pre-existing row from the local DB's 280-row history. It reported
+`real_median_pf` 1.285 vs 1.0784 — the **deterministic** leg appearing to move
+between runs, which would have been a serious engine-nondeterminism finding.
+Re-run with the bound: identical both times.
+
+**Why this is worth its own entry.** Everything else in this document guards
+against believing something works when it does not. These two are the opposite
+direction: a broken *probe* invents a defect that is not there. And the cost is
+asymmetric — a false negative wastes a re-check, while a false positive gets
+written down, propagates into CLAUDE.md, and becomes a fact that later work
+reasons from. This document already carries corrections of exactly that kind
+(the EURGBP "ROBUST" figure that came from no run; the "US500 HOUR had no active
+row" claim).
+
+**The rule:** a query that produces a surprising result is a claim about the
+QUERY until it has been re-read. Specifically, before recording any finding
+derived from SQL:
+- confirm the WHERE clause bounds what it is supposed to bound, **both ends**;
+- confirm the fixture mutation actually changed rows (`rowcount`, not
+  assumption);
+- for a *negative* result, confirm the probe could have produced a positive one
+  — the self-invalidating-probe rule, applied to SQL rather than to shell
+  commands.
+
+## 34. The local clock is not monotonic — 8 of 181 rows stamped 5:09 in the future
+
+*(added 2026-08-23 — mitigated, not fixed; the cause is the WSL host, not this repo)*
+
+Found while chasing what looked like stray writes to `walkforward_runs`: four
+rows in each of two gauntlet batches carried a `created_at` about five minutes
+later than the rows inserted *after* them. `id` is
+`INTEGER PRIMARY KEY AUTOINCREMENT` and `created_at` is set by
+`datetime.now(timezone.utc)` at insert, so id order and timestamp order cannot
+disagree — unless the clock itself moves.
+
+It moves. Across 181 consecutive rows, **8 id-order/time-order violations, every
+one by exactly +5:09**:
+
+```
+id 381 04:22:40.560 -> id 382 04:17:31.638
+id 396 04:22:45.663 -> id 397 04:17:36.919
+id 409 04:22:50.661 -> id 410 04:17:41.828
+id 448 04:23:05.535 -> id 449 04:17:56.719
+id 474 04:46:58.372 -> id 475 04:41:49.525
+id 486 04:47:03.322 -> id 487 04:41:54.530
+id 513 04:47:13.428 -> id 514 04:42:04.635
+id 538 04:47:23.403 -> id 539 04:42:14.627
+```
+
+The identical constant offset across two batches 25 minutes apart rules out
+drift and points at a WSL2 guest-clock resync: the guest jumps forward, some
+inserts are stamped from the jumped clock, and it snaps back. Checked at the
+same moment: local `date -u` and the VPS agreed to within one second, so this is
+**intermittent and invisible to a spot check** — the exact property that makes it
+dangerous.
+
+### Why this matters beyond tidiness
+
+**`walkforward_runs.created_at` cannot be used to order or window a run.** Two
+consequences, one already mitigated:
+
+1. **The Stage 4 export windows on `created_at`.** A `--since` bound read from
+   the same unreliable clock can land on the wrong side of rows that belong to
+   the batch. The two errors are not symmetric:
+   - over-including is harmless — the `engine_version` filter blocks other trade
+     models and the import is idempotent on a natural key;
+   - **under-including is silent** — missing rows look identical to a batch that
+     simply produced fewer results.
+
+   `export_stage4.py` therefore widens the window backwards by
+   `--since-margin-minutes`, default **10**. That is a correction for a measured
+   defect, not slop, and the docstring says so.
+
+2. **Any future "what ran when" reconstruction must use `id`, not `created_at`.**
+   Ids are monotonic by construction; the timestamps are not.
+
+### The chase is the lesson
+
+The first reading of this was "there are unexplained stability rows at 04:22 and
+04:46 — is a stray process writing to the corpus?" Per finding 33 the query was
+re-read first, which showed the ids were interleaved *inside* the batch rather
+than appended after it — and that is what turned a suspected rogue process into
+a clock measurement. **A row whose id says "middle of the batch" and whose
+timestamp says "five minutes later" is not a mystery about the writer; it is a
+statement about the clock.**
+
+---
+
 ## Standing rule — when to bump a model stamp
 
 Three stamps now exist: **`engine_version`** (backtest trade model),

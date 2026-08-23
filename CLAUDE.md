@@ -753,9 +753,20 @@ deleted. Re-apply the scaling plan above when reverting to LIVE.
 | All    | $10        | Default                       |
 
 ### Phase-5 Sizing Reference — Monte Carlo Risk-of-Ruin (2026-07-15)
-Bootstrap MC (5000 paths, shared resampled paths across configs, seed=42)
+Bootstrap MC (5000 paths, shared resampled paths across configs, ~~seed=42~~)
 on williams_r AUDUSD 15MIN (period=14/oversold=-85/overbought=-20, the
 promoted plateau-center params), $500 account:
+
+> ⛔ **`seed=42` HERE IS FALSE AND WAS FALSE WHEN WRITTEN.** `run_backtest.py`
+> never passed a seed to `bootstrap_mc` — the parameter defaulted to `None` and
+> the run was seeded from OS entropy. This line described a parameter the code
+> never received, for four weeks. **The numbers below are therefore not
+> reproducible and never were**, independently of every other problem with them.
+> Finding 32; sixth instance of documentation asserting a property the code does
+> not implement. Struck through rather than deleted — the false claim is the
+> finding.
+
+
 
 | Risk/trade | Risk-of-ruin | Risk/trade | Risk-of-ruin |
 |-----------|--------------|-----------|--------------|
@@ -797,18 +808,30 @@ dress rehearsal (same strategy, same symbol, roster params, `parity-v2`):
 
 | | pre-parity table above | **parity-v2, measured 2026-08-23** |
 |---|---|---|
-| risk of ruin at $10 on $500 | **5.58%** | **66.8% – 85.1%** |
+| risk of ruin at $10 on $500 | **5.58%** | **67.3% – 84.3%** |
 
-Range because the MC ran on the top-5 plateau cells, not one: 66.8, 71.4, 74.9,
-77.5, 85.1. **Every value is more than 10x the number in the table above**, and
-the best of them is worse than the table's worst listed configuration ($7.50 →
-37.44%).
+Range because the MC ran on the top-5 plateau cells, not one:
 
-⚠️ **These five figures are approximate, not reproducible.** `bootstrap_mc` runs
-unseeded; a re-run of the identical gauntlet gave 68.6 / 71.8 / 77.5 / 79.1 /
-86.1 for the same five cells. The conclusion is unaffected — the gap to 5.58% is
-two orders of magnitude wider than the run-to-run drift — but **do not quote a
-specific value as a measurement** until seeding lands.
+| params (williams_r AUDUSD 15MIN) | risk of ruin |
+|---|---|
+| `period=21, oversold=-85, overbought=-15` | 67.3% |
+| `period=21, oversold=-85, overbought=-10` | 70.6% |
+| `period=12, oversold=-95, overbought=-20` | 74.1% |
+| `period=14, oversold=-95, overbought=-20` | 80.0% |
+| `period=21, oversold=-80, overbought=-10` | 84.3% |
+
+**Every value is more than 10x the number in the table above**, and the best of
+them is worse than that table's worst listed configuration ($7.50 → 37.44%).
+
+✅ **REPRODUCIBLE — `seed=42`, stored on every row** (`extra_json.seed`,
+`reproducible: true`), regenerated 2026-08-23T04:42Z under the seed contract
+from finding 32. Re-run `--stability-map --monte-carlo --seed 42` on
+`AUDUSD_15MIN_AV.json` with roster params for these exact figures.
+
+The **unseeded** originals (66.8 / 71.4 / 74.9 / 77.5 / 85.1) are retained in
+`walkforward_runs` marked `superseded_by` + `unseeded: true` rather than
+deleted — the drift between them and the seeded run is the measurement that
+established finding 32.
 
 **Consequence, stated plainly: every promotion decision that cited this table
 cited a number an order of magnitude wrong.** The table said 1% risk-of-account
@@ -2274,29 +2297,35 @@ Consistent with the rest: the single backtest reproduced this file's documented
 parity-v2 figure **exactly** — `n=221, net=$124.45` — so the engine is behaving
 as recorded. Walk-forward on the full cache: **FRAGILE**, median PF 1.0784,
 50.0% of windows profitable, 585 trades, worst window PF 0.83. Permutation:
-real result at the **98.5th percentile** of 200 synthetic runs, EDGE CONFIRMED —
-the signal is not noise, it is a real but fragile edge that the demo record
-(PF 0.71 live) says is not currently profitable after costs.
+real result at the **100.0th percentile** of 200 synthetic runs under
+`seed=42`, EDGE CONFIRMED — the signal is not noise, it is a real but fragile
+edge that the demo record (PF 0.71 live) says is not currently profitable after
+costs.
 
-⚠️ **That percentile is not a stable number, and neither are the ruin figures
-above.** `permutation_test` and `bootstrap_mc` both run with `seed=None` — the
-CLI passes no seed and no seed is stored on the row. Re-running the identical
-gauntlet on the identical candles 20 minutes later gave percentile **99.0**
-(synthetic PF median 0.87765 -> 0.86635) and moved **every** MC cell
-(66.8 -> 68.6, 71.4 -> 71.8, 74.9 -> 77.5, 77.5 -> 79.1, 85.1 -> 86.1). Quote
-these as approximate, never as reproducible values. **This also means the
-`seed=42` provenance recorded for the 2026-07-15 MC sweep describes a seed
-nothing in the CLI path passes.**
+⚠️ **State that as "at the resolution floor", never as "100%".** At
+`n_iter=200` the p-value floor is 0.00498, so 100.0 means only *no synthetic run
+beat the real one* — it cannot separate a result at the 99.6th percentile from
+one at the 99.99th. The unseeded runs that preceded it gave 98.5 and 99.0 (2 and
+1 synthetics above the real result). **All three are the same claim at this
+resolution**; the spread is the tail noise the floor exists to warn about, not
+disagreement.
 
-Note the contrast that decides the priority: the permutation row **can** be
-rechecked from its own stored fields — all 200 synthetic medians are stored, and
-recomputing the percentile from them reproduces the stored value exactly. It is
-**not** the fix-1 defect; it is the opposite failure, **auditable but not
-regenerable**. The fix is to pass and STORE an explicit seed, and it should land
-before Stage 4 — the alternative is a corpus of headline numbers that can be
-checked against themselves and against nothing else.
+**Seeding history, kept as the evidence for finding 32.** Before 2026-08-23 both
+`permutation_test` and `bootstrap_mc` ran `seed=None` and stored no seed, so
+re-running the identical gauntlet on identical candles moved the percentile
+98.5 → 99.0 and every MC cell. Both now REQUIRE an explicit seed
+(`UnseededRunError` otherwise), store it on the row, and stamp
+`reproducible: true/false`. `--seed` defaults to 42, so reproducibility is the
+default rather than an option.
 
-Monte Carlo on the top-5 plateau cells reports **risk of ruin 66.8%–85.1%** at
+Verified both ways, because **a seed that changes nothing is as broken as no
+seed**: same seed twice → all 200 synthetic medians identical and every MC
+distribution field equal; different seed → both move. Separately the
+*deterministic* stages were confirmed deterministic — two independent stability
+maps agreed on **84/84** cells for verdict, median PF and pct-profitable.
+
+Monte Carlo on the top-5 plateau cells reports **risk of ruin 67.3%–84.3%**
+(`seed=42`, reproducible) at
 $10 risk on a $500 account. That is the $500 planning account, not the demo
 account — see the Phase-5 Sizing Reference for why the demo cannot produce a
 ruin event — but it is far worse than the pre-parity ruin table's 5.58% at the

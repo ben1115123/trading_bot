@@ -23,6 +23,47 @@ _TOTAL_ACCOUNT = 500.0
 _RISK_PER_TRADE = 10.0
 _RUIN_FRACTION = 0.5
 
+# Sentinel distinguishing "the caller did not think about the seed" from "the
+# caller deliberately chose an unseeded run". Those are NOT the same thing and
+# a plain `seed=None` default cannot tell them apart — which is exactly how
+# every permutation and Monte Carlo figure in this project came to be
+# unreproducible while CLAUDE.md recorded `seed=42` for them.
+_SEED_UNSET = object()
+
+
+class UnseededRunError(RuntimeError):
+    """A stochastic stage was called without an explicit seed decision.
+
+    WHY THIS RAISES INSTEAD OF DEFAULTING. Measured 2026-08-23: two runs of the
+    identical gauntlet, identical candles, identical params, 20 minutes apart,
+    gave permutation percentile 98.5 vs 99.0 and moved all five Monte Carlo
+    risk-of-ruin cells (66.8->68.6, 71.4->71.8, 74.9->77.5, 77.5->79.1,
+    85.1->86.1). Every such figure ever quoted in this project is a number that
+    cannot be produced a second time.
+
+    That is worse than it sounds, because these rows ARE auditable from their
+    own contents — the permutation row stores all 200 synthetic medians and
+    recomputing the percentile from them reproduces the stored value exactly.
+    So the defect is invisible to the obvious check: the row is internally
+    consistent and externally unrepeatable.
+
+    `seed=None` remains legal and means "deliberately nondeterministic". It is
+    STORED as None, so a reader can see it, and the result carries
+    `reproducible: False`. What is illegal is not deciding.
+    """
+
+
+def _resolve_seed(seed, fn: str):
+    if seed is _SEED_UNSET:
+        raise UnseededRunError(
+            f"{fn} requires an explicit seed. Pass an int for a reproducible run, "
+            f"or seed=None to declare the run deliberately nondeterministic "
+            f"(which is stored as None and marks the result reproducible=False). "
+            f"Refusing to pick one silently — an unrecorded seed is how every "
+            f"permutation and Monte Carlo figure in this project became "
+            f"unrepeatable while the docs claimed seed=42.")
+    return seed
+
 
 def _percentile(sorted_vals: list, p: float) -> float:
     n = len(sorted_vals)
@@ -149,7 +190,7 @@ class UnstampedTradesError(RuntimeError):
 
 
 def bootstrap_mc(trades: list, n_iter: int = 1000, account: float = _TOTAL_ACCOUNT,
-                 ruin_fraction: float = _RUIN_FRACTION, seed: int = None,
+                 ruin_fraction: float = _RUIN_FRACTION, seed=_SEED_UNSET,
                  engine_version: str = None) -> dict:
     """Bootstrap resampling (with replacement) of the out-of-sample trade
     P&L list — the standard Monte Carlo technique for equity-path risk
@@ -175,10 +216,16 @@ def bootstrap_mc(trades: list, n_iter: int = 1000, account: float = _TOTAL_ACCOU
             f"{CURRENT_ENGINE_VERSION!r}. Resampling across trade models produces "
             f"a distribution that describes neither. Regenerate the trades.")
 
+    # Seed gate. Same reasoning as the provenance gate above: refusing beats a
+    # default that is usually fine, because a default that is usually fine is
+    # the kind of thing that stays wrong for months. See UnseededRunError.
+    seed = _resolve_seed(seed, "bootstrap_mc")
+
     pnls = [t["pnl"] for t in trades]
     n = len(pnls)
     if n == 0:
-        return {"error": "no trades to resample", "engine_version": engine_version}
+        return {"error": "no trades to resample", "engine_version": engine_version,
+                "seed": seed, "reproducible": seed is not None}
 
     rng = random.Random(seed)
     ruin_threshold = account * ruin_fraction
@@ -208,6 +255,10 @@ def bootstrap_mc(trades: list, n_iter: int = 1000, account: float = _TOTAL_ACCOU
     return {
         "n_trades": n, "n_iter": n_iter, "account": account, "risk_per_trade": _RISK_PER_TRADE,
         "engine_version": engine_version,
+        # The seed travels WITH the numbers it produced. A distribution whose
+        # seed lives only in a shell-history line is not reproducible in any
+        # sense that survives the session.
+        "seed": seed, "reproducible": seed is not None,
         "pnl_p5":  _percentile(total_pnls, 0.05), "pnl_p25": _percentile(total_pnls, 0.25),
         "pnl_median": _percentile(total_pnls, 0.50),
         "pnl_p75": _percentile(total_pnls, 0.75), "pnl_p95": _percentile(total_pnls, 0.95),
@@ -255,12 +306,17 @@ def _shuffle_log_returns(candles: list, rng: random.Random) -> list:
 
 def permutation_test(strategy_class, candles: list, symbol: str, params: dict,
                      n_iter: int = 200, max_hold_candles: int = None,
-                     session_filter: str = None, seed: int = None) -> dict:
+                     session_filter: str = None, seed=_SEED_UNSET) -> dict:
     """Masters-method permutation test. Real result's median PF (from a real
     walk-forward on the real candles) is compared against n_iter walk-forward
     runs on log-return-shuffled synthetic candles (same params, same
     strategy). Edge is only considered real if the real result beats
     >95% of the synthetic (noise) distribution."""
+    # Seed gate BEFORE any work — a run that will not be reproducible should
+    # fail in the first millisecond, not after 200 walk-forwards. See
+    # UnseededRunError.
+    seed = _resolve_seed(seed, "permutation_test")
+
     real_wf = run_walk_forward(strategy_class, candles, symbol, params=params,
                                max_hold_candles=max_hold_candles, session_filter=session_filter)
     real_pf = real_wf["median_pf"]
@@ -285,6 +341,12 @@ def permutation_test(strategy_class, candles: list, symbol: str, params: dict,
         "synthetic_pf_median":  _percentile(synthetic_sorted, 0.50),
         "percentile":           percentile,
         "edge_confirmed":       percentile > 95,
+        # The seed that generated `synthetic_median_pfs`. Without it the row is
+        # internally consistent (the percentile recomputes from the stored
+        # medians exactly) and externally unrepeatable — the failure mode that
+        # hid this for months.
+        "seed":                 seed,
+        "reproducible":         seed is not None,
         # Provenance rides with the result, same contract as bootstrap_mc.
         # Taken from the real run rather than the constant, so a stale engine
         # import cannot silently relabel it.

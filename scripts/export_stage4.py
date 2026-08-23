@@ -58,7 +58,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine_version import CURRENT_ENGINE_VERSION          # noqa: E402
@@ -126,7 +126,28 @@ def _ddl(src: sqlite3.Connection, table: str) -> str:
     return r[0]
 
 
-def export(src_path: str, since: str, out_path: str, roster_db: str = None) -> dict:
+def export(src_path: str, since: str, out_path: str, roster_db: str = None,
+           margin_minutes: int = 10) -> dict:
+    """margin_minutes: how far BEFORE --since to actually start the window.
+
+    THIS IS NOT SLOP, IT IS A CORRECTION FOR A MEASURED DEFECT. This WSL host's
+    `datetime.now(timezone.utc)` sporadically jumps **+5:09** and snaps back:
+    8 of 181 consecutive `walkforward_runs` rows written on 2026-08-23 carry a
+    created_at LATER than the row inserted after them, every one by exactly
+    5 min 9 s (finding 34). Rows are therefore stamped out of order relative to
+    their own AUTOINCREMENT ids, and a timestamp bound taken from the same clock
+    can land on the wrong side of rows that belong to the batch.
+
+    The two errors are not symmetric, which is what decides the default:
+      - OVER-including is harmless. The engine_version filter blocks anything
+        from another trade model, and the import is idempotent on a natural key,
+        so an already-imported row is skipped rather than duplicated.
+      - UNDER-including is SILENT. Missing rows look exactly like a batch that
+        produced fewer results, and nothing downstream can tell the difference.
+
+    So the window is widened by default. Pass margin_minutes=0 for an exact
+    bound only when the run is known to be clean.
+    """
     src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
     src.row_factory = sqlite3.Row
 
@@ -135,7 +156,10 @@ def export(src_path: str, since: str, out_path: str, roster_db: str = None) -> d
                          f"An export is a record of one batch; never overwrite one.")
     dst = sqlite3.connect(out_path)
 
-    since_dt = _parse_since(since)
+    since_dt = _parse_since(since) - timedelta(minutes=margin_minutes)
+    if margin_minutes:
+        print(f"[bound] --since widened by {margin_minutes} min -> {since_dt} "
+              f"(local clock is not monotonic, see finding 34)")
     counts = {}
     with dst:
         for table, (ts_col, ts_fmt) in TABLES.items():
@@ -205,7 +229,12 @@ if __name__ == "__main__":
     ap.add_argument("--roster-db", help="roster snapshot the params came from (for provenance)")
     ap.add_argument("--out-dir", default=".")
     ap.add_argument("--out", help="explicit output path (overrides --out-dir naming)")
+    ap.add_argument("--since-margin-minutes", type=int, default=10,
+                    help="widen the --since window backwards by this many minutes "
+                         "(default 10). Corrects for the non-monotonic local clock, "
+                         "finding 34. Over-including is caught by the engine_version "
+                         "filter and by idempotent import; under-including is silent.")
     a = ap.parse_args()
     out = a.out or os.path.join(
         a.out_dir, f"stage4_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db")
-    export(a.src, a.since, out, a.roster_db)
+    export(a.src, a.since, out, a.roster_db, margin_minutes=a.since_margin_minutes)
