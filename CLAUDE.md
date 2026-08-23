@@ -1501,12 +1501,13 @@ baked into every image layer; the two backups alone were 504 MB per build.
 | `trades.bak-20260821T184131Z.db` | Before moving all four live `williams_r` instances to `paper` | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 | `trades.bak-20260821T190857Z.db` | **Undocumented until 2026-08-22** — taken minutes after the williams_r demotion, purpose unrecorded | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 | `trades.bak-20260822T180436Z.db` | Taken by `scripts/import_stage4.py` before the Stage 4 import write test (rule 5) | 996 trades, 268,117 backtest_results, `integrity_check ok` |
+| `trades.bak-20260823T040057Z.db` | Before the Stage 4 dress-rehearsal import (rule 5) | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 
 All verified `integrity_check ok`. **None is disposable.** Take new ones with
 the SQLite online backup API (`Connection.backup()`), never `cp` — `cp` on a
 live DB with an open WAL can produce a torn copy.
 
-**Directory now totals ~1.7 GB** (6 files, 29 GB free on `/`). The Aug-17 file
+**Directory now totals ~2.0 GB** (7 files, 28 GB free on `/`). The Aug-17 file
 sat here undocumented for four days; an unlisted 320 MB file is how the next
 disk-pressure investigation starts from a wrong baseline. If a backup is taken,
 it goes in this table in the same change.
@@ -1993,6 +1994,140 @@ Three such probes in a row on 2026-08-22 produced three session recreations and
 a run of `[ig_scale] market fetch failed` lines on the FX epics. That is the
 probe's own cost, not a fault in the deploy — but it is a real cost, so probe
 imports sparingly.
+
+## Stage 4 DRESS REHEARSAL — one strategy, 2026-08-23
+
+AUDUSD 15MIN `williams_r`, `--from-roster --roster-db ./roster.db` against a VPS
+snapshot (`git_head 591dc3a`, host `trading-bot`, 31 rows). Run before Stage 4
+so that anything surprising surprises us on one strategy rather than thirteen.
+It did.
+
+**Wall clock: 1 minute 46 seconds**, against a 27-minute estimate — roughly 15x
+faster. Breakdown, all four stages sequential on 29,995 candles:
+
+| stage | duration | persisted |
+|---|---|---|
+| single backtest | ~1 s | 1 `backtest_results` row |
+| walk-forward | ~2 s | 1 `walkforward_runs` row |
+| permutation (200 synthetic runs) | 70 s | 1 row |
+| stability map, 84 cells + MC top-5 | 33 s | 84 + 5 rows |
+
+Plus ~1 min for export → scp → import → read-back → re-import. **The 27-minute
+figure should not be carried into Stage 4 planning.** Thirteen strategies is
+minutes, not hours — which changes what is worth parallelising (nothing) and
+removes the main argument for running a reduced gauntlet.
+
+### 🔴 THE FINDING — the stability map persists in a BATCH AT THE END
+
+`run_stability_map()` computes all 84 cells, returns, and only then does
+`run_backtest.py` loop over `stability["cells"]` calling `_persist_wf_run`.
+Measured: computation 03:59:00 → 03:59:29, **all 84 rows written 03:59:29 →
+03:59:32**. Nothing is durable until the whole map finishes.
+
+**This is the walkforward_runs gap one layer up.** That table exists because the
+2026-07-15 AUDUSD verdict was console-only and is now unrecoverable. Persisting
+at the end reintroduces exactly that exposure: a crash, an OOM, a Ctrl-C or a
+laptop sleep at cell 80 of 84 loses all 84 cells' work with no partial record
+and no way to tell how far it got.
+
+At 33 seconds for AUDUSD this is survivable. **It is the wrong shape for a
+13-strategy batch**, and it is the one stage where the fix matters, because it
+is also the most expensive stage. Every other stage already persists as it
+produces: the `--sweep` walk-forward writes inside its loop, and the auto-MC
+writes inside its loop. Only the map defers. Fix is to persist per cell inside
+`run_stability_map`'s loop, or to yield cells — **not done here**, recorded so
+Stage 4 does not run 13 strategies on this shape by default.
+
+### Also found
+
+- **`windows_json` is NULL on all 84 stability cells.** `_persist_wf_run` is
+  called without `windows=`, so a cell records its verdict, median PF and
+  pct-profitable but not the per-window breakdown that produced them. That is
+  precisely the detail whose absence made the 2026-07-15 AUDUSD result
+  unrecoverable — reproduced, in the new table, on the stage that generates 84
+  verdicts at a time.
+- **`STABILITY_GRIDS` contains ONLY `williams_r`.** A 13-strategy Stage 4 would
+  emit **12 `REDUCED_GAUNTLET` markers** and one real stability map. The marker
+  mechanism works (verified below), so this is not silent — but "Stage 4 ran the
+  full gauntlet" would be true of one roster row out of thirteen.
+- **The VPS `walkforward_runs` table had ZERO rows** before this import. All 280
+  local rows were local-only. Finding 11's corpus split was total for that
+  table, not partial.
+- **`export_roster.py` run INSIDE the container records `git_head = NULL`** —
+  `git` is not installed in the image and `/app` is not a work tree. Run it on
+  the VPS **host** (read-only access to the DB works fine as `ubuntu`); only
+  writes are blocked. A roster snapshot with a NULL git_head is the
+  no-provenance case the script exists to prevent.
+
+### ⚠️ parity-v2 makes the AUDUSD stability picture materially WORSE
+
+Same 84-cell grid, same cache, roster params — but under `parity-v2` rather
+than the pre-parity engine whose numbers this file records elsewhere:
+
+| verdict | pre-parity (recorded above) | **parity-v2 (this run)** |
+|---|---|---|
+| ROBUST | 1 | **0** |
+| FRAGILE | 38 | 22 |
+| MARGINAL | 34 | 12 |
+| REJECT | 11 | **50** |
+
+**REJECT goes from 11 of 84 to 50 of 84, and the single ROBUST cell is gone.**
+Best cell is `period=10, oversold=-95, overbought=-20`, median PF 1.2022, 66.7%
+windows — FRAGILE, not ROBUST. The correction in Active Strategies that already
+downgraded "robust plateau" to "one robust point in a mostly-fragile field" now
+goes further: under the current engine there is no robust point at all.
+
+Consistent with the rest: the single backtest reproduced this file's documented
+parity-v2 figure **exactly** — `n=221, net=$124.45` — so the engine is behaving
+as recorded. Walk-forward on the full cache: **FRAGILE**, median PF 1.0784,
+50.0% of windows profitable, 585 trades, worst window PF 0.83. Permutation:
+real result at the **98.5th percentile** of 200 synthetic runs, EDGE CONFIRMED —
+the signal is not noise, it is a real but fragile edge that the demo record
+(PF 0.71 live) says is not currently profitable after costs.
+
+Monte Carlo on the top-5 plateau cells reports **risk of ruin 66.8%–85.1%** at
+$10 risk on a $500 account. That is the $500 planning account, not the demo
+account — see the Phase-5 Sizing Reference for why the demo cannot produce a
+ruin event — but it is far worse than the pre-parity ruin table's 5.58% at the
+same fraction, and that table is explicitly flagged there as needing
+regeneration under the fixed engine. **This is that regeneration's first data
+point, and it says the old table was optimistic by more than an order of
+magnitude.**
+
+### Mechanisms confirmed working (positive observations, not silence)
+
+- **MC stamp hardening refuses an unstamped trade list.** `bootstrap_mc` with no
+  `engine_version` → `UnstampedTradesError`; with `pre-parity-v0` → refuses to
+  resample across trade models; with `parity-v2` → accepts and stamps the
+  result. All three branches exercised, including the passing one.
+- **`REDUCED_GAUNTLET` marker persists when a grid is missing.** Forced with
+  `bb_squeeze` (no `STABILITY_GRIDS` entry): one `stability_map` row, verdict
+  `REDUCED_GAUNTLET`, carrying `engine_version`, `spread_model`,
+  `spread_table_sha`, full cache fingerprint, and
+  `extra_json.params_source = "roster:active_strategy.id=24"`.
+- **Every stage stamps correctly**: all 91 rows `parity-v2` /
+  `flat-roundtrip-dollars-UNCALIBRATED` / `1ca5c7cb03b2ccc2`, zero rows with a
+  NULL `cache_file`.
+- **Round trip to the VPS**: 1 `backtest_results` + 91 `walkforward_runs`
+  exported, imported, read back with `produced_on = LAPTOP-6PF6QIRR` and
+  `roster_snapshot.git_head = 591dc3a` intact; **re-import inserted 0, skipped
+  92.** Idempotent on production.
+
+### Operational sequence the rehearsal established
+
+The VPS `database/trades.db` is **root-owned**, so:
+
+```
+# VPS host — backup works (read-only source), and git_head resolves here
+python3 scripts/export_roster.py --out /tmp/roster.db
+python3 -c "import sys;sys.path.insert(0,'.');from scripts.import_stage4 import backup_target;backup_target('database/trades.db','/home/ubuntu/backups')"
+# import must run IN the container — same file via the ./database volume
+docker cp /tmp/stage4_<stamp>.db trading_bot-bot-1:/tmp/
+docker exec trading_bot-bot-1 python3 /app/scripts/import_stage4.py     --file /tmp/stage4_<stamp>.db --target /app/database/trades.db --no-backup --confirm
+```
+
+`--no-backup` is correct **only** because the host took one first. Record it in
+the Database Backups table in the same change.
 
 ## 🚦 GATE — do not build the spread table before these are all true
 
