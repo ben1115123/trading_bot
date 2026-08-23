@@ -804,6 +804,12 @@ Range because the MC ran on the top-5 plateau cells, not one: 66.8, 71.4, 74.9,
 the best of them is worse than the table's worst listed configuration ($7.50 →
 37.44%).
 
+⚠️ **These five figures are approximate, not reproducible.** `bootstrap_mc` runs
+unseeded; a re-run of the identical gauntlet gave 68.6 / 71.8 / 77.5 / 79.1 /
+86.1 for the same five cells. The conclusion is unaffected — the gap to 5.58% is
+two orders of magnitude wider than the run-to-run drift — but **do not quote a
+specific value as a measurement** until seeding lands.
+
 **Consequence, stated plainly: every promotion decision that cited this table
 cited a number an order of magnitude wrong.** The table said 1% risk-of-account
 was a 5.6% ruin probability; the current engine says two thirds to five sixths.
@@ -1354,6 +1360,38 @@ producible by a warm buffer, and it was made inside the process that owns one.
 This rule is the mirror of the marker test below. The marker test says *do not
 infer success from absence*; this one says *do not infer failure from absence
 either*, until you have shown the probe could have seen success.
+
+### The rule applied PROSPECTIVELY — do not rebuild before a dated control check
+
+The self-invalidating-probe rule above is written as a way to read a result
+after the fact. It has a forward-looking form, and it earned its place on
+2026-08-22:
+
+> **Do not restart, rebuild or redeploy in the window before a dated control
+> check. A restart can manufacture exactly the artifact the check is looking
+> for.**
+
+**The proof is CHECK 1.** `signal_log.spread` was NULL on all six symbols all
+Saturday — correct, the book was shut and there was nothing to sample. Then the
+2026-08-22 18:07 UTC rebuild re-warmed the Lightstreamer buffer from a **closed
+book**, and the very next cycle logged `spread` non-null on AUDUSD (0.00053) and
+USDCAD (0.00061). Anyone reading that column afterwards, without knowing a
+rebuild had happened minutes earlier, would have recorded criterion 4 as PASSED
+on numbers no one could have traded on. (It aged back out to NULL within the
+hour, which is its own tell.)
+
+This is the mirror of the marker test and of the retrospective rule:
+
+| rule | says |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | do not infer failure from absence either, until the probe could have seen success |
+| **this one** | **do not create the passing observation yourself** |
+
+Concretely: a deploy is cheap to postpone and a dated check is not repeatable —
+CHECK 2's first genuine fire is a specific hour on a specific Monday. **The
+deploy waits.** Applied 2026-08-23: `40d716b` was held rather than shipped,
+with the reasoning recorded at the time rather than reconstructed after.
 
 ### The remedy — the marker test
 When disabling something, prove the disable took effect with a **positive
@@ -2239,6 +2277,24 @@ as recorded. Walk-forward on the full cache: **FRAGILE**, median PF 1.0784,
 real result at the **98.5th percentile** of 200 synthetic runs, EDGE CONFIRMED —
 the signal is not noise, it is a real but fragile edge that the demo record
 (PF 0.71 live) says is not currently profitable after costs.
+
+⚠️ **That percentile is not a stable number, and neither are the ruin figures
+above.** `permutation_test` and `bootstrap_mc` both run with `seed=None` — the
+CLI passes no seed and no seed is stored on the row. Re-running the identical
+gauntlet on the identical candles 20 minutes later gave percentile **99.0**
+(synthetic PF median 0.87765 -> 0.86635) and moved **every** MC cell
+(66.8 -> 68.6, 71.4 -> 71.8, 74.9 -> 77.5, 77.5 -> 79.1, 85.1 -> 86.1). Quote
+these as approximate, never as reproducible values. **This also means the
+`seed=42` provenance recorded for the 2026-07-15 MC sweep describes a seed
+nothing in the CLI path passes.**
+
+Note the contrast that decides the priority: the permutation row **can** be
+rechecked from its own stored fields — all 200 synthetic medians are stored, and
+recomputing the percentile from them reproduces the stored value exactly. It is
+**not** the fix-1 defect; it is the opposite failure, **auditable but not
+regenerable**. The fix is to pass and STORE an explicit seed, and it should land
+before Stage 4 — the alternative is a corpus of headline numbers that can be
+checked against themselves and against nothing else.
 
 Monte Carlo on the top-5 plateau cells reports **risk of ruin 66.8%–85.1%** at
 $10 risk on a $500 account. That is the $500 planning account, not the demo
