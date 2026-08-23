@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from database.db import get_connection
 from engine_version import CURRENT_ENGINE_VERSION
@@ -1172,6 +1173,36 @@ def get_webhook_filter_stats(days: int = 7) -> list:
             ORDER BY count DESC
         """, (cutoff,))
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_walkforward_extra(run_id: int, extra: dict) -> None:
+    """Merge keys into one walkforward_runs row's extra_json.
+
+    Exists for exactly one case: `neighbor_avg_pf` is a property of a cell's
+    NEIGHBOURS, so it cannot be known when that cell is written — and cells are
+    now written the moment they are produced, because batching the writes until
+    the end of an 84-cell sweep meant an interrupt destroyed every completed
+    cell (measured 2026-08-23). Durability first, enrichment second.
+
+    Merges rather than replaces, so it can never drop the provenance
+    (`params_source`, and the import stamp) already stored there.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        row = cursor.execute("SELECT extra_json FROM walkforward_runs WHERE id = ?",
+                             (run_id,)).fetchone()
+        if row is None:
+            return
+        current = json.loads(row["extra_json"]) if row["extra_json"] else {}
+        if not isinstance(current, dict):
+            current = {"_extra": current}
+        current.update(extra)
+        cursor.execute("UPDATE walkforward_runs SET extra_json = ? WHERE id = ?",
+                       (json.dumps(current, default=str), run_id))
+        conn.commit()
     finally:
         conn.close()
 

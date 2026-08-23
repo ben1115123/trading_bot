@@ -167,7 +167,8 @@ from backend.strategies.kama_crossover import KAMACrossoverStrategy
 from backend.strategies.ema_ribbon_pullback import EMARibbonPullbackStrategy
 from backend.strategies.hull_momentum import HullMomentumStrategy
 from backend.strategies.supertrend_ema_filter import SupertrendEMAFilterStrategy
-from database.models import (insert_backtest_result, insert_backtest_trades,
+from database.models import (update_walkforward_extra,
+                             insert_backtest_result, insert_backtest_trades,
                              insert_walkforward_run, get_roster_row)
 
 STRATEGIES = {
@@ -797,8 +798,37 @@ def main():
         print(f"Sweep size: {combos} cells x full walk-forward each — {strategy_key} {args.symbol} {args.timeframe}")
         print(f"Grid: {grid}\n")
 
+        # Persist EACH CELL THE MOMENT IT IS PRODUCED, not after the sweep.
+        # Measured 2026-08-23 on this exact grid: the map computed for 29s and
+        # every row landed in the 3s after it, so an interrupt at cell 80 of 84
+        # destroyed 80 completed walk-forwards with no partial record and no way
+        # to tell how far it had got. `walkforward_runs` exists precisely
+        # because a console-only walk-forward verdict (2026-07-15 AUDUSD) is
+        # unrecoverable — a table that is only written at the end reintroduces
+        # the loss it was built to prevent. Every other stage in this file
+        # already writes inside its loop; this was the one that did not.
+        cell_run_ids = []
+        run_prov = provenance()
+
+        def _persist_cell(cell, i, total):
+            rid = _persist_wf_run(
+                "stability_map", strategy_class.name, args.symbol, args.timeframe,
+                cell["params"], fingerprint,
+                windows=cell["windows"],
+                verdict=cell["verdict"], median_pf=cell["median_pf"],
+                pct_profitable=cell["pct_profitable"],
+                params_source="stability-grid", prov=run_prov)
+            cell_run_ids.append(rid)
+            print(f"  [{i}/{total}] persisted cell {cell['params']} -> "
+                  f"walkforward_runs id={rid}  {cell['verdict']}")
+
         stability = run_stability_map(strategy_class, candles, args.symbol, grid,
-                                      max_hold_candles=args.max_hold, session_filter=args.session_filter)
+                                      max_hold_candles=args.max_hold,
+                                      session_filter=args.session_filter,
+                                      on_cell=_persist_cell)
+        print(f"Persisted {len(cell_run_ids)} cells to walkforward_runs "
+              f"(written per cell, durable on interrupt).")
+
         _print_stability_heatmaps(stability)
 
         plateau = compute_plateau_metrics(stability)
@@ -807,14 +837,15 @@ def main():
         clusters = find_clusters(stability, threshold=args.cluster_threshold)
         _print_clusters(clusters)
 
-        for cell in stability["cells"]:
-            _persist_wf_run("stability_map", strategy_class.name, args.symbol, args.timeframe,
-                            cell["params"], fingerprint,
-                            verdict=cell["verdict"], median_pf=cell["median_pf"],
-                            pct_profitable=cell["pct_profitable"],
-                            extra={"neighbor_avg_pf": cell.get("neighbor_avg_pf")},
-                            params_source="stability-grid", prov=stability)
-        print(f"Persisted {len(stability['cells'])} cells to walkforward_runs.")
+        # neighbor_avg_pf is a property of a cell's NEIGHBOURS, so it cannot
+        # exist when the cell itself is written. It is merged in afterwards
+        # rather than held back to be written with the row, because a durable
+        # row missing one derived field beats a complete row that never got
+        # written. It is also recomputable from the persisted grid, so losing
+        # this step costs nothing that the stored cells do not already contain.
+        for cell, rid in zip(stability["cells"], cell_run_ids):
+            update_walkforward_extra(rid, {"neighbor_avg_pf": cell.get("neighbor_avg_pf")})
+        print(f"Enriched {len(cell_run_ids)} cells with neighbor_avg_pf.")
 
         if args.monte_carlo:
             ranked = sorted((c for c in stability["cells"] if c.get("neighbor_avg_pf") is not None),

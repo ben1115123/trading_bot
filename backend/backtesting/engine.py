@@ -634,24 +634,50 @@ def run_walk_forward(strategy_class, candles: list, symbol: str, params: dict = 
 
 
 def run_stability_map(strategy_class, candles: list, symbol: str, param_grid: dict,
-                      max_hold_candles: int = None, session_filter: str = None) -> dict:
+                      max_hold_candles: int = None, session_filter: str = None,
+                      on_cell=None) -> dict:
     """Full walk-forward (not single 80/20 split) across every cell of param_grid.
     One cell = one full run_walk_forward call. Returns the grid plus one result
     dict per cell — plateau/spike/cluster analysis happens in robustness.py,
-    this function only runs the sweep and reports raw per-cell numbers."""
+    this function only runs the sweep and reports raw per-cell numbers.
+
+    on_cell: optional callback invoked with (cell, index, total) the moment each
+        cell finishes, BEFORE the next one starts. This exists so a caller can
+        make each cell durable as it is produced rather than after the whole
+        map returns. Measured 2026-08-23 on the 84-cell AUDUSD grid: computation
+        took 29s and every row was written in the 3s AFTER it, so an interrupt
+        at cell 80 destroyed all 80 completed cells. That is the same shape as
+        the console-only walk-forward whose loss `walkforward_runs` was created
+        to prevent — the table cannot help if nothing writes to it until the end.
+
+        The callback runs inside the loop, so an exception in it aborts the
+        sweep. That is deliberate: a persistence failure on cell 1 should stop
+        the run, not produce 83 more cells that also will not be saved.
+
+    `windows` is the FULL per-window list, not a count. A verdict whose windows
+    were discarded cannot be checked against the numbers that produced it —
+    which is exactly why the 2026-07-15 AUDUSD walk-forward verdict is
+    unrecoverable today. `n_windows` carries the count for callers that only
+    wanted the length.
+    """
     keys = list(param_grid.keys())
     cells = []
-    for combo in itertools.product(*param_grid.values()):
+    combos = list(itertools.product(*param_grid.values()))
+    for i, combo in enumerate(combos, 1):
         params = dict(zip(keys, combo))
         wf = run_walk_forward(strategy_class, candles, symbol, params=params,
                               max_hold_candles=max_hold_candles, session_filter=session_filter)
-        cells.append({
+        cell = {
             "params":          params,
             "median_pf":       wf["median_pf"],
             "pct_profitable":  wf["pct_profitable"],
             "verdict":         wf["verdict"],
-            "windows":         len(wf["windows"]),
+            "windows":         wf["windows"],
+            "n_windows":       len(wf["windows"]),
             "combined_pnl":    wf["combined_pnl"],
             "combined_trades": wf["combined_trades"],
-        })
+        }
+        cells.append(cell)
+        if on_cell is not None:
+            on_cell(cell, i, len(combos))
     return {"keys": keys, "grid": param_grid, "cells": cells, **provenance()}
