@@ -1757,6 +1757,52 @@ after 24h" means — so marking-unrecoverable is the likelier outcome.
 ids 728 and 845 stand as described above, still unexplained, still not part
 of the NULL-pnl class.
 
+### ⚠️ SECOND ROUTE TO THE SAME HOLE — the repair path can skip a row (added 2026-08-23)
+
+Cross-referenced from finding 34's blast-radius audit. **A reader fixing Defect B
+would not find this, and it lives in the same file.**
+
+Be precise about what the two are, because they are not symmetric:
+
+| | mechanism | what it does |
+|---|---|---|
+| **Defect B** (above) | `positions_poller.py:162` unconditional snapshot fallback | **CREATES** the NULL — commits a CLOSED row with `close_price=None, realised_pnl=None` |
+| **Route 2** (here) | `_get_deferred`'s window: `close_time > datetime('now','-24 hours')` | **FAILS TO REPAIR** it — a row omitted from the window is never retried |
+
+So this is not a second way to punch the hole. It is a second way the hole
+**stays** punched, and that matters because the deferred checker is the *only*
+automatic repair. The 24-hour horizon expiring is already documented above as
+the known way repair ends. This is the other way: the window query itself can
+under-include a row that is **still inside** the 24 hours.
+
+`datetime('now', '-24 hours')` is evaluated by SQLite against the container's OS
+clock. Per finding 34's audit, a forward clock jump moves the lower bound
+forward, and any row whose `close_time` falls between the true bound and the
+jumped one is silently dropped from the retry list. There is no second pass: the
+next tick recomputes the window from the clock again, so a row skipped once is
+skipped permanently unless the clock happens to move back before the next tick.
+
+**Current exposure is theoretical on the VPS and that is a measurement, not an
+assumption** — 88,011 `signal_log` rows and 22,021 `candle_source_compare` rows
+show zero clock violations (finding 34). The drift is local-only on present
+evidence. But the poller runs where the clock is not being watched, and the
+failure is silent by construction: a trade that is never retried looks exactly
+like a trade that was retried and could not be matched.
+
+**Both go together when the poller is next touched. Neither is fixed now.**
+Fixing Defect B alone would stop new holes while leaving existing ones
+unrepairable by a route nobody knew about; fixing Route 2 alone would repair
+holes more reliably while continuing to create them. The shapes of the two fixes
+also differ — B is "stop preferring NULL over leaving the trade OPEN", Route 2 is
+"do not window the retry set on a wall clock" (an `id`-based or
+`retry_count`-based scan has no clock dependency at all).
+
+*Related:* the two negative-holding-period rows (728, 845) were flagged above as
+"possibly the same clock/ordering defect". Finding 34 does **not** vindicate that
+guess — `trades.timestamp` and `close_time` are broker/business times, not clock
+readings, so a local clock jump cannot produce them. They remain unexplained and
+are still not part of the NULL-pnl class.
+
 ### Consequence — findings 14 and 15 are NOT independent, and both are understated
 
 Finding 14 records `MIN_SL_DIST` as an uncalibrated constant. Finding 15
@@ -2466,6 +2512,85 @@ only "what should the doc say?".
 
 ---
 
+## Enforceable coverage predicates — a named group, NOT urgent, NOT built
+
+*(named 2026-08-23, out of finding 32's sixth-instance framing)*
+
+**The transferable distinction:**
+
+> **Code can assert what it currently COVERS. It cannot assert what it once did,
+> or what it was meant to do.**
+
+Six instances are known of documentation asserting a property the code never
+implemented (finding 32). Four of them assert *coverage* — "this is calibrated",
+"this is blocked", "this protects" — and coverage is a predicate the running
+system can evaluate about itself, right now, without remembering anything. Two
+assert *history or intent* — "this cron was disabled", "this is still to build" —
+and no predicate can reach them, because the code has no access to its own past
+or to somebody's plan.
+
+That is why the seed fix worked as a template: "this run was seeded" is a
+coverage claim about the present call, so `UnseededRunError` can make it
+impossible to be true in prose and false in the process. Documentation drifts; a
+raise does not.
+
+### The four, in build order
+
+**1. `blocklist_covers(symbol)` — BUILD THIS FIRST.**
+`SYMBOL_BLOCKLIST` blocks a symbol; `STRATEGY_BLOCKLIST` blocks enumerated
+`(symbol, timeframe, strategy_name)` tuples and is therefore an **allowlist by
+omission**. This file claimed "all US100 strategies blocklisted since
+2026-06-12" while `("US100","HOUR","supertrend")` was never in the set — which is
+exactly how that strategy was promoted to **live** on 2026-06-16 with zero paper
+trades and zero human review.
+
+It is first for a reason that is not elegance: **of the six documentation
+defects, this is the only one that put an unreviewed strategy on live money.**
+The other five cost trust in numbers; this one cost an unreviewed live position
+for roughly eight weeks.
+
+A predicate returning True only when a symbol is blocked *symbol-wide* turns the
+claim into something assertable at the promotion site, and the 2026-06-16
+promotion would have failed the assertion rather than succeeding silently.
+
+**2. Uncalibrated parameter tables refused at promotion boundaries.**
+`SPREAD_COSTS`, `MIN_SL_DIST`, `NORMAL_SPREADS` (findings 14, 15). The mechanism
+already exists and is already proven: `score_strategies()` raises
+`MixedEngineVersionError` rather than ranking across trade models. The same
+shape applies to a spread model still named `...-UNCALIBRATED` — any path
+feeding a promotion decision should refuse it. The doc then cannot claim
+calibration the code does not have, because a calibrated name would be required
+to get past the gate.
+
+**3. Never-fired controls detected by counting, not by reading.**
+A control that has never fired is indistinguishable from one that *cannot* fire —
+the spread filter was listed as an active webhook protection for months with
+**0 lifetime blocks** against session_filter's 150 (finding 15). `webhook_log`
+already stores the block reason, so this is a query, not new instrumentation:
+zero activations against a non-zero evaluation count is a positive, queryable
+signal. The "⏳ CONTROLS AWAITING FIRST REAL FIRE" list in CLAUDE.md is this
+check being run by hand; the point is to stop running it by hand.
+
+**4. A disabled job's EFFECT, where its config is out of reach.** *(partial)*
+Cron state cannot be asserted from inside the app — `collect_candles` was
+recorded as disabled 2026-06-28 and was still firing every 15 minutes seven
+weeks later. But the effect is checkable: a job documented as disabled that is
+still writing rows to the table it populates is detectable by a standing query.
+That is the marker test as a monitor rather than a one-off. The committed-crontab
+md5 anchor already covers the config half; this covers the half the md5 cannot
+see.
+
+### Not enforceable, and worth saying so
+
+`utils/telegram_alert.py` sat on the "still to build" list for five weeks after
+the alerting shipped as `bot/notifier.py`. A stale to-do list is not a code
+property. Only review catches this class, and pretending otherwise would produce
+a predicate that asserts nothing.
+
+**None of the four is built.** Recorded as a group so that the next time a doc
+claim is found false, the first question is *"is this a coverage claim, and can
+it be made enforceable?"* rather than only *"what should the doc say?"*.
+
 ## 33. Two verification queries have now been wrong in the direction that MANUFACTURES a finding
 
 *(added 2026-08-23)*
@@ -2607,7 +2732,10 @@ than the window.
 
 **Row 6 is the one to fix first if any of these are ever fixed**, because its
 under-inclusion is permanent rather than per-tick: a trade dropped from the
-deferred-P&L window is never retried.
+deferred-P&L window is never retried. **It is cross-referenced into finding 24**
+as the second route to the NULL-pnl hole — that finding's Defect B *creates* the
+hole, this *prevents the repair*, and they must be fixed together when the poller
+is next touched.
 
 ### Is the VPS affected? MEASURED, not assumed.
 
