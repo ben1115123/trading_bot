@@ -2363,16 +2363,20 @@ delete write test against the VPS, exactly as was done for `walkforward_runs` on
 2026-08-22. That test found `spread_table_sha` was NULL on every row ever
 written, which code-reading had missed.
 
-## 🚀 DEPLOY QUEUE — four commits, gated on CHECK 2
+## 🚀 DEPLOY QUEUE — five commits, gated on CHECK 2
 
-**Deploy after CHECK 2 clears, all four together:**
+**Deploy after CHECK 2 clears, all five together:**
 
-| commit | what |
-|---|---|
-| `40d716b` | stability-map fixes (per-cell persistence, `windows_json`) |
-| `4323dea` | collector disabled, `ig_allowance.py`, findings 35/36 |
-| `e91db88` | CHECK 1 verified in full |
-| `2127ecf` | CHECK 2 reframed, reopen spreads, `SYMBOL_MAP` warning |
+| commit | what | runtime-reachable? |
+|---|---|---|
+| `40d716b` | stability-map fixes (per-cell persistence, `windows_json`) | no — engine only |
+| `4323dea` | collector disabled, `ig_allowance.py`, findings 35/36 | **yes** — `crontab`, `candle_stream`, `engine` |
+| `e91db88` | CHECK 1 verified in full | no — docs |
+| `2127ecf` | CHECK 2 reframed, reopen spreads, `SYMBOL_MAP` warning | no — docs + standalone CLI |
+| `36fc261` | enumerate-over-assert rule, CHECK 2 criteria 0/5, this queue | no — docs |
+
+Only `4323dea` changes behaviour: the crontab (which is what makes the
+collector disable survive the rebuild) and two additive log calls.
 
 **Post-deploy verification — positive observations only, none inferred from
 silence:**
