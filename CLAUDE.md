@@ -1422,6 +1422,7 @@ This is the mirror of the marker test and of the retrospective rule:
 | marker test | do not infer success from absence |
 | self-invalidating probe | do not infer failure from absence either, until the probe could have seen success |
 | **this one** | **do not create the passing observation yourself** |
+| enumerate over assert | do not let the check see only what it already predicted |
 
 Concretely: a deploy is cheap to postpone and a dated check is not repeatable —
 CHECK 2's first genuine fire is a specific hour on a specific Monday. **The
@@ -1459,6 +1460,60 @@ result. The rebuild's wrapper exited 255 (`client_loop: send disconnect:
 Broken pipe`) having shown zero build output; the build had in fact succeeded.
 The conclusion rested on end-state evidence — new image ID, new `StartedAt`,
 flipped crontab md5, cron executing — **not** on the exit code or the log.
+
+### ENUMERATE, DON'T ASSERT — how to write a check that can teach you something
+
+The three rules above govern *whether an observation carries information*. This
+one governs *whether the observation can carry information you do not already
+have*.
+
+> **A check that tests for its own prediction can only confirm or deny that
+> prediction. A check that enumerates what actually happened can CORRECT it.**
+
+Concretely, given a `signal_log` window:
+
+| shape | what it can return | what it can never return |
+|---|---|---|
+| `WHERE error = 'entry window closed — thin reopen / pre-weekend policy'` | matched / didn't match | *which other reason fired instead, and when* |
+| `GROUP BY substr(checked_at,12,2), error` | the full distribution | — |
+
+**Both pass. Only one of them found anything.**
+
+**The instance that named this rule (2026-08-24).** CHECK 1's criterion 4 was
+written to confirm one string in the Sunday reopen window. It was run as a
+`GROUP BY hour, error` instead — and the hour-21 bucket came back carrying
+`entry window closed — daily rollover hour`, not the predicted string. That
+single unexpected bucket:
+
+- proved the 21:00 rollover gate had **already fired on a real clock**, a day
+  before CHECK 2 said it was reachable;
+- falsified this file's table asserting the Sunday reopen rule shadows that
+  gate at 21:30;
+- and revealed *how* the claim was wrong — not misread from the code, but never
+  checked against it, since `is_entry_allowed` and `_block_reason` both test
+  the rollover **first** and both carry a comment saying so.
+
+An assertion-shaped criterion 4 would have returned "111/111 FX rows non-null,
+PASS" — **completely true, and it would have taught nothing.** The CHECK 2
+error would have survived until Monday or later.
+
+**This is the third time a scheduled check has produced a finding outside its
+own criteria** (CHECK 1 Saturday: the criterion itself was mis-specified;
+CHECK 1 Sunday: the CHECK 2 ordering error; and finding 33's two verification
+queries wrong in the manufacturing direction). Treat that as the norm, not
+luck.
+
+**Practical form — when writing any dated check:**
+- prefer `GROUP BY` over `WHERE =`. Ask what the column contained, not whether
+  it contained what you expect.
+- **include the cases you believe are irrelevant.** The gate is all-symbols;
+  enumerate US500/US100 alongside FX even when the evidence base is FX-specific.
+  A difference between them is only visible if both are in the output.
+- report the distribution **before** stating the verdict, so an unexpected
+  bucket is seen rather than filtered out on the way to a PASS.
+- a criterion that cannot fail in an *interesting* way is a criterion that
+  cannot inform. If every non-passing outcome is "the thing is broken", the
+  check has no route to "the thing is fine and our belief about it was wrong."
 
 ## engine_version marking (2026-08-16)
 
@@ -1844,6 +1899,32 @@ warm-up after the allowance resets, the bot log shows
 change.** And do not restart the container to force the check — take the next
 warm-up that happens anyway.
 
+### The post-CHECK-2 deploy IS that warm-up — and it is not self-manufactured
+
+The deploy scheduled after CHECK 2 rebuilds the container, which forces a
+warm-up on all pairs. **That is a legitimate CHECK 3 observation, not a
+violation of the prospective rule**, and the distinction is worth being exact
+about because the two look similar:
+
+| | CHECK 1 criterion 4, 2026-08-22 | CHECK 3 at the post-CHECK-2 deploy |
+|---|---|---|
+| what the restart produced | a spread value **from a shut book** — an artifact that *resembles* the passing state without being it | either a real successful IG fetch or a real failure |
+| could the observation be faked by the restart? | **yes** — that is exactly what happened | **no** — `source=IG REST` is producible only by IG actually serving the request |
+| was the deploy scheduled for its own reasons? | no, it was in the check's window | yes — the code has been waiting since 2026-08-23 |
+
+**Either outcome is information:**
+- `source=IG REST` + a non-zero `[ig_allowance]` line → the allowance has reset
+  and CHECK 3 passes.
+- `source=yfinance (quota fallback)` → **the allowance has NOT reset**, which
+  tells us the reset is later than a naive 7-day-from-exhaustion estimate.
+  Record the date; it bounds the window from the other side.
+
+⚠️ **The rebuild COSTS quota if the allowance has reset.** Warm-up is
+`WARMUP_COUNT` 200 x 7 pairs = **1,400 points, ~14% of the weekly 10,000**,
+spent before anything else can use it. So if `[ig_allowance]` prints a
+non-zero remaining, **measure the two unknowns promptly** (max `numpoints`,
+`MINUTE_15` depth per epic) rather than letting the rest drain on reconnects.
+
 CHECK 1 **passed on 2026-08-22 — the control is verified.** One of its four
 criteria was found to be mis-specified and re-scoped to Sunday; that is a
 defect in the checklist, not in the control. See the result block before
@@ -2068,14 +2149,22 @@ Not a first fire. Three things the Sunday observation genuinely does not cover:
    ordering has drifted. That test was correct all along — it is the
    *prediction table* that was wrong, not the criterion.
 
-### On Mon 2026-08-24, after 22:00 UTC, confirm all four
+### On Mon 2026-08-24, after 22:00 UTC, confirm all five
 
+**Run every query as an enumeration, not an assertion** — see "ENUMERATE,
+DON'T ASSERT". Criterion 4 of CHECK 1 found the error in *this section* only
+because it grouped by hour instead of testing for the string it expected.
+Report the distributions first, verdicts second.
+
+0. **Positive control before anything else:** `signal_log` has **any** rows in
+   21:00–21:59 UTC on that date. No rows means the test did not run.
 1. `signal_log` rows exist in 21:00–21:59 UTC with
    `error = 'entry window closed — daily rollover hour'` — the **exact** string,
    distinct from `'entry window closed — thin reopen / pre-weekend policy'`.
    Getting the pre-weekend string instead means the rollover branch is being
    shadowed by an earlier rule and the ordering in `_block_reason` has drifted
-   from `is_entry_allowed`.
+   from `is_entry_allowed`. **Query it as `GROUP BY symbol, error`**, not as an
+   equality test.
 2. **Zero** `trades` rows with `substr(timestamp,12,2) = '21'` on that date.
 3. `signal_log.spread` **non-null** on FX rows inside the blocked window —
    sampling must continue through the block. Same load-bearing ordering as
@@ -2083,6 +2172,17 @@ Not a first fire. Three things the Sunday observation genuinely does not cover:
    still calls `log_signal_check`. The rollover hour is the widest-spread hour
    of the day and the single most valuable hour to keep sampling.
 4. `signal_loop` heartbeat kept beating through a fully-blocked cycle.
+   (`heartbeat` is an upsert, so past beats are unrecoverable — the durable
+   evidence is unbroken 15-minute `signal_log` cycle timestamps across the
+   window, as used on 2026-08-23.)
+5. **Report what the INDICES did in that hour, not only FX.** The gate is
+   all-instruments — `is_entry_allowed` checks `ROLLOVER_BLOCK_HOUR` *before*
+   the `_ALWAYS_OPEN` short-circuit, specifically so a 24/7 instrument is
+   covered too. US500 and US100 are in the window and log every cycle. The
+   evidence base behind the rule is FX-specific, so **an index behaving
+   differently is exactly the thing that would not appear in an FX-only
+   query.** Enumerate all six symbols; if indices match FX, that is a result
+   worth one line, and if they do not, it is the finding.
 
 **What ABSENCE would mean — read this before concluding anything.** No rows
 carrying that reason on Monday is **not** evidence the gate works. It is
@@ -2262,6 +2362,37 @@ finding 31 proposes (`cache_file`, `cache_candle_count`, `cache_date_start`,
 delete write test against the VPS, exactly as was done for `walkforward_runs` on
 2026-08-22. That test found `spread_table_sha` was NULL on every row ever
 written, which code-reading had missed.
+
+## 🚀 DEPLOY QUEUE — four commits, gated on CHECK 2
+
+**Deploy after CHECK 2 clears, all four together:**
+
+| commit | what |
+|---|---|
+| `40d716b` | stability-map fixes (per-cell persistence, `windows_json`) |
+| `4323dea` | collector disabled, `ig_allowance.py`, findings 35/36 |
+| `e91db88` | CHECK 1 verified in full |
+| `2127ecf` | CHECK 2 reframed, reopen spreads, `SYMBOL_MAP` warning |
+
+**Post-deploy verification — positive observations only, none inferred from
+silence:**
+1. in-container `/etc/cron.d/trading-bot` md5 =
+   **`0f1cc206193f5d30341c3db530357b06`**, matching the committed
+   `scripts/crontab`. This is the one that matters most: the collector disable
+   currently exists in the container only as a `docker cp`, and the rebuild is
+   what makes it survive. A different md5 means the disable reverted.
+2. **CHECK 3** — read the warm-up lines for `source=IG REST` vs
+   `source=yfinance (quota fallback)`, and any `[ig_allowance]` output. See
+   CHECK 3 above; either result is information.
+3. finding 29's rule: `bot.live_signal_loop` imports in the deployed image,
+   `STRATEGIES: 34`; `main`, `webhook.receiver`, `data.positions_poller` clean.
+4. stamps unchanged: `parity-v2` / `paper-v2` /
+   `flat-roundtrip-dollars-UNCALIBRATED`.
+5. `localhost:80` 200, `/health` 200, `/webhook` 405; all three containers up.
+6. both heartbeats beating after the restart; a full cycle logged with
+   `signal_log.spread` non-null on FX.
+
+Clear the drift entry below and re-verify the md5 anchor in the same change.
 
 ## ⚠️ DRIFT AGAIN — image behind by `40d716b` (2026-08-23)
 
