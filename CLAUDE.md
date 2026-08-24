@@ -2363,20 +2363,30 @@ delete write test against the VPS, exactly as was done for `walkforward_runs` on
 2026-08-22. That test found `spread_table_sha` was NULL on every row ever
 written, which code-reading had missed.
 
-## 🚀 DEPLOY QUEUE — five commits, gated on CHECK 2
+## 🚀 DEPLOY QUEUE — gated on CHECK 2
 
-**Deploy after CHECK 2 clears, all five together:**
+**The queue is `40d716b` and EVERY COMMIT AFTER IT on `origin/main`.** Resolve
+it at deploy time with `git log --oneline 42f5585b3e34..origin/main`-equivalent
+(the running image contains `591dc3a`), **never** from a list written here.
 
-| commit | what | runtime-reachable? |
-|---|---|---|
-| `40d716b` | stability-map fixes (per-cell persistence, `windows_json`) | no — engine only |
-| `4323dea` | collector disabled, `ig_allowance.py`, findings 35/36 | **yes** — `crontab`, `candle_stream`, `engine` |
-| `e91db88` | CHECK 1 verified in full | no — docs |
-| `2127ecf` | CHECK 2 reframed, reopen spreads, `SYMBOL_MAP` warning | no — docs + standalone CLI |
-| `36fc261` | enumerate-over-assert rule, CHECK 2 criteria 0/5, this queue | no — docs |
+An enumerated list was tried on 2026-08-24 and was stale within one commit —
+the commit that corrected the count became a new entry, which is a loop. Same
+rule as the open-positions list under Infrastructure Incidents: *the roster
+churns, never carry a hardcoded list forward.* A record that must be edited
+every time the thing it describes changes will be wrong more often than right.
 
-Only `4323dea` changes behaviour: the crontab (which is what makes the
-collector disable survive the rebuild) and two additive log calls.
+**What is runtime-reachable in the queue, which is the part worth stating:**
+
+| | |
+|---|---|
+| **`4323dea`** | **the only behaviour change.** `scripts/crontab` (what makes the collector disable survive the rebuild), plus two additive `log_allowance` calls in `candle_stream._rest_fetch` and `engine.fetch_candles`, and the new `ig_allowance.py` they both import |
+| `40d716b` | engine only — `bot/live_signal_loop.py` does not import `backend.backtesting.engine`, so it is unreachable from the loop, webhook, poller or execution path |
+| everything else | docs, plus a comment-only change to the standalone `scripts/fetch_twelvedata.py` (no importers) |
+
+⚠️ `ig_allowance.py` is a **new module imported by two files already in the
+loop's import graph.** If it is ever missing from an image, `live_signal_loop`
+raises at import and the bot does not boot — finding 29's failure exactly.
+Verified present and importing before each commit; verify again post-deploy.
 
 **Post-deploy verification — positive observations only, none inferred from
 silence:**
