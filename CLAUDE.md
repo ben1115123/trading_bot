@@ -1997,34 +1997,76 @@ a fault. `signal_loop` should keep beating.)
 Until that observation exists, this control is verified only against
 constructed timestamps.
 
-## ⚠️ CHECK 2 — 21:00 UTC rollover gate (deployed 2026-08-21, due Mon 2026-08-24)
+## ⚠️ CHECK 2 — 21:00 UTC rollover gate (deployed 2026-08-21, weekday case due Mon 2026-08-24)
+
+> ### ✅ THE GATE HAS FIRED ON A REAL CLOCK — Sun 2026-08-23 21:00–21:59 UTC
+>
+> **48 `signal_log` rows** carrying `entry window closed — daily rollover hour`,
+> found while re-testing CHECK 1's criterion 4. **This is no longer a
+> first-exercise check.** Monday still runs — see "What Monday still tests"
+> below — but read the correction first, because the reason the gate was
+> thought unreachable until Monday is more instructive than the gate itself.
 
 `market_hours.is_entry_allowed` refuses entries in the 21:00 UTC hour, **all
 instruments**, checked before the `_ALWAYS_OPEN` short-circuit so BTC is
 covered. Rationale, evidence table and the DAX/BTC-are-mechanism-not-evidence
 caveat live in the `market_hours.py` comment; do not restate them here.
 
-**Verified so far: 33 marker assertions, in the deployed image, ALL AGAINST
-CONSTRUCTED `datetime` VALUES.**
+**Marker verification: 33 assertions in the deployed image, all against
+CONSTRUCTED `datetime` values.** Superseded by the real-clock fire above; kept
+because the constructed assertions are still what pins the boundary minutes.
 
-> ⚠️ **SUPERSEDED IN PART — it HAS now fired on a real clock.** Sunday
-> 2026-08-23 21:00–21:59 UTC logged **48 rows** carrying
-> `entry window closed — daily rollover hour`, found while re-testing CHECK 1.
-> The table below predicted the Sunday reopen rule would shadow this gate at
-> 21:30; it does not. **Monday 2026-08-24 21:00 is still worth checking** — it
-> is the documented weekday case, where `is_market_open` is True for a
-> different reason — but it is no longer the gate's first exercise, and
-> criterion 1's "first genuine exercise" framing below is now inaccurate.
+### 🔴 THE CORRECTION — and HOW the claim was wrong
 
-**Why Monday and not this weekend** — the gate is genuinely unreachable before
-then, so its silence until Monday is expected and means nothing:
+This table stood here until 2026-08-24. The Sunday row was **false**:
 
 | | `is_entry_allowed` | `is_market_open` | who blocks |
 |---|---|---|---|
 | Fri 2026-08-21 21:30 | False | **False** | venue already shut |
 | Sat 2026-08-22 21:30 | False | False | venue shut |
-| Sun 2026-08-23 21:30 | False | True | ❌ **WRONG — observed: THIS gate**, 48 rows logged `daily rollover hour` |
-| **Mon 2026-08-24 21:30** | **False** | True | **this gate** ← first genuine exercise |
+| Sun 2026-08-23 21:30 | False | True | ~~the **Sunday reopen** rule (23:00), not this one~~ → ❌ **OBSERVED: THIS GATE.** 48 rows logged `daily rollover hour` |
+| Mon 2026-08-24 21:30 | False | True | this gate — ~~first genuine exercise~~ **not first; see below** |
+
+**The claim was ARGUED, NEVER OBSERVED — and it was not even argued from the
+code.** Both relevant functions check the rollover **first**, and both say so
+in a comment:
+
+- `market_hours.is_entry_allowed` tests `when.hour == ROLLOVER_BLOCK_HOUR`
+  before the `weekday == 6 and hour < ENTRY_REOPEN_HOUR` reopen rule.
+- `live_signal_loop._block_reason` mirrors it deliberately, commented
+  *"Checked before the reopen/pre-weekend catch-all so the rollover hour is
+  attributable on its own … Ordering here MUST mirror is_entry_allowed's rule
+  order."*
+
+So the code was explicit, self-documenting, and the opposite of what this file
+claimed. The claim came from **which rule felt semantically dominant** — "it's
+the Sunday reopen, so the Sunday rule governs" — rather than from reading
+either function or watching either fire. **A conclusion reached by argument
+where an observation was cheap and available.** Same shape as finding 29 and as
+the self-invalidating-probe rule; this is the file's own mechanism catching the
+file.
+
+**The consolation is that it was caught by a scheduled check rather than by an
+incident**, and caught only because CHECK 1 criterion 4 grouped `signal_log`
+rows by hour instead of asserting a single expected string. A check that
+matched only the reason it expected would have passed and taught nothing.
+
+### What Monday 2026-08-24 21:00–21:59 UTC still tests
+
+Not a first fire. Three things the Sunday observation genuinely does not cover:
+
+1. **`is_market_open` is True for a different reason.** Sunday it is True
+   because the venue reopened at 22:00; Monday it is True as an ordinary
+   trading day. The gate is reached through a different path.
+2. **The Sunday reopen rule is not also live.** On Sunday both rules would
+   have blocked, so the observation shows which one *reports* — not that the
+   rollover gate blocks anything the reopen rule would have let through.
+   Monday is the first hour where **this gate is the only thing** standing
+   between a due signal and an entry.
+3. **Criterion 1's exact-string test is now the interesting part**, and its
+   meaning is unchanged: the pre-weekend string appearing in hour 21 means the
+   ordering has drifted. That test was correct all along — it is the
+   *prediction table* that was wrong, not the criterion.
 
 ### On Mon 2026-08-24, after 22:00 UTC, confirm all four
 
@@ -2544,6 +2586,39 @@ if something downstream is blocked on it; otherwise prefer two.
 - provenance in code per symbol: n samples, date range, filter applied
 - commit message and script comment must state that **the tail is
   uncalibrated and risk-of-ruin work must NOT use this table**
+
+### 📏 MEASURED — the Sunday reopen, 2026-08-23 20:00–22:59 UTC
+
+**First hard numbers for the window the entry policy declines.** Until now the
+Sunday 23:00 rule rested on ~10 trades and an argument. First reopen sample per
+symbol, from `signal_log.spread`:
+
+| symbol | first reopen sample | max in window | normal (`NORMAL_SPREADS`-era estimate) | ratio |
+|---|---|---|---|---|
+| **GBPUSD** | **0.0026 = 26 pips** | 0.0026 | ~1.5 pips | **~17x** |
+| AUDUSD | 0.0013 = 13 pips | 0.0013 | ~0.6 pips | ~22x |
+| USDCAD | 0.00031 | 0.00133 = 13.3 pips | ~0.9 pips | ~15x |
+| EURUSD | 0.00019 | 0.0009 = 9 pips | ~1.0 pips | ~9x |
+
+**GBPUSD's 26 pips is wider than the 10–17 pip range quoted elsewhere in this
+file, and wider than its own 21:00 rollover hour.** Raise that upper bound
+where it appears. This is the cost of the declined window measured rather than
+argued — and it is now the primary evidence for the Sunday 23:00 entry policy.
+
+⛔ **THESE SAMPLES MUST NOT ENTER THE SPREAD TABLE.** Same exclusion as the
+shut-book values, and for the same reason: `get_spread_samples(market_open_only=True)`
+filters on `market_hours.is_entry_allowed`, and every row above was taken while
+that predicate was **False**. They are pre-open-filtered by construction. A
+median built including them is biased **high** — the mirror of the 2026-08-17
+bias-low failure, and just as invisible, because a wider number looks
+conservative rather than wrong.
+
+They are evidence **for the policy**, not inputs **to the cost model**. Two
+different uses of one column, and the filter is what separates them.
+
+*(They do, however, quantify the exit-side exposure described immediately
+below: a position held through the weekend gap exits into exactly these
+spreads.)*
 
 ### Known limitation to carry into the table — model shape, not filter
 

@@ -2346,9 +2346,11 @@ only, where yfinance `^GSPC`/`^NDX`/`^GDAXI` reach 730 days and are already
 correct. Yahoo's own refusal at 15m is explicit: *"The requested range must be
 within the last 60 days."*
 
-*(Strongest home for this note is a comment at `SYMBOL_MAP` itself, where
-someone reaching for the wrong fix will be looking. Not added —
-`scripts/fetch_twelvedata.py` was outside this change's agreed file set.)* Recording the block is the
+**✅ This warning now lives at `SYMBOL_MAP` itself** (2026-08-24), where
+someone reaching for the wrong fix will be looking, with the full probe table,
+the `DAX`-is-a-trap note and the three real options inline. A doc entry alone
+was the wrong home: the person about to "fix the mapping" is editing that dict,
+not reading this file. Recording the block is the
 correct outcome until an index-scaled 15MIN source exists.
 
 ---

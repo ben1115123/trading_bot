@@ -37,11 +37,47 @@ TIMEFRAME = "15MIN"
 INTERVAL = "15min"
 OUTPUTSIZE = 5000
 
+# ⛔ THE THREE INDEX ENTRIES ARE ETF PROXIES, AND YOU CANNOT FIX THAT HERE.
+#
+# US500->SPY, US100->QQQ and DAX->EWG are the WRONG INSTRUMENTS. Every
+# *_15MIN_AV.json built for those three symbols is ETF-scaled and the backtests
+# on them are void, not merely stale — SPY last close 729 vs ^GSPC ~7,481; EWG
+# is a ~$40 USD-denominated German-equity ETF with a median 15MIN bar range of
+# 0.060 index "points". See CLAUDE.md and findings doc finding 30.
+#
+# THIS READS AS CARELESSNESS. IT IS NOT. Probed 2026-08-23 with this project's
+# own free-tier TWELVEDATA_API_KEY:
+#
+#   SPX    404  "This symbol is available starting with the Grow or Venture plan"
+#   NDX    404  same paid-plan gate
+#   IXIC   404  "symbol or figi parameter is missing or invalid"
+#   GDAXI  404  invalid symbol
+#   DAX    200  OK — and it is a $47 ETF on NASDAQ (type=ETF, currency=USD)
+#   SPY    200  OK, type=ETF, 765.69
+#
+# Whoever wrote this dict picked what the free tier permits. The obvious fix —
+# "just point it at the real index" — DOES NOT WORK at this tier, and `DAX` is
+# the trap: it returns 200 OK with clean 15MIN candles and is a DIFFERENT wrong
+# instrument from EWG. Swapping EWG for it produces a second contamination with
+# a fresh signature and a file that looks repaired.
+#
+# Real options, none of them an edit to this dict:
+#   - a paid Twelve Data plan (Grow/Venture) for SPX/NDX;
+#   - IG REST backfill — correct index scale (verified: US500 7671.16,
+#     US100 29289.2, DAX 26108.4), but bounded by the 10,000/week historical
+#     allowance, see CLAUDE.md "IG Historical Allowance";
+#   - accept HOUR only. yfinance ^GSPC/^NDX/^GDAXI reach 730 days at 1h and are
+#     already correctly scaled. yfinance 15m is hard-capped at 60 days by Yahoo
+#     ("The requested range must be within the last 60 days"), far short of a
+#     walk-forward span.
+#
+# ALWAYS check a cache's price level against the instrument it claims to be
+# before trusting a backtest built on it. All 7 FX entries below are correct.
 SYMBOL_MAP = {
     "EURUSD": "EUR/USD",
-    "US500":  "SPY",
-    "DAX":    "EWG",
-    "US100":  "QQQ",
+    "US500":  "SPY",     # ⛔ ETF, not ^GSPC — read the block above before editing
+    "DAX":    "EWG",     # ⛔ ETF, not ^GDAXI — and "DAX" is a $47 NASDAQ ETF, not a fix
+    "US100":  "QQQ",     # ⛔ ETF, not ^NDX
     "GBPUSD": "GBP/USD",
     "USDJPY": "USD/JPY",
     "EURGBP": "EUR/GBP",
