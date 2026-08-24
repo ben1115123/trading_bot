@@ -1939,6 +1939,51 @@ This is the self-invalidating-probe rule applied to a written check: on
 Saturday the probe cannot observe the passing state at all, so its negative
 carried no information about the thing it claimed to test.
 
+### ✅ CRITERION 4 RE-TESTED AND PASSED — Sun 2026-08-23 20:00–22:59 UTC
+
+**CHECK 1 IS NOW VERIFIED IN FULL.** The Saturday NULL was the shut book,
+exactly as diagnosed — not the ordering failing.
+
+- **Positive control:** 144 `signal_log` rows, `20:11:02` → `22:56:03`, all
+  four FX symbols (EURUSD 63, GBPUSD 24, AUDUSD 12, USDCAD 12) plus US500 21,
+  US100 12. The loop was running; the test genuinely ran.
+- **Reason strings: 144/144 `BLOCKED`**, every row an exact expected string,
+  zero NULL, zero others.
+- **Spread: 111 of 111 FX rows NON-NULL**, 37/37 in each of hours 20, 21, 22.
+  The load-bearing ordering holds — sample taken before the block check, and
+  the blocked branch still calls `log_signal_check`.
+- **Zero `trades` rows** in the window and across all of 2026-08-23; zero
+  `trade_placed=1`.
+- **14 unbroken cycles** at 15-minute cadence through fully-blocked cycles.
+  `heartbeat` is an upsert, so past beats are unrecoverable — the row
+  timestamps are the durable evidence here, not the heartbeat table.
+
+**The captured spreads are why the policy exists.** First reopen sample per
+symbol: **GBPUSD 0.0026 (26 pips)**, AUDUSD 0.0013, USDCAD 0.00133, EURUSD
+0.00019. GBPUSD ran **wider than the 10–17 pip range quoted elsewhere in this
+file** — raise that upper bound when the spread table is built.
+
+### 🔴 CORRECTION — the rollover gate fires at 21:xx on SUNDAY
+
+Surfaced by this check, contradicting CHECK 2's table below:
+
+| hour (Sun 2026-08-23) | reason logged | rows |
+|---|---|---|
+| 20 | `entry window closed — thin reopen / pre-weekend policy` | 48 |
+| **21** | **`entry window closed — daily rollover hour`** | **48** |
+| 22 | `entry window closed — thin reopen / pre-weekend policy` | 48 |
+
+CHECK 2 asserts Sunday 21:30 is blocked by *"the **Sunday reopen** rule
+(23:00), not this one"*. **Wrong — the rollover branch wins the ordering in
+`_block_reason`.** Two consequences:
+
+1. **The 21:00 rollover gate has ALREADY had its first real fire** — real
+   clock, 2026-08-23 21:00–21:59 UTC, 48 rows — a day earlier than CHECK 2
+   said was reachable.
+2. That table's reasoning was argued, never observed. Same shape as every
+   conclusion-by-argument this file warns about. Do not re-derive the ordering
+   from it.
+
 **What ABSENCE would mean.** Zero FX rows carrying `market closed — weekend`
 on Saturday is **not** evidence the block works — it is equally consistent with
 the loop not running at all. Positive control first: confirm `signal_log` has
@@ -1960,7 +2005,16 @@ covered. Rationale, evidence table and the DAX/BTC-are-mechanism-not-evidence
 caveat live in the `market_hours.py` comment; do not restate them here.
 
 **Verified so far: 33 marker assertions, in the deployed image, ALL AGAINST
-CONSTRUCTED `datetime` VALUES.** It has never fired on a real clock.
+CONSTRUCTED `datetime` VALUES.**
+
+> ⚠️ **SUPERSEDED IN PART — it HAS now fired on a real clock.** Sunday
+> 2026-08-23 21:00–21:59 UTC logged **48 rows** carrying
+> `entry window closed — daily rollover hour`, found while re-testing CHECK 1.
+> The table below predicted the Sunday reopen rule would shadow this gate at
+> 21:30; it does not. **Monday 2026-08-24 21:00 is still worth checking** — it
+> is the documented weekday case, where `is_market_open` is True for a
+> different reason — but it is no longer the gate's first exercise, and
+> criterion 1's "first genuine exercise" framing below is now inaccurate.
 
 **Why Monday and not this weekend** — the gate is genuinely unreachable before
 then, so its silence until Monday is expected and means nothing:
@@ -1969,7 +2023,7 @@ then, so its silence until Monday is expected and means nothing:
 |---|---|---|---|
 | Fri 2026-08-21 21:30 | False | **False** | venue already shut |
 | Sat 2026-08-22 21:30 | False | False | venue shut |
-| Sun 2026-08-23 21:30 | False | True | the **Sunday reopen** rule (23:00), not this one |
+| Sun 2026-08-23 21:30 | False | True | ❌ **WRONG — observed: THIS gate**, 48 rows logged `daily rollover hour` |
 | **Mon 2026-08-24 21:30** | **False** | True | **this gate** ← first genuine exercise |
 
 ### On Mon 2026-08-24, after 22:00 UTC, confirm all four
