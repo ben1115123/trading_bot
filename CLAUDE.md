@@ -1461,6 +1461,57 @@ Broken pipe`) having shown zero build output; the build had in fact succeeded.
 The conclusion rested on end-state evidence — new image ID, new `StartedAt`,
 flipped crontab md5, cron executing — **not** on the exit code or the log.
 
+### 🔴 WHAT AN OBSERVATION COSTS — a request that FAILS is not a request that was FREE
+
+*(added 2026-08-25, from finding 38. This one was learned by destroying the
+thing being measured.)*
+
+The four rules around it all ask whether an observation carries **information**.
+This one asks what taking it **spends** — the axis none of the others cover.
+
+**The instance.** The IG historical allowance had just reset, and the two open
+unknowns (max `numpoints`, `MINUTE_15` depth per epic) were to be measured
+promptly. The probe was built on this reasoning:
+
+> Every value I try is larger than the budget I have left, so a success is
+> impossible. IG must answer either "numpoints too large" or "allowance
+> exceeded". Both are failures, so neither costs anything.
+
+**Sound except the last clause, which was never checked.** `numpoints=100000`
+and `50000` returned `error.price-history.io-error` — **not** a quota error —
+meaning IG attempted and charged them. By the third request a **four-bar**
+window was refused. ~7,200 points gone, **both unknowns still unmeasured**, and
+the allowance dead for a week.
+
+**The misread, named exactly.** This file says *"the reset time is only
+learnable from a request that SUCCEEDS. A 403 carries no allowance block."*
+That is about what a 403 can **teach** you. It says nothing about what a failed
+request **costs**. The inference was an addition to the line, not a reading of
+it.
+
+| rule | governs |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | do not infer failure from absence either |
+| prospective form | do not create the passing observation yourself |
+| enumerate over assert | do not let the check see only what it predicted |
+| **this one** | **do not assume what the observation COSTS** |
+
+> **THE RULE:** before probing a metered resource, state what the probe costs
+> **if it fails**, and say how you know. If that answer is an inference rather
+> than a measurement, start from the smallest informative request and read the
+> meter off the first response before escalating.
+
+**The correct shape, which was available the whole time:** smallest request
+first (a one-hour date-range window is four bars) → read
+`allowance.remainingAllowance` off that response → the delta **is** the cost,
+measured → escalate only while the measured cost stays affordable. Bracketing
+from above had no way to learn its own cost until after it had paid it.
+
+A probe that exhausts the resource it was measuring has destroyed the
+measurement — the same end state as a probe that could never have observed the
+passing state, reached by a different route.
+
 ### ENUMERATE, DON'T ASSERT — how to write a check that can teach you something
 
 The three rules above govern *whether an observation carries information*. This
@@ -1845,27 +1896,90 @@ log explicitly when the candidate pool is empty *and why* (zero rows at
 `engine_version=X`), so a silent selector can be told apart from a starved one
 by a positive signal rather than inferred from nothing happening.
 
-## ⏳ CONTROLS AWAITING FIRST REAL FIRE
+## ✅ CONTROLS AWAITING FIRST REAL FIRE — THE LIST IS NOW EMPTY
 
-Two gates are deployed and **verified only against constructed timestamps**.
-Neither has ever fired in production. Per the marker-test rule, their silence
-proves nothing until each has been observed once with a positive signal.
+Every control that was waiting on a first production fire has now been observed
+firing, each with a positive signal rather than inferred from silence. **Keep
+this section**: an empty list is a claim, and the dates below are what backs it.
 
-| control | deployed | first reachable | grep `signal_log.error` for |
+| control | deployed | first real fire | `signal_log.error` string |
 |---|---|---|---|
-| FX weekend block | 2026-08-17 | ✅ **VERIFIED Sat 2026-08-22** | `market closed — weekend` |
-| 21:00 rollover gate | 2026-08-21 | **Mon 2026-08-24 21:00–21:59 UTC** | `entry window closed — daily rollover hour` |
-| collector disable → IG warm-up | 2026-08-23 | **after the allowance resets** | see CHECK 3 below |
+| FX weekend block | 2026-08-17 | ✅ **Sat 2026-08-22** | `market closed — weekend` |
+| 21:00 rollover gate | 2026-08-21 | ✅ **Sun 2026-08-23**, weekday case **Mon 2026-08-24** | `entry window closed — daily rollover hour` |
+| collector disable → IG warm-up | 2026-08-23 | ✅ **Mon 2026-08-25 04:02 UTC** | `source=IG REST` in the warm-up log |
+| shadow spread gate | (before 2026-08-21) | ✅ **Mon 2026-08-25 04:04 UTC** | `SHADOW spread gate: ratio ...` |
 
-## ⚠️ CHECK 3 — does the warm-up reach IG once the collector stops burning?
+**The shadow gate's first fire**, caught on the first cycle after the
+2026-08-25 deploy:
 
-**The collector disable is verified. What it was supposed to BUY is not.** Two
-different claims, and only the first has evidence:
+```
+SHADOW spread gate: ratio 0.250 >= k 0.25 (GBPUSD, spread=0.00015, sl_dist=0.0006)
+```
+
+It fired on a **paper** signal, exactly as designed — `risk/spread_gate.py`
+sits before the paper/live branch — and **the trade still logged as
+`PAPER_BUY`.** That is the passing observation: `ENFORCE=False` means the gate
+reports and blocks nothing. The standing rule is unchanged and now has a
+baseline to read against: this string must never be the sole explanation for a
+*missing* trade while `ENFORCE` is False.
+
+Nothing is currently awaiting a first fire. **Add a row here before deploying
+the next dated control, not after** — the value of this table is that it was
+written while the control was still unobserved.
+
+## ✅ CHECK 3 — PASSED 2026-08-25. The warm-up reaches IG. `CANDLE_SOURCE=ig_stream` is true end to end for the first time.
+
+Both claims now have evidence. The second one was the whole point of the
+change, and it took two days and an allowance reset to become observable:
 
 | claim | status | evidence |
 |---|---|---|
 | the collector no longer runs | ✅ **VERIFIED 2026-08-23 14:31 UTC** | marker test, below |
-| `candle_stream` warm-up now reaches IG instead of yfinance | ⏳ **NOT OBSERVABLE YET** | — |
+| `candle_stream` warm-up now reaches IG instead of yfinance | ✅ **VERIFIED 2026-08-25 04:02 UTC** | 7/7 pairs `source=IG REST`, zero fallback |
+
+**The observation, exactly as it was predicted before it was made** (the
+passing string was written into this file on 2026-08-23, before the run):
+
+```
+[candle_stream] warm-up US500/15MIN: 200 candles (source=IG REST)
+[ig_allowance] candle_stream REST US500/15MIN: remaining=9000 of 10000 (10.0% used),
+               resets_at=2026-09-01T04:02:18+00:00 (expiry=604798s)
+```
+
+All seven warm-up pairs returned `source=IG REST`. **Zero
+`source=yfinance (quota fallback)` lines, zero quota errors, on the whole
+start-up.** That log line is only producible by IG actually serving the
+request.
+
+**The collector was the blocker, and the fix working is what proves it.** Until
+2026-08-23 the collector took 100,800 points/week of a 10,000/week budget,
+exhausted it in ~16.7 hours, and left `_warm_up` and `_backfill_gap` falling
+through to yfinance on every pair for the rest of the week. `CANDLE_SOURCE=ig_stream`
+was half true — IG ticks, **yfinance seed data**. Stop the drain, let the
+allowance reset, and the warm-up reaches IG on the first attempt. That is the
+causal claim tested rather than argued.
+
+**This deploy was a legitimate CHECK 3 observation, not a self-manufactured
+one** — per the distinction drawn when the check was written. The deploy was
+scheduled for its own reasons (gated on CHECK 2, code waiting since 2026-08-23),
+and `source=IG REST` cannot be faked by restarting: only IG serving the request
+produces it. Contrast CHECK 1's criterion 4, where a restart *did* manufacture
+an artifact resembling the passing state.
+
+### ✅ The reset time is now KNOWN — 2026-09-01T04:02 UTC
+
+`resets_at=2026-09-01T04:02:18+00:00 (expiry=604799s)` — a rolling 7-day window
+that begins at the first request after a reset, **not** a fixed weekly boundary.
+
+This number was **arriving on every successful `/prices` response for the life
+of the system and was discarded** by both consumers doing
+`result.get("prices")`. Finding 35 made it visible; this is the first time it
+has ever been read. Before 2026-08-23 the reset time was simply unknown, and
+every plan that depended on it was a guess.
+
+⚠️ The window is anchored to the first request after a reset, so it **moves**.
+Do not hardcode 04:02 as a recurring weekly time — read `resets_at` off the
+next successful response.
 
 **Marker test result (positive signal, not silence).** A one-shot cron line was
 added in the same edit that commented the collector, scheduled 6 minutes out,
@@ -1880,63 +1994,80 @@ the 14:30 no-show is a real disable rather than a dead daemon. Marker line
 removed immediately after observation; in-container md5 back to the committed
 value.
 
-**Why the second claim cannot be checked today — and must not be faked.** The
-allowance is a **rolling weekly budget that is currently at zero**; stopping
-the drain does not refill it. Warm-up only runs on container start or stream
-reconnect. So a restart right now would fall back to yfinance **no matter how
-correct the fix is** — the probe cannot reach the passing state. That is the
-self-invalidating-probe rule exactly, and a rebuild today is separately
-forbidden (CHECK 1's Sunday reopen, CHECK 2 on Monday).
+*(The prospective reasoning that stood here — why the second claim could not be
+checked before the reset, what PASSING would look like, and why the
+post-CHECK-2 deploy would be a legitimate rather than self-manufactured
+observation — has been folded into the result block above. It was all correct
+and the prediction held exactly, which is the argument for writing such things
+before the run rather than after.)*
 
-**What PASSING looks like, stated before the observation:** on the first
-warm-up after the allowance resets, the bot log shows
-`[candle_stream] warm-up US500/15MIN: 200 candles (source=IG REST)` —
-`source=IG REST`, **not** `source=yfinance (quota fallback)` — and
-`[ig_allowance] candle_stream REST ...` prints a non-zero `remaining` with a
-`resets_at`. That log line is only producible by a successful IG fetch.
+### ⚠️ The rebuild cost DOUBLE the prediction — 2,800 points, not 1,400
 
-**Do not read a yfinance fallback before the reset as a failure of this
-change.** And do not restart the container to force the check — take the next
-warm-up that happens anyway.
+This section predicted `WARMUP_COUNT` 200 x 7 pairs = **1,400 points, ~14% of
+the weekly 10,000**. The measured cost was **2,800 points, 28%** — fourteen
+REST calls, not seven. Gap-backfill fires immediately after warm-up, re-fetches
+200 points per pair, and leaves the buffer at the same 200 candles warm-up had
+just produced. **Zero gained, 1,400 spent, on every reconnect.**
 
-### The post-CHECK-2 deploy IS that warm-up — and it is not self-manufactured
+That is **finding 37**, and it is scoped there but deliberately **not fixed** —
+it is being kept separate from the post-reset measurement work. Read it before
+planning any allowance budget: at 2,800 points per restart the weekly allowance
+funds **three** of them.
 
-The deploy scheduled after CHECK 2 rebuilds the container, which forces a
-warm-up on all pairs. **That is a legitimate CHECK 3 observation, not a
-violation of the prospective rule**, and the distinction is worth being exact
-about because the two look similar:
+### ⛔ The two unknowns are STILL UNMEASURED — the probe exhausted the allowance
 
-| | CHECK 1 criterion 4, 2026-08-22 | CHECK 3 at the post-CHECK-2 deploy |
-|---|---|---|
-| what the restart produced | a spread value **from a shut book** — an artifact that *resembles* the passing state without being it | either a real successful IG fetch or a real failure |
-| could the observation be faked by the restart? | **yes** — that is exactly what happened | **no** — `source=IG REST` is producible only by IG actually serving the request |
-| was the deploy scheduled for its own reasons? | no, it was in the check's window | yes — the code has been waiting since 2026-08-23 |
+The instruction above ("measure the two unknowns promptly rather than letting
+the rest drain on reconnects") was followed on 2026-08-25, and the probe
+designed to do it **consumed the remaining ~7,200 points and measured neither.**
 
-**Either outcome is information:**
-- `source=IG REST` + a non-zero `[ig_allowance]` line → the allowance has reset
-  and CHECK 3 passes.
-- `source=yfinance (quota fallback)` → **the allowance has NOT reset**, which
-  tells us the reset is later than a naive 7-day-from-exhaustion estimate.
-  Record the date; it bounds the window from the other side.
+Root cause is a single unchecked assumption — *a request that fails is a
+request that was free*. It is not: `numpoints=100000` and `50000` came back
+`error.price-history.io-error`, **not** a quota error, meaning IG attempted and
+charged them. By the third request a **four-bar** date-range window was being
+refused. Full account, and the general rule it produced, in **finding 38** and
+in the Unverified Controls section below.
 
-⚠️ **The rebuild COSTS quota if the allowance has reset.** Warm-up is
-`WARMUP_COUNT` 200 x 7 pairs = **1,400 points, ~14% of the weekly 10,000**,
-spent before anything else can use it. So if `[ig_allowance]` prints a
-non-zero remaining, **measure the two unknowns promptly** (max `numpoints`,
-`MINUTE_15` depth per epic) rather than letting the rest drain on reconnects.
+Still unknown, now until after 2026-09-01T04:02 UTC:
+1. **Max `numpoints` per request** — bracketed only as "attempted, IO error, at
+   50,000+". No accepted value has ever been measured above 200.
+2. **How far back `MINUTE_15` reaches per epic** — entirely unknown. The
+   index-backfill sizing (~17,000 points per index symbol) remains a guess.
 
-CHECK 1 **passed on 2026-08-22 — the control is verified.** One of its four
-criteria was found to be mis-specified and re-scoped to Sunday; that is a
-defect in the checklist, not in the control. See the result block before
-drawing any conclusion from it. CHECK 2 is still pending, plus
-one follow-up on CHECK 1 (spread sampling through the **Sunday** reopen, which
-is the window that actually tests it).
+**When the allowance resets, probe from the SMALLEST request upward**, reading
+`allowance.remainingAllowance` off each response before escalating. A one-hour
+date-range window is four bars. Do not bracket from above.
 
-Tick these off below when observed. Delete neither section until both are
-confirmed — a control recorded as verified when it never fired is the same
-error as a monitoring gap recorded as outstanding while the monitor existed.
+### 🔴 LIVE EXPOSURE until 2026-09-01T04:02 UTC — bounded, no action available
 
-## ⚠️ CHECK 1 — FX market-hours block (deployed 2026-08-17, due Sat 2026-08-22)
+The historical allowance is at zero for a week. Stated honestly rather than
+minimised:
+
+- **Live trading is unaffected in steady state.** Lightstreamer ticks do not
+  draw on the historical allowance. Buffers were warmed from IG REST during the
+  2026-08-25 deploy, and both heartbeats, the cycle cadence and paper signal
+  firing were all confirmed healthy afterwards.
+- **The exposure is a stream reconnect.** If the stream drops before the reset,
+  `_warm_up` / `_backfill_gap` fall back to yfinance — which **for indices is
+  the off-session staleness the 2026-07-15 `CANDLE_SOURCE` flip existed to
+  fix.** FX fallback is comparatively benign; US500/US100 is the real risk.
+- **No action is available.** The allowance cannot be refilled early, and
+  restarting to re-warm would itself need the allowance. The only mitigations
+  are not restarting the container and not running historical fetches. Both are
+  already the case.
+- **This is a self-inflicted, one-week window.** Recording it rather than
+  discovering it later, per the same rule that governs undocumented backups and
+  re-opened drift.
+
+CHECK 1 **passed on 2026-08-22 and in full on 2026-08-23** — the control is
+verified. One of its four criteria was found to be mis-specified and re-scoped
+to Sunday; that is a defect in the checklist, not in the control. **CHECK 2
+passed on 2026-08-24** and **CHECK 3 on 2026-08-25.** All three are closed.
+
+Delete none of these sections. A control recorded as verified when it never
+fired is the same error as a monitoring gap recorded as outstanding while the
+monitor existed — and the dated result blocks are what distinguish the two.
+
+## ✅ CHECK 1 — FX market-hours block (deployed 2026-08-17) — VERIFIED IN FULL 2026-08-22/23
 
 `_is_blocked` never blocked FX. `MARKET_CLOSE` holds only US500/US100/DAX/BTC,
 so every FX symbol hit `.get(symbol) is None → return False` before reaching
@@ -2078,7 +2209,7 @@ a fault. `signal_loop` should keep beating.)
 Until that observation exists, this control is verified only against
 constructed timestamps.
 
-## ⚠️ CHECK 2 — 21:00 UTC rollover gate (deployed 2026-08-21, weekday case due Mon 2026-08-24)
+## ✅ CHECK 2 — 21:00 UTC rollover gate (deployed 2026-08-21) — VERIFIED IN FULL 2026-08-24
 
 > ### ✅ THE GATE HAS FIRED ON A REAL CLOCK — Sun 2026-08-23 21:00–21:59 UTC
 >
@@ -2149,6 +2280,89 @@ Not a first fire. Three things the Sunday observation genuinely does not cover:
    ordering has drifted. That test was correct all along — it is the
    *prediction table* that was wrong, not the criterion.
 
+### ✅ VERIFIED Mon 2026-08-24 21:00–21:59 UTC — ALL SIX CRITERIA PASSED
+
+**The weekday case is confirmed. CHECK 2 is closed.** Queried
+`2026-08-25` from the durable `signal_log` rows (`checked_at`, ISO with `T`,
+`+00:00`), every criterion run as an enumeration and the distribution reported
+before the verdict, per ENUMERATE, DON'T ASSERT.
+
+- **Criterion 0 — positive control PASS.** 48 rows, `21:10:46` → `21:55:41`,
+  all six symbols: EURUSD 21, GBPUSD 8, US500 7, AUDUSD 4, US100 4, USDCAD 4.
+  The loop was running; the test genuinely ran.
+- **Criterion 1 — reason strings PASS.** `GROUP BY symbol, signal, error`
+  returned **one bucket**: all 48 rows `BLOCKED` /
+  `entry window closed — daily rollover hour`, the exact string. Zero rows
+  carry `thin reopen / pre-weekend policy`, zero NULL, zero others. The
+  ordering in `_block_reason` has **not** drifted from `is_entry_allowed`.
+- **Criterion 2 — spread PASS.** 48/48 non-null, indices included. The
+  load-bearing ordering holds: sample taken before the block check, blocked
+  branch still calls `log_signal_check`.
+- **Criterion 3 — zero entries PASS.** Zero `trades` rows in hour 21 and zero
+  across all of 2026-08-24; all 48 rows `trade_placed=0`; zero `paper_trades`
+  in the hour. **Reinforced by a second positive control: 58 `paper_trades`
+  rows exist elsewhere on 2026-08-24**, so the loop demonstrably produced
+  entries that day and the hour-21 absence is the gate acting, not a dead loop.
+  Without that row the criterion's absence would have carried no information.
+- **Criterion 4 — cadence PASS.** Unbroken 15-minute cycles across the window
+  from the durable row timestamps, not the heartbeat upsert: 20:10 / 20:25 /
+  20:40 / 20:55 → **21:10 / 21:25 / 21:40 / 21:55** → 22:10 / 22:25 / 22:40 /
+  22:55. No gap.
+- **Criterion 5 — all six symbols PASS, and the indices MATCH FX.** US500 (7
+  rows) and US100 (4) carry the identical error string and non-null spreads.
+  US500's 7 vs US100's 4 is the extra 21:30 cycle where US500 and EURUSD were
+  `_is_due` — a cadence artifact, not differing gate behaviour.
+
+**What Monday tested that Sunday could not**, as scoped in advance:
+`is_market_open` was True as an ordinary trading day rather than via the 22:00
+reopen, and the Sunday reopen rule was **not** also live — so this is the first
+hour where this gate alone stood between a due signal and an entry.
+
+#### 📏 Rollover-hour spreads — measured, and the indices are the interesting part
+
+| symbol | min | max | ~normal | ratio at max |
+|---|---|---|---|---|
+| **GBPUSD** | 0.00169 (16.9 pips) | 0.00169 | ~1.5 pips | ~11x |
+| USDCAD | 0.00133 (13.3 pips) | 0.00133 | ~0.9 pips | ~15x |
+| EURUSD | 0.00028 | 0.00116 (11.6 pips) | ~1.0 pips | ~12x |
+| AUDUSD | 0.00061 | 0.00116 (11.6 pips) | ~0.6 pips | ~19x |
+| **US500** | **1.5** | **1.5** | 1.5 | **~1x — flat** |
+| **US100** | **5.0** | **5.0** | 5.0 | **~1x — flat** |
+
+⛔ **THESE MUST NOT ENTER THE SPREAD TABLE.** Same exclusion as the shut-book
+and Sunday-reopen samples, same reason: every row was taken while
+`market_hours.is_entry_allowed` was **False**, and
+`get_spread_samples(market_open_only=True)` filters on exactly that predicate.
+Including them biases the median **high**. They are evidence **for** the policy,
+never inputs **to** the cost model.
+
+**The indices being flat is itself a finding, and only an all-symbols query
+could show it.** FX widens 11–19x in the rollover hour; US500 and US100 do not
+move at all. So **the rollover widening is an FX phenomenon**, and the gate —
+which checks `ROLLOVER_BLOCK_HOUR` *before* the `_ALWAYS_OPEN` short-circuit,
+deliberately covering 24/7 instruments — is **broader than the evidence base
+that justifies it.**
+
+**This is NOT a reason to narrow the gate.** Recorded because it is the kind of
+thing that goes unnoticed until someone re-derives the rule from its rationale
+and finds the rationale does not cover every instrument it applies to. Three
+points in its favour as it stands: the index sample is small (11 rows across
+one hour); an all-instruments rule has no per-symbol branch to drift; and
+blocking entries in a low-liquidity hour costs little on instruments that are
+not widening anyway. If the gate is ever revisited, **this measurement is the
+starting point, and it needs more than one hour of index data first.**
+
+Exactly the outcome ENUMERATE, DON'T ASSERT predicts: criterion 5 was written
+to include symbols believed irrelevant, and the difference between them is
+visible only because both were in the output.
+
+---
+
+*(The five criteria as originally written are kept below unchanged. They were
+correct — including criterion 1's exact-string test, which is what would have
+caught an ordering drift. It was the prediction table above them that was
+wrong, and that correction is recorded in place rather than edited away.)*
+
 ### On Mon 2026-08-24, after 22:00 UTC, confirm all five
 
 **Run every query as an enumeration, not an assertion** — see "ENUMERATE,
@@ -2199,15 +2413,28 @@ and none carry the reason, the gate is broken. If it has no rows at all, the
 loop was not checking and the test simply did not run — reschedule, do not
 conclude.
 
-### Also awaiting first fire: the shadow ratio gate
+### ✅ The shadow ratio gate has fired — 2026-08-25 04:04 UTC
 
 `risk/spread_gate.py`, `ENFORCE=False`, k=0.25. It only evaluates on an actual
-BUY/SELL, so it is unexercised until a signal lands. It sits before the
-paper/live branch, so a **paper** signal exercises it. Look for
-`SHADOW spread gate:` in the bot log or in `signal_log.error`. It must
-**never** appear as the cause of a skipped trade while `ENFORCE` is False — if
-a trade is ever missing and this string is the only explanation, the shadow
-gate has been promoted by accident.
+BUY/SELL, so it was unexercised until a signal landed. It sits before the
+paper/live branch, so a **paper** signal exercises it — and that is exactly
+what happened, on the first cycle after the 2026-08-25 deploy:
+
+```
+signal_log id: GBPUSD 2026-08-25T04:04:01 PAPER_BUY
+error: SHADOW spread gate: ratio 0.250 >= k 0.25 (GBPUSD, spread=0.00015, sl_dist=0.0006)
+```
+
+**The passing observation is the pairing**: the gate reported *and* the row is
+`PAPER_BUY`, i.e. the trade was still taken. `ENFORCE=False` reports and blocks
+nothing, confirmed rather than assumed. The ratio landed exactly on k — 0.250
+against a 0.25 threshold — which is a boundary case worth knowing the gate
+evaluates with `>=`.
+
+The standing rule is unchanged and now has a baseline to read against: this
+string must **never** appear as the cause of a *skipped* trade while `ENFORCE`
+is False. If a trade is ever missing and this string is the only explanation,
+the shadow gate has been promoted by accident.
 
 ## Stage 4 re-validation — WHERE IT RUNS AND HOW RESULTS COME HOME
 
@@ -2363,83 +2590,65 @@ delete write test against the VPS, exactly as was done for `walkforward_runs` on
 2026-08-22. That test found `spread_table_sha` was NULL on every row ever
 written, which code-reading had missed.
 
-## 🚀 DEPLOY QUEUE — gated on CHECK 2
+## ✅ DEPLOY 2026-08-25 — queue SHIPPED, drift CLEARED
 
-**The queue is `40d716b` and EVERY COMMIT AFTER IT on `origin/main`.** Resolve
-it at deploy time with `git log --oneline 42f5585b3e34..origin/main`-equivalent
-(the running image contains `591dc3a`), **never** from a list written here.
-
-An enumerated list was tried on 2026-08-24 and was stale within one commit —
-the commit that corrected the count became a new entry, which is a loop. Same
-rule as the open-positions list under Infrastructure Incidents: *the roster
-churns, never carry a hardcoded list forward.* A record that must be edited
-every time the thing it describes changes will be wrong more often than right.
-
-**What is runtime-reachable in the queue, which is the part worth stating:**
+**The deploy queue is empty and the 2026-08-23 drift entry is closed.** Gated
+on CHECK 2, which passed on 2026-08-24; shipped the following morning.
 
 | | |
 |---|---|
-| **`4323dea`** | **the only behaviour change.** `scripts/crontab` (what makes the collector disable survive the rebuild), plus two additive `log_allowance` calls in `candle_stream._rest_fetch` and `engine.fetch_candles`, and the new `ig_allowance.py` they both import |
-| `40d716b` | engine only — `bot/live_signal_loop.py` does not import `backend.backtesting.engine`, so it is unreachable from the loop, webhook, poller or execution path |
-| everything else | docs, plus a comment-only change to the standalone `scripts/fetch_twelvedata.py` (no importers) |
+| running image | `sha256:9da8a7927a09`, built **2026-08-25 04:02 UTC** |
+| image contains | `715bc18` — same as `origin/main` at deploy time |
+| carried in | **16 commits**, `591dc3a..715bc18`, resolved from `git log` at deploy time rather than from a list |
 
-⚠️ `ig_allowance.py` is a **new module imported by two files already in the
-loop's import graph.** If it is ever missing from an image, `live_signal_loop`
-raises at import and the bot does not boot — finding 29's failure exactly.
-Verified present and importing before each commit; verify again post-deploy.
+The queue was resolved with `git rev-list --count 591dc3a..origin/main` against
+the running image's commit, exactly as the previous entry instructed — **not**
+from an enumerated list. That rule was written after an enumerated list went
+stale within one commit, and it held: the queue had grown from 5 to 16 between
+the note being written and the deploy happening.
 
-**Post-deploy verification — positive observations only, none inferred from
-silence:**
-1. in-container `/etc/cron.d/trading-bot` md5 =
-   **`0f1cc206193f5d30341c3db530357b06`**, matching the committed
-   `scripts/crontab`. This is the one that matters most: the collector disable
-   currently exists in the container only as a `docker cp`, and the rebuild is
-   what makes it survive. A different md5 means the disable reverted.
-2. **CHECK 3** — read the warm-up lines for `source=IG REST` vs
-   `source=yfinance (quota fallback)`, and any `[ig_allowance]` output. See
-   CHECK 3 above; either result is information.
-3. finding 29's rule: `bot.live_signal_loop` imports in the deployed image,
-   `STRATEGIES: 34`; `main`, `webhook.receiver`, `data.positions_poller` clean.
-4. stamps unchanged: `parity-v2` / `paper-v2` /
-   `flat-roundtrip-dollars-UNCALIBRATED`.
-5. `localhost:80` 200, `/health` 200, `/webhook` 405; all three containers up.
-6. both heartbeats beating after the restart; a full cycle logged with
-   `signal_log.spread` non-null on FX.
+**Runtime-reachable in what shipped:** `4323dea` (the `scripts/crontab`
+collector disable, the new `ig_allowance.py`, and its two additive
+`log_allowance` call sites in `candle_stream._rest_fetch` and
+`engine.fetch_candles`). `40d716b`, `be0138c` and `6145779` touch the backtest
+engine only — `bot/live_signal_loop.py` does not import
+`backend.backtesting.engine`, so they are unreachable from the loop, webhook,
+poller or execution path. Everything else is docs.
 
-Clear the drift entry below and re-verify the md5 anchor in the same change.
+**Post-deploy verification — every item a positive observation, none inferred
+from silence:**
 
-## ⚠️ DRIFT AGAIN — image behind by `40d716b` (2026-08-23)
+1. ✅ in-container `/etc/cron.d/trading-bot` md5
+   **`0f1cc206193f5d30341c3db530357b06`**, byte-matching the committed
+   `scripts/crontab`. **This was the one that mattered most**: the collector
+   disable existed in the container only as a `docker cp` (lost on rebuild per
+   Unverified Controls instance 3), and this rebuild is what made it permanent.
+   One active cron line, the 06:10 Stage E job.
+2. ✅ **CHECK 3 PASSED** — 7/7 warm-up pairs `source=IG REST`, zero yfinance
+   fallback, `[ig_allowance]` printing live. See the CHECK 3 result block,
+   including the two things it cost.
+3. ✅ finding 29's rule: `ig_allowance` imports, `bot.live_signal_loop` imports
+   with `STRATEGIES: 34`, and `main` / `webhook.receiver` /
+   `data.positions_poller` all import clean. Run **before and after** the
+   deploy; the pre-deploy baseline was identical, so a post-deploy pass is a
+   comparison rather than an isolated reading. `ig_allowance.py` confirmed
+   present at `/app/ig_allowance.py` — a new module imported by two files in
+   the loop's import graph, whose absence would stop the bot booting.
+4. ✅ stamps unchanged: `parity-v2`.
+5. ✅ `localhost:80` 200, `/health` 200, `/webhook` 405; all three containers up.
+6. ✅ both heartbeats beating after the restart, a full cycle logged, and
+   `signal_log.spread` non-null on every FX symbol. The **shadow spread gate
+   fired for the first time** on the same cycle — see CHECK 2's section.
 
-Recorded immediately rather than discovered later, because this file cleared a
-drift note yesterday and a silently re-opened one is worse than a never-closed
-one.
+**The next deploy has no queue.** Re-verify the crontab md5 anchor above
+whenever one is built; it is the check that catches a rebuild silently
+reverting the collector disable.
 
-| | |
-|---|---|
-| running image | `sha256:42f5585b3e34`, built 2026-08-22 18:07 UTC, contains `591dc3a` |
-| `origin/main` | **`40d716b`** — the two stability-map fixes |
-| undeployed | `40d716b` (engine `run_stability_map`, `models.update_walkforward_extra`, `run_backtest.py`) plus docs |
-
-**Zero runtime impact, and that is checked rather than assumed.**
-`bot/live_signal_loop.py` does not import `backend.backtesting.engine` at all,
-so the changed function is unreachable from the signal loop, webhook, poller or
-execution path. The only changed runtime-reachable file is `database/models.py`,
-and the change is **purely additive** (one new function, plus `import json`).
-
-**Not deployed on purpose** — the Sunday reopen check (CHECK 1 criterion 4) is
-due within hours and the 21:00 rollover gate (CHECK 2) on Monday. A rebuild
-resets the Lightstreamer buffers and burns IG historical-data quota re-warming
-them, which is exactly the wrong thing to do in the hours before two controls
-are supposed to be observed firing for the first time. Deploy after CHECK 2.
-
-⚠️ While the drift stands: `database/models.py` and `scripts/import_stage4.py`
-were `docker cp`'d into the running container on 2026-08-23 to mark the pre-fix
-rehearsal rows superseded. **Those copies are lost on the next rebuild** (see
-Unverified Controls instance 3) — the DB rows they wrote are not. Nothing
-depends on them persisting.
-
-**Clear this entry when the next deploy lands**, and re-verify the crontab md5
-anchor at the same time.
+⚠️ **Do not rebuild before 2026-09-01T04:02 UTC without a reason that
+outweighs the cost.** A restart now re-warms all seven pairs against an
+**exhausted** historical allowance, so every buffer falls back to yfinance —
+for indices, the off-session staleness the 2026-07-15 flip existed to fix. See
+the live-exposure note in the CHECK 3 section.
 
 ## ✅ DEPLOY 2026-08-22 — earlier drift CLEARED
 
@@ -2708,6 +2917,29 @@ wide weekday period there is. A median built then would not be thin, it would
 be **biased low**: the same error as calibrating on the shut book, opposite
 sign, and harder to catch because the number looks plausible.
 
+### ✅ The allowance exhaustion does NOT affect this gate — verified, not assumed
+
+The IG historical allowance is at zero until 2026-09-01T04:02 UTC (see IG
+Historical Allowance). **Friday's coverage check is unaffected**, and this was
+confirmed two ways rather than reasoned about:
+
+- **By code.** `signal_log.spread` comes from
+  `live_signal_loop.py:382` → `candle_stream.get_spread()`, which reads the
+  module-level `_last_spread` buffer. That buffer is written only by
+  `_record_spread`, called from the **Lightstreamer tick handler**
+  (`candle_stream.py:578`) — the same function that upserts the `candle_stream`
+  heartbeat. It is never written by `_rest_fetch`. BID/OFR arrive on the tick
+  stream, which draws no historical allowance.
+- **By observation, which is the part that matters.** In the 8+ hours entirely
+  *after* the allowance hit zero, **381 of 381 `signal_log` rows carry a
+  non-null spread** across all four FX symbols. A code-reading alone would have
+  been the same shape of argument this file repeatedly warns about; the row
+  count is the positive signal.
+
+So the two-week coverage accumulation continues through the dead-allowance
+week. The only thing at risk from the exhaustion is candle **warm-up** on a
+reconnect, not spread sampling.
+
 ### Acceptance criteria — ALL must hold
 
 1. **Every UTC hour 00–23 represented**, and **18:00–22:00 specifically
@@ -2807,6 +3039,29 @@ so the live path keeps a reserve. `scripts/candle_cache/` is **not** a volume
 (`docker-compose.yml` mounts only `./database`) — anything written there dies
 with the image layer.
 
+### 🔴 The live path pays TWICE per restart — gap-backfill duplicates warm-up
+
+*(measured 2026-08-25 on the first restart with the meter live. **Finding 37.
+Scoped there, deliberately NOT fixed** — kept separate from the post-reset
+measurement work.)*
+
+A restart costs **2,800 points, 28% of the weekly allowance** — not the ~1,400
+this file predicted. Fourteen REST calls, not seven: warm-up fetches 200 per
+pair, then gap-backfill immediately re-fetches 200 per pair and leaves the
+buffer at the same 200 candles (`gap backfill AUDUSD/15MIN: buffer now 200`).
+**Zero candles gained, 1,400 points spent, every reconnect.**
+
+**Arguably worse than the collector it sits next to.** The collector wasted
+~98% on a schedule that could be — and was — commented out. This wastes **100%**
+on the **live path**, fires on **every stream reconnect** rather than a cron
+line, and cannot be disabled without touching the candle path. At 2,800 points
+per restart the weekly allowance funds **three**.
+
+Fix options are scoped in finding 37 (prefer: skip the backfill when warm-up
+just ran, *and* size backfills to the measured gap rather than `WARMUP_COUNT`).
+**Verification when built:** a restart shows **seven** `[ig_allowance]` lines
+ending at `remaining=8600`, not fourteen ending at 7,200.
+
 ### The allowance is now logged — `ig_allowance.py`
 
 IG returns `allowance{remainingAllowance, totalAllowance, allowanceExpiry}` on
@@ -2828,15 +3083,57 @@ safe-import contract as `symbols.py` / `engine_version.py` /
 ⚠️ **The reset time is only learnable from a request that SUCCEEDS.** A 403
 carries no allowance block. Nothing will print until the budget resets.
 
-### 🔭 TWO UNKNOWNS — measure after the allowance resets, before planning backfill
+✅ **It worked — the reset time is now known.** The first successful `/prices`
+call after the 2026-08-25 deploy printed
+`resets_at=2026-09-01T04:02:18+00:00 (expiry=604799s)`. That field had been
+arriving on **every** successful response for the life of the system and was
+discarded by both consumers; this is the first time it has ever been read. Every
+plan that depended on the reset date before 2026-08-23 was a guess.
 
-Both were untestable on 2026-08-23: `numpoints=1` on three separate epics was
-refused outright.
+⛔ **Read the line about what a 403 can teach you as EXACTLY that.** It says the
+reset time is absent from a 403. It does **not** say a failed request is free —
+they are attempted and charged, which is how the allowance was destroyed on
+2026-08-25. See finding 38 and the observation-cost rule in Unverified
+Controls.
+
+### ⛔ STATE AS OF 2026-08-25 — allowance EXHAUSTED, resets 2026-09-01T04:02 UTC
+
+| | |
+|---|---|
+| reset time | **2026-09-01T04:02:18+00:00** — read from `resets_at`, first time ever known |
+| window shape | **rolling 7 days from the first request after a reset** (`expiry=604799s`), not a fixed weekly boundary — it MOVES, re-read it |
+| spent on the deploy warm-up | **2,800** of 10,000 (28%) — see finding 37, half of it wasted |
+| spent on the unknowns probe | the remaining **~7,200** — see finding 38, and it measured nothing |
+| remaining | **0** |
+
+### 🔭 TWO UNKNOWNS — STILL UNMEASURED. Probe from the SMALLEST request upward.
+
+Both were untestable on 2026-08-23 (the allowance was at zero) and the
+2026-08-25 attempt to measure them **exhausted the allowance without answering
+either**. They are open until after 2026-09-01T04:02 UTC.
 
 1. **Max `numpoints` per request** on `/prices/{epic}/{resolution}/{numpoints}`.
-2. **How far back `MINUTE_15` reaches per epic.** The whole index-backfill plan
-   (~17,000 points per index symbol for a 10-month walk-forward span, ~51,000
-   for all three ≈ 5 weeks of full allowance) is a **guess** until this exists.
+   Bracketed only as: `100000` and `50000` are *attempted* and return
+   `error.price-history.io-error`. **No accepted value above 200 has ever been
+   measured.**
+2. **How far back `MINUTE_15` reaches per epic.** Entirely unknown. The whole
+   index-backfill plan (~17,000 points per index symbol for a 10-month
+   walk-forward span, ~51,000 for all three ≈ 5 weeks of full allowance) is a
+   **guess** until this exists.
+
+⚠️ **Probe design is now constrained by finding 38.** Do **not** bracket from
+above on the theory that oversized requests are refused for free — they are
+attempted and charged. Correct sequence:
+
+- start with a **one-hour date-range window (four bars)** on one epic;
+- read `allowance.remainingAllowance` off that response — the delta **is** the
+  measured cost;
+- step the look-back date, not the request size, to find the depth limit;
+- escalate `numpoints` only afterwards, one step at a time, re-reading the
+  meter each time.
+
+Budget the whole session before starting: the allowance funds roughly three
+container restarts, and a restart is not optional if the stream drops.
 
 ### Related, recorded not fixed
 

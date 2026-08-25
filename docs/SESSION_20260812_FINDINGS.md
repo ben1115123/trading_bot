@@ -3010,6 +3010,180 @@ before applying anything derived from this table there.
 
 ---
 
+## 37. Warm-up and gap-backfill each spend 200 points per pair — the second one gains nothing
+
+*(added 2026-08-25. Measured on the `715bc18` deploy, from the allowance block
+that finding 35 made visible. Scoped, **not fixed** — deliberately kept
+separate from the post-reset measurement work.)*
+
+The 2026-08-25 04:02 UTC rebuild was the first restart with `[ig_allowance]`
+logging live. It showed the restart cost **2,800 points — 28% of the weekly
+10,000 — not the ~1,400 this file predicted.** Fourteen REST calls, not seven:
+
+```
+[candle_stream] warm-up starting for 7 pairs: [...]
+[ig_allowance] ... AUDUSD/15MIN: remaining=9800 of 10000 (2.0% used)
+[candle_stream] warm-up AUDUSD/15MIN: 200 candles (source=IG REST)
+   ... six more warm-up fetches, remaining 9600 -> 8600 ...
+[candle_stream] subscribed 5MINUTE / HOUR
+[ig_allowance] ... AUDUSD/15MIN: remaining=8400 of 10000 (16.0% used)
+[candle_stream] gap backfill AUDUSD/15MIN: buffer now 200 (source=IG REST)
+   ... six more backfill fetches, remaining 8200 -> 7200 ...
+```
+
+**`buffer now 200` is the finding.** Warm-up produced a 200-candle buffer;
+gap-backfill immediately re-fetched 200 points for every pair and left the
+buffer at 200. **Zero candles gained, 1,400 points spent** — every restart pays
+twice for one buffer.
+
+The mechanism is ordering: warm-up fills the buffer up to the last *complete*
+bar, the Lightstreamer subscription then confirms, and gap-backfill measures the
+distance from the newest buffered candle to now, sees more than one bar's worth,
+and refetches at the full `WARMUP_COUNT` rather than the size of the actual gap.
+
+### Why this is arguably worse than the collector (finding 35)
+
+| | collector | gap-backfill |
+|---|---|---|
+| waste per event | ~98% (50 fetched to gain 1) | **100% (200 fetched to gain 0)** |
+| trigger | a cron line | **every stream reconnect** |
+| can be disabled | yes — and was | **no; it is on the live path** |
+| produced anything? | no | the warm-up it duplicates did |
+
+The collector was a scheduled job that could be commented out. This fires
+whenever the stream reconnects, which is exactly when the system is already
+under stress, and it cannot be turned off without touching the live candle
+path. At 2,800 points per reconnect the weekly allowance funds **three
+restarts**.
+
+### Scope of the fix — NOT BUILT
+
+Any of these would do; the first is smallest:
+
+1. **Skip the backfill when warm-up just ran.** The two are called within
+   seconds of each other on start-up. A flag set by warm-up and cleared after
+   the first subscription confirmation removes the duplicate entirely, and
+   leaves genuine mid-session reconnect backfills untouched.
+2. **Size the backfill to the measured gap**, not `WARMUP_COUNT`. A two-bar gap
+   should cost two points, not 200. This is the general fix and helps every
+   later reconnect too.
+3. **Consult `ig_allowance` before fetching** and skip the backfill under a
+   reserve threshold. Weakest of the three — it rations the waste rather than
+   removing it, and finding 35 deliberately made `log_allowance` report-only so
+   that a logging helper can never stop a warm-up.
+
+Prefer 1 + 2 together. Do **not** implement 3 alone.
+
+**Verification when it is built:** restart and read the `[ig_allowance]` lines.
+Passing looks like **seven** REST calls and `remaining=8600` at the end of
+start-up, not fourteen and 7,200. That observation is only producible by the
+duplicate being gone — and it is now cheap to make, because finding 35 put the
+meter on the response.
+
+---
+
+## 38. "A request that fails is a request that was free" — an unchecked assumption about the COST of an observation
+
+*(added 2026-08-25. Self-inflicted, during the CHECK 3 follow-up. The remaining
+~7,200 points of the weekly allowance were consumed by the probe that was
+supposed to measure it.)*
+
+The two IG unknowns — max `numpoints` per request, and how far back `MINUTE_15`
+reaches per epic — were to be measured promptly after the allowance reset. The
+probe was designed around this reasoning:
+
+> Every value I try is larger than the budget I have left, so a success is
+> impossible. IG must answer either "numpoints too large" or "allowance
+> exceeded". Both are failures, so neither costs anything. The cap gets
+> bracketed for free.
+
+**Every step of that is sound except the last clause, which was never checked.**
+
+What actually came back, descending on `IX.D.SPTRD.IFMM.IP` / `MINUTE_15`:
+
+| request | response |
+|---|---|
+| `numpoints=100000` | `error.price-history.io-error` — **not** a quota error |
+| `numpoints=50000` | `error.price-history.io-error` — **not** a quota error |
+| `numpoints=20000` | `error.public-api.exceeded-account-historical-data-allowance` |
+| `numpoints=10000` | quota exceeded |
+| `numpoints=8000` | quota exceeded |
+| date-range, 1 hour wide (**4 bars**), all three index epics, five look-back dates | quota exceeded, all 15 |
+
+The first two returned an **IO error, not a quota error** — IG attempted to
+serve them. By the third request the allowance was gone, and a request for
+*four bars* was refused. Roughly 7,200 points were consumed by two failed
+requests that returned no data.
+
+### The misread, stated exactly
+
+CLAUDE.md says, in the IG Historical Allowance section:
+
+> ⚠️ **The reset time is only learnable from a request that SUCCEEDS.** A 403
+> carries no allowance block.
+
+That sentence is about **what a 403 can teach you** — the reset time is absent
+from it. It says nothing about what a failed request *costs*. It was read as
+though it did. The line is correct and remains correct; the inference drawn
+from it was an addition, not a reading.
+
+### The general form — it belongs with the observation rules
+
+This is the same family as the marker test, the self-invalidating probe and the
+prospective rule, and it is the axis none of them covered:
+
+| rule | governs |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | do not infer failure from absence either |
+| prospective form | do not create the passing observation yourself |
+| enumerate over assert | do not let the check see only what it predicted |
+| **this one** | **do not assume what an observation COSTS** |
+
+The first four all ask whether an observation carries information. This one asks
+what taking it spends — and a probe that exhausts the resource it was measuring
+has destroyed the measurement, which is the same outcome as a probe that could
+never have observed the passing state.
+
+> **THE RULE:** before running a probe against a metered resource, state what
+> the probe costs if it FAILS, and say how you know. If the answer is an
+> inference rather than a measurement, start from the smallest informative
+> request and read the meter off the first response before escalating.
+
+### What the correct probe looks like
+
+Inverted, and it was available the whole time:
+
+1. Start at the **smallest** informative request — a one-hour date-range window
+   is four bars.
+2. Read `allowance.remainingAllowance` from that response. The delta *is* the
+   cost, measured rather than assumed.
+3. Escalate only while the measured cost per request stays affordable, checking
+   the meter every time.
+
+That sequence answers the depth question for ~4 points per probe and can never
+consume more than the last step spent. The bracketing-from-above design had no
+way to learn its own cost until after it had paid it.
+
+### Consequences
+
+- The allowance is at **zero until 2026-09-01T04:02 UTC**.
+- **Both unknowns remain unmeasured.** Max `numpoints` is bracketed only as
+  "attempted, IO error, at 50,000+"; `MINUTE_15` depth per epic is entirely
+  unknown. The index-backfill sizing estimate stays a guess for another week.
+- **Live trading is unaffected.** Lightstreamer ticks do not draw on the
+  historical allowance; buffers were already warm from the deploy minutes
+  earlier; both heartbeats stayed current and paper signals kept firing.
+- **The exposure is reconnects** — see the entry in CLAUDE.md's IG Historical
+  Allowance section. Bounded to one week, and no action is available.
+
+The probe also created several IG sessions, which invalidated the running
+session and produced one `Session invalid: error.security.client-token-missing`
+in the positions poller. It recovered on the next cycle. That cost is the
+documented probe-import gotcha, separate from the allowance.
+
+---
+
 ## Model-shape defects — a named group. NO CALIBRATION FIXES THESE.
 
 *(named 2026-08-23)*
