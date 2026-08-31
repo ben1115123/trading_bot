@@ -1512,6 +1512,51 @@ A probe that exhausts the resource it was measuring has destroyed the
 measurement — the same end state as a probe that could never have observed the
 passing state, reached by a different route.
 
+### 🔴 CRITERIA AGE AGAINST THE SYSTEM THEY MEASURE — two unsatisfiable criteria now
+
+*(named 2026-08-31, on the second instance. The first was not recognised as an
+instance of anything at the time.)*
+
+**Both instances are the same defect: a criterion written before a control
+existed, then made IMPOSSIBLE TO SATISFY by that control — while still reading
+as a perfectly sensible test.**
+
+| # | criterion | written | made impossible by | how it presented |
+|---|---|---|---|---|
+| 1 | CHECK 1 criterion 4 — FX `signal_log.spread` non-null in the blocked weekend window | before the first real FX weekend | the venue being **shut** on a Saturday: no quote exists to sample, so `get_spread()` correctly returns `None` | "criterion 4 FAILED" — read as the load-bearing sampling order being broken. It was not. Re-scoped to the Sunday reopen, where the venue is open and *we* decline; **passed 111/111** |
+| 2 | Spread-table gate criterion 1 — every UTC hour 00–23 represented after market-open filtering | 2026-08-17, alongside the market-open filter itself | the **21:00 rollover gate** (deployed 2026-08-21, four days later) setting `is_entry_allowed=False` for the whole hour, which is the exact predicate the filter uses | "hour 21 empty on all six symbols" — reads as thin data, i.e. *wait longer*. Waiting can never fix it. Re-scoped to permitted hours only |
+
+**Note the direction of the failure in both cases: the criterion reported a
+problem with the SYSTEM when the problem was with the CRITERION.** Instance 1
+nearly indicted a working control. Instance 2 would have deferred the spread
+table indefinitely on a condition that no amount of accumulation can meet —
+and "wait another two weeks" is a conclusion nobody re-examines, because it
+costs nothing and sounds careful.
+
+> **THE RULE:** a criterion is a claim about the system, written at a moment in
+> time. **When the system changes, RE-READ every dated criterion that touches
+> what changed — do not wait for one to fail.** In particular, when a new
+> control narrows what the system will do, any criterion demanding an
+> observation from inside the newly-excluded region has just become
+> unsatisfiable, and it will not announce that. It will look like a shortfall.
+
+**The practical check, before treating any criterion as failed:** state what
+would have to be true for it to PASS, then confirm the current system permits
+that state at all. This is the self-invalidating-probe rule (*could the probe
+observe success?*) applied one level up, to the **specification** rather than
+the measurement. Same question, different target:
+
+| rule | asks of the... |
+|---|---|
+| self-invalidating probe | **probe** — could it have observed the passing state? |
+| **this one** | **criterion** — can the passing state still occur at all? |
+
+Both instances were caught only because the check enumerated the distribution
+instead of asserting an expected value — the hour histogram showed *which* hour
+was empty, and that it was exactly one, identically on all six symbols. An
+all-hours-present assertion returns `False` and names nothing. See ENUMERATE,
+DON'T ASSERT below; this is its fourth catch.
+
 ### ENUMERATE, DON'T ASSERT — how to write a check that can teach you something
 
 The three rules above govern *whether an observation carries information*. This
@@ -1548,11 +1593,14 @@ An assertion-shaped criterion 4 would have returned "111/111 FX rows non-null,
 PASS" — **completely true, and it would have taught nothing.** The CHECK 2
 error would have survived until Monday or later.
 
-**This is the third time a scheduled check has produced a finding outside its
+**This is the fourth time a scheduled check has produced a finding outside its
 own criteria** (CHECK 1 Saturday: the criterion itself was mis-specified;
-CHECK 1 Sunday: the CHECK 2 ordering error; and finding 33's two verification
-queries wrong in the manufacturing direction). Treat that as the norm, not
-luck.
+CHECK 1 Sunday: the CHECK 2 ordering error; finding 33's two verification
+queries wrong in the manufacturing direction; and 2026-08-31's spread-gate
+hour histogram, which showed hour 21 empty on **all six symbols identically** —
+a shape that says "structural exclusion", not "thin data". An
+all-hours-present assertion would have returned `False` and named nothing).
+Treat that as the norm, not luck.
 
 **Practical form — when writing any dated check:**
 - prefer `GROUP BY` over `WHERE =`. Ask what the column contained, not whether
@@ -2942,11 +2990,40 @@ reconnect, not spread sampling.
 
 ### Acceptance criteria — ALL must hold
 
-1. **Every UTC hour 00–23 represented**, and **18:00–22:00 specifically
-   present**. This is the criterion that failed on 2026-08-17.
+1. **Every hour in which entry is PERMITTED must be represented — that is
+   00:00–20:00 and 22:00–23:00 UTC**, and **18:00–20:00 plus 22:00
+   specifically present**. This is the criterion that failed on 2026-08-17
+   (evening hours genuinely empty), and it is the criterion that was
+   **RE-SCOPED on 2026-08-31** — see below.
+
+   > 🔴 **HOUR 21 IS EXCLUDED BY CONSTRUCTION, NOT BY THIN DATA. Do not wait
+   > for it; it will never arrive.** `get_spread_samples(market_open_only=True)`
+   > filters on `market_hours.is_entry_allowed`, and the 21:00 rollover gate
+   > sets that **False for the whole hour, every day, all instruments**. A
+   > market-open-filtered pool therefore **cannot** contain an hour-21 sample.
+   > Measured 2026-08-31: hour 21 is empty on all six symbols in the filtered
+   > pool, while the **raw** pool holds 53 hour-21 EURUSD samples and
+   > `signal_log` shows every hour-21 row on 08-24→08-27 carrying a non-null
+   > spread (EURUSD 21/21, GBPUSD 8/8, US500 7/7, …). The data was collected;
+   > the filter discards it. Verified directly:
+   > `is_entry_allowed('EURUSD', Wed 21:00) = False`, `20:30` and `22:00` both
+   > `True`.
+
+   **Consequence, stated so nobody later reads it as a gap: the cost model
+   will have NO rollover-hour data, and that is CORRECT.** The model prices
+   trades the bot can actually place, and it never places one in hour 21. This
+   is the same parity argument that chose `is_entry_allowed` over
+   `is_market_open` as the filter in the first place — the constant feeds a
+   cost model for placeable trades, not a description of the market. An
+   hour-21 median would price a trade that cannot exist, and (per CHECK 2's
+   measurement: FX widening 11–19x in that hour) would bias the table **high**
+   exactly the way the shut-book and Sunday-reopen samples do. Those samples
+   are already excluded here for the same reason and by the same predicate.
+
 2. **Every weekday Mon–Fri represented.**
 3. **≥ ~480 samples/symbol** after filtering (~97/day × 5 trading days).
-4. **If any hour is still empty: do NOT build.** Report which hours, and wait.
+4. **If any PERMITTED hour is still empty: do NOT build.** Report which hours,
+   and wait. Hour 21 being empty is not such a case and never will be.
 
 ### Preference: two weeks, not one
 
