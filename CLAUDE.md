@@ -34,9 +34,11 @@ in three weeks**.
 | | chars |
 |---|---|
 | before the split | 204,375 |
-| **CLAUDE.md now** | **140,980** (incl. this section) |
+| **CLAUDE.md now** | **145,553** (incl. this section and the routing rule) |
 | `docs/OPERATIONS_LOG.md` (dated records: CHECK results, deploys, rehearsals) | 58,572 |
 | `docs/INCIDENT_HISTORY.md` (incident write-ups, superseded tables, strategy design notes) | 35,780 |
+
+Routing for anything written from here on: see **ROUTING RULE** below.
 
 Nothing was deleted. **Line-level audit: 2,635 substantive lines from the
 pre-split file, 0 not conserved across the three files.** All 23 sole-copy
@@ -54,37 +56,72 @@ probe strings still resolve.
   above as real but unmeasured — it is a smaller number than before, which is
   not the same as a number known to be under the limit.
 
-### THE WRITE-TIME RULE — the split is a one-off fix for a recurring cause
+## 🧭 ROUTING RULE — WHERE A LINE GOES WHEN IT IS WRITTEN
 
-A periodic cleanup does not fix a file that grows by appending. Route content
-when it is written.
+**This is a ROUTING rule, not a size rule. Read that distinction before acting
+on it.** A size rule says "this file is too long, remove something", and the
+obvious way to satisfy it is to delete. This rule never says delete. It says
+each line has ONE correct home, decided when the line is written, and the file
+stays small as a *consequence* of routing rather than as a goal pursued by
+cutting.
+
+The 2026-09-02 split was a one-off fix for a recurring cause. A file that grows
+by appending is not fixed by a periodic cleanup — the next three weeks add the
+next 45,000 chars. Route at write time.
 
 > **Operational sections carry a CURRENT-STATE head. Dated detail goes to the
-> archive AT WRITE TIME, with its stub written in the same edit — never "later".**
+> archive AT WRITE TIME, with its stub written in the SAME EDIT — never
+> "later".** "Later" is what produced a 204,000-char file.
 
-The test, applied to each block before adding it here:
+### The five categories
 
-| ask | → |
+| what the block is | where it goes |
 |---|---|
-| Will this still be true in a month? | yes → CLAUDE.md |
-| Is it an observation with a date on it? | → archive + stub |
-| Is it a **rule** learned from an incident? | → CLAUDE.md (Unverified Controls) |
-| Is it a **measurement** a future decision reads? | → keep the NUMBER here, archive the run |
-| Does it CORRECT a claim that appears here? | → **stays here, next to the claim** |
+| 1. **Standing fact / current state** — true until something changes it | **CLAUDE.md** |
+| 2. **Dated observation** — a check result, a deploy record, a rehearsal | **archive** + stub |
+| 3. **Rule learned from an incident** — a lesson, not an event | **CLAUDE.md**, Unverified Controls |
+| 4. **MEASUREMENT that a future decision reads** | **the NUMBER stays in CLAUDE.md; the RUN goes to the archive** |
+| 5. **Correction to a claim that appears in CLAUDE.md** | **CLAUDE.md, next to the claim. Never the archive.** |
 
-That last row is not negotiable and is why this is a routing rule rather than a
-size rule: **an archived correction stops contradicting the error it corrects.**
-Move it and the wrong claim walks back in, because nothing at the point of use
-disagrees with it any more.
+**Category 4 is the one most easily mis-routed**, because a measurement looks
+exactly like a dated observation — it has a date, a run, a method. The test is
+what reads it: if a future decision consumes the *number*, the number is
+current state and belongs here; only the *run* is history. The rollover-hour
+and Sunday-reopen spread tables are the live example — they are the sole
+evidence base for the entry policy and the only inputs the spread table will
+ever have for those windows. Routing them as "dated observations" would archive
+the only copy of data a pending decision needs.
 
-**The archive trigger is visible in the text.** When a section grows a
-`### ✅ VERIFIED <date>` block, the verification is done — collapse the section
-to its standing conclusion and move the result block out in the same edit. Four
-of the five largest sections before this split were exactly that shape.
+**Category 5 is NON-NEGOTIABLE and is the reason this is a routing rule.**
+An archived correction stops contradicting the error it corrects. Move it and
+the wrong claim walks back in, because nothing at the point of use disagrees
+with it any more. This file has been wrong about its own roster, its own
+blocklist semantics and its own monitoring coverage; each was fixed by a
+correction sitting next to the claim. **Anyone applying this rule as a size
+rule will archive those first — they read as pure history — and will silently
+undo the fixes.**
+
+### The visible trigger
+
+The rule needs to fire without anyone remembering it, so it has a textual
+signal: **when a section grows a `### ✅ VERIFIED <date>` block, the
+verification is finished.** Collapse the section to its standing conclusion and
+move the result block out **in that same edit**. Four of the five largest
+sections before the split were exactly that shape — verified, complete, and
+still carrying their full working.
+
+### Stubs
 
 **A stub must say where the content went AND why it mattered.** A stub that
 reads as an empty section invites the next reader to conclude nothing was
-there.
+there — which is how a deliberate archive becomes an accidental deletion one
+reader later.
+
+**MOVE, NEVER DELETE.** Every line goes to its destination file *before* the
+source is touched, and the move is verified by grepping the destination for a
+distinctive string from the moved block. Conservation is checkable: a
+line-level diff of substantive lines across all destination files should come
+back at 100%. It did on 2026-09-02 — 2,635 lines, 0 lost.
 
 ## Architecture
 main.py                     FastAPI entry point
@@ -1283,6 +1320,54 @@ observation; this one asks about the **decision rule** built on top of one:
 the meter, issue one request known to be refused, read the meter again. Zero
 delta = refusals free; non-zero = charged. Deferred deliberately — see the
 post-change-1 burn-rate hold below.
+
+### 🔴 SECOND INSTANCE, SAME DAY — and the rule did NOT prevent it
+
+*(2026-09-02, hours after the rule above was written into this file.)*
+
+**The check.** A sole-copy audit, to establish which CLAUDE.md content existed
+nowhere else before the split. Shape:
+
+```
+grep -rlF "<string>" --include='*.md' --include='*.py' . | grep -v CLAUDE.md
+```
+
+Empty output was read as **"sole copy"**.
+
+**Empty output has TWO causes.** The string is in CLAUDE.md and nowhere else —
+or **the string does not exist anywhere, because it was typed wrong.** Both
+print nothing. Same defect as the allowance test: two branches, one
+observation.
+
+**It fired.** 2 of 23 verdicts were mis-transcribed strings, not sole copies —
+`cannot separate the hypotheses` against a heading reading `CANNOT SEPARATE THE
+HYPOTHESES`, and `export_roster.py must run…` against text carrying backticks.
+Both sections existed and were intact. Caught only because the post-split
+re-probe reported them as LOST, which forced a look; had the split actually
+dropped them, the same two lines would have appeared and the *first* probe's
+false verdicts would have been the reason nobody noticed.
+
+**The fix is one extra branch:** assert **presence anywhere** before asserting
+**exclusivity**. The corrected probe prints the hit list, and separately checks
+each string against the pre-split file, so "absent" and "exclusive" can never
+share an output. 23/23 resolved, 0 absent from the baseline.
+
+> **THE PART WORTH KEEPING.** The rule against non-separating tests was written
+> into this file **that morning**, and it did not stop the same error being
+> built into a check **that afternoon** — by the same author, in a check whose
+> whole purpose was rigour. **Knowing a rule does not apply it.** A rule about
+> reasoning only fires if something forces the question at the moment the check
+> is written.
+>
+> So it gets a mechanical form, not just a statement: **for any check whose
+> conclusion rests on an EMPTY result, write down the other ways that result
+> could be empty — before running it.** If the list has more than one entry,
+> the check needs another branch. This is the marker test's "absence is not
+> evidence" turned into a step you perform rather than a principle you hold.
+
+Both instances share a tell worth recognising in the moment: the conclusion was
+attached to the **absence** of something — no charge on the meter, no grep hit.
+Absence is where this failure lives.
 
 **What the read DID establish**, and it is worth more than the question it
 failed to answer: **4,210 points spent in ~18 hours with no container restart**
