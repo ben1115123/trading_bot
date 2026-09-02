@@ -1512,6 +1512,68 @@ A probe that exhausts the resource it was measuring has destroyed the
 measurement — the same end state as a probe that could never have observed the
 passing state, reached by a different route.
 
+### 🔴 A TEST WHOSE BRANCHES CANNOT SEPARATE THE HYPOTHESES — corrected 2026-09-02
+
+*(This one is a correction to a PLAN, recorded as such. The plan was agreed in
+advance, in writing, with a decision table — and it still could not have worked.
+That is what makes it worth a section: it did not look like a guess.)*
+
+**The plan.** Read the IG allowance after the 2026-09-01 reset, and decide
+finding 38's open question from the number:
+
+> if `remaining` comes back at or near 10,000, refusals are not charged and the
+> 102,200-point storm cost nothing. If it comes back low, they are.
+
+**The read:** `remaining=5790`, `total=10000`,
+`resets_at=2026-09-08T07:18:53Z`.
+
+**Neither branch was diagnostic, and neither ever could have been.** The
+allowance is a **rolling 7-day window anchored to the first request after a
+reset** — `expiry=539812s` puts this window's start at ~**2026-09-01T07:18Z**,
+not at the 04:02 the plan assumed. Both events the test was reasoning about —
+the 2026-08-25 probe and the 2026-08-28 disconnect storm — sit in the
+**previous, expired window**. Their charges cannot appear on this meter whether
+refusals are billed or not. A high reading and a low reading are equally
+consistent with both hypotheses.
+
+**The error is specific and is NOT "the number surprised me".** It is that the
+test reasoned about which accounting window *should* apply, instead of reading
+`resets_at` **first** and deriving the window from it. `resets_at` was
+available before the decision rule was written — it had been read on
+2026-08-25 and is in this file. The window shape ("it MOVES, re-read it") is
+recorded here too. The plan used the remembered 04:02 anchor rather than the
+recorded rule about that anchor.
+
+> **THE RULE:** before running a test that decides something, state what EACH
+> branch would mean, then check that the branches are distinguishable **given
+> the system's actual bookkeeping**. If two branches are consistent with the
+> same hypotheses, the test is decorative regardless of how carefully its
+> threshold was chosen.
+
+Where it sits in the family — all five before it ask about a single
+observation; this one asks about the **decision rule** built on top of one:
+
+| rule | asks |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | could the probe observe the passing state? |
+| prospective form | did I create the passing observation myself? |
+| enumerate over assert | can the check see anything it did not predict? |
+| observation cost | what does the observation COST if it fails? |
+| **this one** | **can the branches TELL THE HYPOTHESES APART at all?** |
+
+**Finding 38 stays OPEN.** It is answerable only within a single window: read
+the meter, issue one request known to be refused, read the meter again. Zero
+delta = refusals free; non-zero = charged. Deferred deliberately — see the
+post-change-1 burn-rate hold below.
+
+**What the read DID establish**, and it is worth more than the question it
+failed to answer: **4,210 points spent in ~18 hours with no container restart**
+— roughly 21 gap-backfills at 200 points each. That is finding 37 leaking in
+**ordinary operation**, not under storm conditions. The 2026-08-28 number
+(511 backfills) reads as exceptional and is easy to discount; this one is the
+baseline burn and is not.
+
 ### 🔴 CRITERIA AGE AGAINST THE SYSTEM THEY MEASURE — two unsatisfiable criteria now
 
 *(named 2026-08-31, on the second instance. The first was not recognised as an
@@ -3136,8 +3198,34 @@ per restart the weekly allowance funds **three**.
 
 Fix options are scoped in finding 37 (prefer: skip the backfill when warm-up
 just ran, *and* size backfills to the measured gap rather than `WARMUP_COUNT`).
-**Verification when built:** a restart shows **seven** `[ig_allowance]` lines
-ending at `remaining=8600`, not fourteen ending at 7,200.
+
+**CHANGE 1 SHIPPED 2026-09-02 — the SKIP half only.** `_backfill_gap` now calls
+`_bars_missing()` and returns without issuing a REST request when the buffer is
+already current (`missing <= 1`) or future-dated (`missing < 0`). Unknown
+(`None` — empty buffer, unmapped timeframe, unparseable timestamp) still
+fetches: a redundant backfill costs points, a wrongly-skipped one leaves the
+signal loop on stale candles.
+
+**Sizing a real backfill to the measured gap is NOT in change 1** — that needs
+the minimum accepted `numpoints`, still unmeasured. Skipping needs no such
+measurement because it issues no request at all, which is why the halves
+shipped separately.
+
+**⚠️ The verification predicate as originally written was WRONG — it asserted a
+fixed count.** "Seven lines, `remaining=8600`" bakes in an assumption about how
+many pairs fetch, and a restart where one pair legitimately needs a backfill
+would read as a failure. Enumerate per pair instead:
+
+1. **one `[ig_allowance]` line per pair that actually reached IG** — name them,
+   do not count them;
+2. **a skip line naming its reason for every pair that did NOT fetch** —
+   `skipped, no REST request — buffer current ...`. A pair that is silent in
+   both lists is the interesting case: it means neither branch ran.
+3. **remaining delta == 200 x (number of pairs that fetched)**, computed from
+   the enumeration in (1), *not* compared against a constant.
+
+Expected on a clean restart: ~**1,400** for warm-up, ~**0** for backfill,
+against 2,800 before.
 
 ### The allowance is now logged — `ig_allowance.py`
 
@@ -3173,7 +3261,33 @@ they are attempted and charged, which is how the allowance was destroyed on
 2026-08-25. See finding 38 and the observation-cost rule in Unverified
 Controls.
 
-### ⛔ STATE AS OF 2026-08-25 — allowance EXHAUSTED, resets 2026-09-01T04:02 UTC
+### ✅ STATE AS OF 2026-09-02 — allowance RESET, 5,790 remaining, resets 2026-09-08T07:18 UTC
+
+Measured with **one** request (EURUSD `MINUTE_15`, `numpoints=10`, 10 bars
+returned), 2026-09-02 01:2x UTC:
+
+| | |
+|---|---|
+| remaining | **5,790** of 10,000 (42.1% used) |
+| reset time | **2026-09-08T07:18:53+00:00** (`expiry=539812s`) |
+| window start | ~**2026-09-01T07:18 UTC** — the anchor MOVED from 04:02, exactly as the window shape predicts. Do not carry a remembered anchor forward; re-read `resets_at`. |
+| spent this window | **4,210 in ~18 hours, with NO container restart** — ~21 gap-backfills at 200 points each. Finding 37 leaking in ordinary operation. |
+
+⚠️ **Two probe attempts before this one cost ZERO** — both died client-side, no
+HTTP left the box: `return_dataframe` is a **constructor** argument to
+`IGService`, not a call argument to
+`fetch_historical_prices_by_epic_and_num_points`, and without it `trading_ig`
+runs `conv_resol()` and chokes parsing `MINUTE_15` as a pandas frequency
+string. Third time this has bitten a probe. Mirror `_rest_fetch`'s construction
+(`IGService(..., acc_type=..., return_dataframe=False)`), always.
+
+⚠️ Creating a session in a probe **invalidates the `positions_poller` token**.
+Known, accepted, still real — probe sparingly.
+
+*(The exhausted-allowance block below is retained as the state it describes,
+which is what the 2026-09-01 reset ended.)*
+
+### ⛔ STATE AS OF 2026-08-25 — allowance EXHAUSTED, resets 2026-09-01T04:02 UTC (SUPERSEDED)
 
 | | |
 |---|---|

@@ -64,10 +64,20 @@ _REST_RESOLUTION = {"15MIN": "MINUTE_15", "HOUR": "HOUR"}
 # CHART:{epic}:{scale} — only these 4 scales exist server-side
 _LS_SCALE_FOR_TIMEFRAME = {"HOUR": "HOUR", "15MIN": "5MINUTE"}  # 15MIN is aggregated
 
-WARMUP_COUNT = 200   # 4x the longest active lookback (ema_pullback ema_slow=50) —
-                     # cheap since it's a one-shot REST call, cost only matters
-                     # pre-dedup and this runs once at startup / per reconnect gap
+WARMUP_COUNT = 200   # 4x the longest active lookback (ema_pullback ema_slow=50).
+                     # NOT cheap: this is points off the shared 10,000/week IG
+                     # historical allowance, and the "runs once per reconnect
+                     # gap" assumption in the old comment here was false —
+                     # _backfill_gap ran unconditionally on every reconnect and
+                     # re-requested all 200 whether or not anything was missing
+                     # (finding 37). It is now the CEILING for a backfill, not
+                     # its fixed size; see _bars_missing.
 MAX_BUFFER = 500
+
+# Bar length per timeframe, for measuring how far behind a buffer is. Keys must
+# stay in step with _REST_RESOLUTION — a timeframe absent here is treated as
+# "gap unknown", which means fetch.
+_TIMEFRAME_SECONDS = {"15MIN": 900, "HOUR": 3600}
 
 # Quota-fallback Telegram dedup: same anti-spam pattern as scripts/watchdog.py's
 # state file, keyed per condition-type (warm-up vs gap-backfill) since they're
@@ -426,6 +436,56 @@ def _warm_up(ig_service: IGService, pairs: list) -> None:
             "fell back to yfinance for one or more pairs", level="WARN")
 
 
+def _bars_missing(symbol: str, timeframe: str) -> int | None:
+    """How many COMPLETE bars the buffer is behind, measured on bar-START
+    boundaries rather than raw elapsed time.
+
+    The boundary arithmetic is load-bearing, not tidiness. The HOUR buffer
+    carries an in-progress `_forming` bar whose `time` is the TICK time, not
+    the bar start, so a raw now-minus-newest delta understates the gap: a
+    10:05 disconnect reconnecting at 12:00 measures 115 minutes = 1.9 bars and
+    would skip, while the 11:00 bar is genuinely missing. Bucketing both ends
+    first gives 2 and fetches.
+
+    Return value:
+      0 or 1 -> nothing COMPLETE is missing. 1 is the ordinary steady state
+                (newest buffered bar is the previous bucket, the current one is
+                still forming); 0 means the buffer already holds the in-progress
+                bucket, which is exactly what `_forming` is.
+      >= 2   -> at least one complete bar is missing. Fetch.
+      < 0    -> newest candle is stamped in the future (clock skew, or a bad
+                timezone conversion of the kind fixed on 2026-07-15/16). Same
+                posture as the other future-dated guards: do not trust it, and
+                do not spend allowance chasing it.
+      None   -> the answer is UNKNOWN (empty buffer, unmapped timeframe,
+                unparseable timestamp). None means FETCH.
+
+    On uncertainty this fetches rather than skips, and the asymmetry is
+    deliberate: a redundant backfill costs points, a wrongly-skipped one leaves
+    the buffer short and the signal loop reading stale candles. Note in
+    particular that `_normalize_rest_time` falls back to returning its raw
+    input on a parse failure, so a non-ISO string can legitimately reach here —
+    it must not silently blind backfill forever.
+    """
+    tf_sec = _TIMEFRAME_SECONDS.get(timeframe)
+    if not tf_sec:
+        return None
+    with _lock:
+        buf = _buffers.get((symbol, timeframe)) or []
+        newest = buf[-1].get("time") if buf else None
+    if not newest:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(newest))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    last_bucket = int(dt.timestamp()) // tf_sec
+    now_bucket = int(datetime.now(timezone.utc).timestamp()) // tf_sec
+    return now_bucket - last_bucket
+
+
 def _backfill_gap(ig_service: IGService, symbol: str, timeframe: str) -> bool:
     """After reconnect: REST already returns IG-server-aggregated 15MIN bars
     directly (MINUTE_15 is a real REST resolution even though it isn't a
@@ -433,7 +493,34 @@ def _backfill_gap(ig_service: IGService, symbol: str, timeframe: str) -> bool:
     — it fills the buffer with genuine complete candles regardless of
     timeframe. Bounded to WARMUP_COUNT so a long outage doesn't over-fetch.
     Returns True if the yfinance quota fallback engaged, for the caller to
-    dedupe its Telegram alert to one per reconnect cycle."""
+    dedupe its Telegram alert to one per reconnect cycle.
+
+    Skips entirely when the buffer is already current (finding 37). It had an
+    upper bound and no lower one: it ran for every pair on every reconnect and
+    always requested the WARMUP_COUNT ceiling, so the first supervisor pass —
+    seconds after _warm_up had filled the same buffers — re-fetched 200 points
+    per pair, deduped all of them away on `seen_times`, and logged
+    "buffer now 200". 1,400 points off a 10,000/week allowance for zero
+    candles, on every restart. The 2026-08-28 disconnect storm made the same
+    defect worse by two orders of magnitude: 511 backfills at 200 points each,
+    ~10x the weekly budget attempted, almost all against buffers a reconnect
+    seconds earlier had left current.
+
+    This only skips redundant fetches. It does NOT size a real backfill to the
+    measured gap — that needs the minimum accepted `numpoints`, which has never
+    been measured (the 2026-08-25 probe exhausted the allowance without
+    answering it). Skipping needs no such measurement because it issues no
+    request at all, which is why the two changes shipped separately."""
+    missing = _bars_missing(symbol, timeframe)
+    if missing is not None and missing <= 1:
+        reason = ("newest candle is future-dated — not trusted, and not worth "
+                  "allowance to chase" if missing < 0
+                  else f"buffer current — newest bar is {missing} bucket(s) back, "
+                       f"nothing complete is missing")
+        print(f"[candle_stream] gap backfill {symbol}/{timeframe}: "
+              f"skipped, no REST request — {reason}")
+        return False
+
     source = "IG REST"
     fallback_used = False
     try:
