@@ -25,6 +25,67 @@ Consequences that apply to this whole file:
   reproduction** — for walk-forward there is no persisted artifact to diff
   against (finding 7).
 
+## ⚠️ SIZE — this file is split, and the limit is NOT known
+
+**Split 2026-09-02.** This file had reached **204,375 chars** because every
+dated check, deploy, rehearsal and finding appended to it — roughly **+45,000
+in three weeks**.
+
+| | chars |
+|---|---|
+| before the split | 204,375 |
+| **CLAUDE.md now** | **140,980** (incl. this section) |
+| `docs/OPERATIONS_LOG.md` (dated records: CHECK results, deploys, rehearsals) | 58,572 |
+| `docs/INCIDENT_HISTORY.md` (incident write-ups, superseded tables, strategy design notes) | 35,780 |
+
+Nothing was deleted. **Line-level audit: 2,635 substantive lines from the
+pre-split file, 0 not conserved across the three files.** All 23 sole-copy
+probe strings still resolve.
+
+### What is actually known about the limit — say this, do not round it off
+
+- ✅ **The file arrived INTACT at 195,382 chars on 2026-09-02.** Verified, not
+  assumed: the final line of the file was present in context, as were landmarks
+  at offsets 27 / 17k / 87k / 140k / 182k / 194k. No truncation from either end,
+  no mid-file hole.
+- ❌ **Where the cliff is remains UNKNOWN.** The ingestion limit cannot be read
+  from inside a session. "Intact at 195k today" is not "safe at 250k tomorrow".
+- **This needs checking outside a session.** Until it is, treat the headroom
+  above as real but unmeasured — it is a smaller number than before, which is
+  not the same as a number known to be under the limit.
+
+### THE WRITE-TIME RULE — the split is a one-off fix for a recurring cause
+
+A periodic cleanup does not fix a file that grows by appending. Route content
+when it is written.
+
+> **Operational sections carry a CURRENT-STATE head. Dated detail goes to the
+> archive AT WRITE TIME, with its stub written in the same edit — never "later".**
+
+The test, applied to each block before adding it here:
+
+| ask | → |
+|---|---|
+| Will this still be true in a month? | yes → CLAUDE.md |
+| Is it an observation with a date on it? | → archive + stub |
+| Is it a **rule** learned from an incident? | → CLAUDE.md (Unverified Controls) |
+| Is it a **measurement** a future decision reads? | → keep the NUMBER here, archive the run |
+| Does it CORRECT a claim that appears here? | → **stays here, next to the claim** |
+
+That last row is not negotiable and is why this is a routing rule rather than a
+size rule: **an archived correction stops contradicting the error it corrects.**
+Move it and the wrong claim walks back in, because nothing at the point of use
+disagrees with it any more.
+
+**The archive trigger is visible in the text.** When a section grows a
+`### ✅ VERIFIED <date>` block, the verification is done — collapse the section
+to its standing conclusion and move the result block out in the same edit. Four
+of the five largest sections before this split were exactly that shape.
+
+**A stub must say where the content went AND why it mattered.** A stub that
+reads as an empty section invites the next reader to conclude nothing was
+there.
+
 ## Architecture
 main.py                     FastAPI entry point
 webhook/receiver.py         POST /webhook — alert parser
@@ -371,49 +432,23 @@ environment. Both now use the DEMO-specific vars.
 > exactly this reason. The description below is the state as of 2026-07-08 and
 > is retained as history.
 
-CS.D.EURUSD.MINI.IP quoted in native **points scale** (e.g. bid=11423.3)
-on the DEMO account (Z67Y2C), not decimal FX price (1.14233) like every
-other FX epic and like this same epic on the LIVE account (TW75S).
-Discovered via 3x ATTACHED_ORDER_LEVEL_ERROR rejections on EURUSD SELL
-(2026-07-08): entry_price came back native-scale from IG while SL/TP
-(webhook, always decimal) went out unconverted — stop_level ended up
-~10000x off market. Same mismatch silently corrupted candle_stream.py's
-yfinance-vs-stream comparison logging (~1e8 "pip" deltas) — and that
-comparison table later caught a recurrence in real time
-(`2026-07-21T19:20:32`, `delta_pips = -114,008,596`) that **nobody read for
-28 days**, because `candle_source_compare` has no consumer. See findings doc
-findings 25 and 27.
+**The 2026-07-08 diagnosis, the epic-by-epic evidence and the boundary
+conversion site list → `docs/INCIDENT_HISTORY.md`.**
 
-`ig_scale.py` is the fix: classifies each symbol's native scale
-**empirically** — compares the live bid against a known decimal-price
-band per symbol — and caches it. Do NOT trust IG's `scalingFactor`
-snapshot field: GBPUSD/AUDUSD carry `scalingFactor=10000` despite
-already being decimal, while EURUSD (the one epic that actually needed
-/10000 on this account) carries `scalingFactor=1`. That field does not
-reliably predict which epics need conversion — this was empirically
-disproven while diagnosing the bug, not assumed.
-
-Confirmed epic scale differs by ACCOUNT, not just by epic — EURUSD was
-decimal on LIVE (TW75S) before the 2026-07-08 switch (every EURUSD
-trade in `trades` table pre-dating the switch has decimal entry_price)
-and became points-scale only after switching to DEMO (Z67Y2C). Re-run
-`init_price_scales(ig_service, EPIC_CONFIG_map, force=True)` after ANY
-session recreate or account switch — never assume scale carries over.
-
-Ambiguous readings (fit neither the decimal nor the x10000 band for
-that symbol) never guess — they raise, send a Telegram ERROR alert, and
-block that symbol from trading (`ig_scale.is_resolved(symbol)` returns
-False) until a human resolves it.
-
-All IG price reads/writes route through `ig_scale.to_decimal()` /
-`ig_scale.to_native()` at the boundary: `execute_trade.py` (entry_price,
-stop_level/limit_level sent to `create_open_position`, risk sizing),
-`positions_poller.py` (open_price/bid/offer/close_price, P&L calc),
-`candle_stream.py` (REST warm-up OHLC, live stream mid-OHLC — internal
-buffers are decimal so the compare-vs-yfinance logging is apples-to-
-apples), `sync_ig_trades.py` (openLevel/closeLevel from transaction
-history). Everything else in the codebase (SL/TP math, DB storage,
-dashboards, webhooks) stays decimal, unchanged.
+**Standing rules that survive the layer being inert:**
+- **Do NOT trust IG's `scalingFactor` snapshot field.** GBPUSD/AUDUSD carry
+  `scalingFactor=10000` despite already being decimal; EURUSD — the one epic
+  that needed /10000 — carried `scalingFactor=1`. Empirically disproven, not
+  assumed.
+- **Scale differs by ACCOUNT, not just by epic.** Re-run
+  `init_price_scales(..., force=True)` after ANY session recreate or account
+  switch. Never assume scale carries over.
+- **Ambiguous readings never guess** — they raise, alert, and block that symbol
+  from trading until a human resolves it.
+- All IG price reads/writes route through `to_decimal()`/`to_native()` at the
+  boundary; everything else in the codebase stays decimal.
+- ⚠️ **The paper-trade path has NO `ig_scale` conversion at all.** That is the
+  structural root of the id=824 corruption — see the bb_squeeze correction.
 
 ### Deal currency quirk — ig_scale.get_currency_code() (fixed 2026-07-25)
 Third per-instrument-assumption bug (after `scalingFactor` above and the
@@ -760,96 +795,27 @@ deleted. Re-apply the scaling plan above when reverting to LIVE.
 | AUDUSD | $10        | Demo — no bankroll to protect. Phase-3 lead candidate (2026-07-15); real sizing per the ruin table below at Phase 5 |
 | All    | $10        | Default                       |
 
-### Phase-5 Sizing Reference — Monte Carlo Risk-of-Ruin (2026-07-15)
-Bootstrap MC (5000 paths, shared resampled paths across configs, ~~seed=42~~)
-on williams_r AUDUSD 15MIN (period=14/oversold=-85/overbought=-20, the
-promoted plateau-center params), $500 account:
+### Phase-5 Sizing Reference — Monte Carlo Risk-of-Ruin
+**Both the 2026-07-15 pre-parity table and its 2026-08-23 regeneration →
+`docs/INCIDENT_HISTORY.md`.** The old rows are retained there, not deleted —
+they are what the promotion decisions actually saw.
 
-> ⛔ **`seed=42` HERE IS FALSE AND WAS FALSE WHEN WRITTEN.** `run_backtest.py`
-> never passed a seed to `bootstrap_mc` — the parameter defaulted to `None` and
-> the run was seeded from OS entropy. This line described a parameter the code
-> never received, for four weeks. **The numbers below are therefore not
-> reproducible and never were**, independently of every other problem with them.
-> Finding 32; sixth instance of documentation asserting a property the code does
-> not implement. Struck through rather than deleted — the false claim is the
-> finding.
+**The headline, which is the only thing anyone should carry:**
 
-
-
-| Risk/trade | Risk-of-ruin | Risk/trade | Risk-of-ruin |
-|-----------|--------------|-----------|--------------|
-| $2        | 0.00%        | $5        | 5.58%        |
-| $3        | 0.18%        | $5.50     | 9.56%        |
-| $4        | 1.52%        | $6        | 15.24%       |
-| $4.75     | 4.54%        | $7.50     | 37.44%       |
-
-**Headline: 1% risk-of-account ≈ 5.6% ruin probability** ($5/$500 or
-equivalently $10/$1000 — confirmed identical by the model, since ruin
-depends only on risk-as-fraction-of-account). Largest size under 10%
-ruin: $5.50/$500 (9.56%). Largest under 5%: $4.75/$500 (4.54%). Full
-sweep (16 configs incl. $10 risk on $1000/$2000/$5000 accounts) persisted
-in `walkforward_runs` (run_type='monte_carlo') — **local DB only, zero rows
-on the VPS.**
-
-**⚠️ This table does not describe the account the bot is running on.** The
-demo account Z67Y2C balance is **$19,542.89** (verified 2026-08-15), not $500.
-At $10/trade that is 0.05% of account — off the bottom of the table, where
-ruin is effectively nil. Two consequences:
-
-1. The demo account **cannot produce a ruin event**, so demo survival is not
-   evidence that any sizing is safe. Nothing about the ladder is being tested
-   by current operation.
-2. The `$100 → $200 → $500` rebuild ladder in Account Rebuild Mode refers to
-   a **live** account that is not currently funded or trading. The ladder and
-   this ruin table are both Phase-5 planning artifacts for a future live
-   return — neither governs anything running today.
-
-Also inherited: the ruin table was computed from `williams_r` AUDUSD trades
-generated by the **pre-parity engine** (no take-profit modelled, $15 sizing).
-Its distribution is the flawed model's, so the percentages must be regenerated
-after the engine fix before they gate any live sizing decision.
-
-### 🔴 REGENERATED 2026-08-23 — the old figures were optimistic by MORE THAN AN ORDER OF MAGNITUDE
-
-The regeneration flagged above now has its first data point, from the Stage 4
-dress rehearsal (same strategy, same symbol, roster params, `parity-v2`):
-
-| | pre-parity table above | **parity-v2, measured 2026-08-23** |
+| | pre-parity table (2026-07-15) | **parity-v2, measured 2026-08-23** |
 |---|---|---|
 | risk of ruin at $10 on $500 | **5.58%** | **67.3% – 84.3%** |
 
-Range because the MC ran on the top-5 plateau cells, not one:
+**Every promotion decision that cited that table cited a number more than an
+order of magnitude wrong.** The best parity-v2 cell is worse than the old
+table's worst listed configuration. **Nothing may size off the pre-parity
+rows.** The regenerated figures are `seed=42`, reproducible, stored on the row.
 
-| params (williams_r AUDUSD 15MIN) | risk of ruin |
-|---|---|
-| `period=21, oversold=-85, overbought=-15` | 67.3% |
-| `period=21, oversold=-85, overbought=-10` | 70.6% |
-| `period=12, oversold=-95, overbought=-20` | 74.1% |
-| `period=14, oversold=-95, overbought=-20` | 80.0% |
-| `period=21, oversold=-80, overbought=-10` | 84.3% |
-
-**Every value is more than 10x the number in the table above**, and the best of
-them is worse than that table's worst listed configuration ($7.50 → 37.44%).
-
-✅ **REPRODUCIBLE — `seed=42`, stored on every row** (`extra_json.seed`,
-`reproducible: true`), regenerated 2026-08-23T04:42Z under the seed contract
-from finding 32. Re-run `--stability-map --monte-carlo --seed 42` on
-`AUDUSD_15MIN_AV.json` with roster params for these exact figures.
-
-The **unseeded** originals (66.8 / 71.4 / 74.9 / 77.5 / 85.1) are retained in
-`walkforward_runs` marked `superseded_by` + `unseeded: true` rather than
-deleted — the drift between them and the seeded run is the measurement that
-established finding 32.
-
-**Consequence, stated plainly: every promotion decision that cited this table
-cited a number an order of magnitude wrong.** The table said 1% risk-of-account
-was a 5.6% ruin probability; the current engine says two thirds to five sixths.
-The pre-parity rows above are retained as history — do NOT delete them, they are
-what those decisions actually saw — but **nothing may size off them.**
-
-This is one strategy on one symbol. The full sweep (16 configs across
-$1000/$2000/$5000 accounts) has NOT been regenerated, and the local-only
-`walkforward_runs` MC rows behind it are all `pre-parity-v0`.
+⚠️ **Neither table describes the account the bot runs on.** Demo Z67Y2C holds
+~$19,542, so $10/trade is 0.05% — off the bottom of the table, ruin effectively
+nil. **The demo cannot produce a ruin event, so demo survival is not evidence
+that any sizing is safe.** Both tables are Phase-5 artifacts for a future live
+return; neither governs anything running today.
 
 ### Paper Trade Risk Override (added 2026-06-12)
 Paper trades always use $10 risk regardless of symbol (RISK_PER_TRADE
@@ -956,256 +922,84 @@ Weekend close: auto-closes US500/US100/DAX at 20:40 UTC Friday
   see IG Historical Allowance.
 
 ### CANDLE_SOURCE flip: yfinance → ig_stream (2026-07-15)
-Live signal-loop candle source flipped from yfinance to ig_stream in
-.env (all symbols). Justified by candle_source_compare data (2,845
-cycles, 2026-07-08→07-15):
-- Indices (US500/US100, 15MIN+HOUR): yfinance genuinely stale
-  off-session — median real lag 6.5–11.5h vs stream, HOUR timeframe
-  0% timestamp agreement ever. Matches the mechanism behind a lost
-  MINIMUM_ORDER_SIZE_ERROR incident (raw logs unrecoverable — container
-  recreate wiped them before they could be pulled; see min-deal-size
-  guard below, added independently of that incident's specific detail).
-- FX (AUDUSD/EURUSD/GBPUSD, 15MIN): deltas real but small (median
-  0.4–3.9 pips), disagreement direction ambiguous-to-opposite (stream
-  sometimes the lagging side, median ≈ −900s in mismatches) — flipped
-  anyway per explicit instruction (stream "strictly better"), holds
-  the comparison-logger open one more week to confirm.
+`.env` `CANDLE_SOURCE=ig_stream`, all symbols. Justified by 2,845 cycles of
+`candle_source_compare`: **indices genuinely stale off-session** on yfinance
+(median real lag 6.5–11.5h, HOUR timeframe 0% timestamp agreement ever); FX
+deltas real but small and ambiguous in direction, flipped anyway per explicit
+instruction.
 
-**Post-flip incidents caught same-day, all patched**:
-1. Index buffers (US500/US100) appeared frozen 6+ hours while REST
-   snapshot showed the market actively TRADEABLE and moving. ROOT CAUSE
-   FOUND (2026-07-15, same day): IG's REST historical `snapshotTime` is
-   in the account's configured timezone (confirmed via session
-   `timezoneOffset`, = 8 for this account/MYT), NOT UTC —
-   `_normalize_rest_time` was labeling it UTC without converting,
-   producing candles stamped hours into the future. Live Lightstreamer
-   ticks (`_update_hour_buffer`, `_feed_15min_aggregator`) were never
-   affected — both already used proper epoch UTC math. HOUR buffers
-   self-healed within minutes via live ticks overwriting the in-progress
-   entry; 15MIN buffers only refresh once a full 3-bar aggregation
-   completes (up to 15min), so the mislabeled REST value stayed visible
-   far longer there — which is why HOUR looked fine and 15MIN didn't at
-   the same moment, and plausibly why the original freeze read as
-   "stuck in the past" rather than obviously wrong: REST-vs-live merge/
-   sort interactions plus simultaneous IG quota exhaustion (forcing a
-   yfinance fallback that was itself genuinely off-session-stale)
-   compounded into what looked like one bug but was likely two
-   overlapping ones. Fixed: capture `timezoneOffset` from the session
-   response (initial warm-up + every reconnect), subtract it before
-   labeling UTC. Verified via a new diagnostic-only endpoint
-   (`GET /debug/candles/{symbol}/{timeframe}`, `bot/candle_stream.py`
-   `debug_buffer_tail()`) — post-fix buffer dump for both US500 and
-   US100, both timeframes, shows a fully contiguous, correctly-timestamped
-   sequence up to the current moment. Lightstreamer subscription
-   diagnosis (originally planned as the next step if the freeze
-   persisted) was skipped — the freeze did not survive the timestamp fix.
-2. Comparison logger (`_log_candle_comparison`) was only ever called
-   from the yfinance-primary branch — flipping silently killed the
-   exact dataset needed for post-flip verification. Now also called
-   from the ig_stream branch (inverted: stream primary, yfinance
-   reference), kept running for the one-week confirmation window.
+**Full record — the two same-day post-flip incidents, their root causes, and
+the staleness guard → `docs/INCIDENT_HISTORY.md`.** Two things from it recur
+and are why the record is kept:
 
-**Mitigation deployed (defense in depth, kept even after the root-cause
-fix)**: stream-staleness guard in `_check_symbol`
-(`bot/live_signal_loop.py`) — if the stream's latest candle is older
-than 3x the timeframe, or timestamped in the future (negative age,
-hardened 2026-07-15 after the future-dated candle sailed through the
-first version of this guard): FX falls back to yfinance for that fetch
-(rate-limited Telegram WARN, once/6h/symbol); indices skip the check
-entirely with no yfinance fallback (off-session yfinance staleness is
-the exact failure this flip was meant to fix, so an untrusted-stale
-source is worse than skipping).
+- **The REST `snapshotTime` bug**: IG returns it in the **account's** timezone
+  (MYT+8 here), not UTC. Third instance of the class — *any timestamp from an
+  external source may be localized regardless of what the field name implies;
+  force-convert, never relabel*. Also hit `_normalize_yf_time` (yfinance
+  intraday is exchange-local, BST in summer — a seasonal bug invisible in GMT
+  months).
+- **The comparison logger was only called from the yfinance-primary branch**,
+  so flipping silently killed the exact dataset needed to verify the flip.
+
+**Live guard still in force** (`_check_symbol`): if the stream's latest candle
+is older than 3x the timeframe **or timestamped in the future**, FX falls back
+to yfinance (WARN, once/6h/symbol); **indices skip the check with no fallback**
+— off-session yfinance staleness is the failure this flip existed to fix, so an
+untrusted-stale source is worse than skipping.
 
 ### Post-flip Tier 1 maintenance (2026-07-16)
+Quota-fallback Telegram dedup (once/6h per condition-type, state file
+`/tmp/candle_stream_fallback_state.json`; logs stay unconditional, only
+`send_telegram` gates), and the `_normalize_yf_time` timezone fix. Full account
+→ `docs/INCIDENT_HISTORY.md`.
 
-**Quota-fallback Telegram dedup (deployed)**: the "IG historical-data
-quota exceeded — fell back to yfinance" WARN fired on every warm-up AND
-every gap-backfill during an exhausted-quota window, several times/hour.
-Now deduped to once/6h per condition-type (`warmup` vs `backfill`),
-state file `/tmp/candle_stream_fallback_state.json` (same anti-spam
-pattern as `scripts/watchdog.py`'s state file). Logs (`print`) stay
-unconditional — only `send_telegram` gates on the cooldown, so analysis
-still sees every occurrence. Verified live: a real quota exhaustion hit
-5 pairs in one warm-up pass, all 5 logged, only 1 Telegram alert fired.
+**The SL DRIFT investigation's conclusion is the part that matters and it was a
+NEGATIVE result:** post-flip drift looked 2–3x worse and **was not a
+regression**. Two structural, pre-existing causes — (a) 25–55 min
+decision-to-execution lag from `candles[-2]` dedup plus `_is_due` cadence, and
+(b) a **measurement artifact**: stream candle close is mid, live execution
+fills at offer/bid, so every reanchor comparison injects ~half-spread of
+phantom drift. Do not re-open this as a stream bug.
 
-**yfinance-fallback timezone bug (found + fixed)** — third occurrence of
-this bug class (Phase 2B positions_poller timezone fix → 2026-07-15 REST
-`snapshotTime` account-local/MYT+8 fix → this one). Recurring pattern:
-**any timestamp handed to us by an external data source may be
-localized, not UTC, regardless of what it looks like or what the field
-name implies — force-convert, never assume.** This time: `_normalize_yf_time`
-only stamped `tzinfo=utc` when the source was naive, so it silently kept
-yfinance's real offset when tz-aware — yfinance intraday data returns
-exchange-local time (Europe/London, BST=+01:00 in summer), not UTC as
-the old docstring assumed. Found live via mixed +00:00/+01:00 timestamps
-in the GBPUSD buffer after a quota fallback (seasonal bug — invisible
-in GMT months, live now in BST). Fixed: `_normalize_yf_time` now
-converts tz-aware timestamps via `astimezone(timezone.utc)` instead of
-relabeling, and rejects (drops, logs) any candle landing in the future
-after conversion — same future-dated guard as the REST fix. Verified
-post-deploy: GBPUSD buffer after a live fallback event showed uniform
-`+00:00` offsets, correctly ordered, zero rejections needed.
-
-**Drift investigation conclusion — NOT a regression, migration is
-sound.** SL DRIFT reanchor adjustments looked ~2-3x larger post-flip
-than the pre-flip baseline (GBPUSD mean 1.71→3.92 pips, EURUSD
-1.16→3.35 pips), which read as the migration having made things worse.
-Investigated per-event (11 post-flip reanchors, full log context) and
-found two structural, pre-existing causes, not a stream bug:
-  (a) **Decision-to-execution lag, 25-55min** — `candles[-2]` dedup +
-      per-symbol `_is_due()` cadence means the candle price used for
-      SL/TP math can be 25-55min stale by the time the trade actually
-      executes. Confirmed on all 11 events (e.g. the GBPUSD 12.1-pip
-      outlier: ~40min gap, ordinary London/NY-session movement, not a
-      bad tick). This mechanism is unchanged by the candle-source flip.
-  (b) **Mid-vs-dealing-price comparison artifact** — the stream candle
-      close is `(BID_CLOSE+OFR_CLOSE)/2` (mid, `_mid_ohlc` in
-      `bot/candle_stream.py`), but live execution fills at
-      `offer`/`bid` (dealing price, `execute_trade.py`). Every reanchor
-      comparison injects ~half-spread of phantom "drift" that isn't
-      real slippage — matches EURUSD's numbers almost exactly
-      (`NORMAL_SPREADS` 0.0008 → half-spread 4 pips ≈ observed mean
-      3.35). Sign of the drift correlated with trade direction in 8/11
-      events (spread-driven, as expected); the other 3 were real
-      market movement over the lag window big enough to flip the sign
-      — ordinary noise, not a bug. Does NOT explain index drift (US500
-      half-spread is only 0.3pt vs 6.18pt observed mean) — that's (a).
-
-**One item left OPEN, one DEPLOYED:**
-- **Change 1 (SL DRIFT alert threshold, 3 pips FX / 1.5pt index) —
-  DEPLOYED 2026-07-22.** Un-held: the drift investigation above concluded
-  the post-flip increase was the mid-vs-dealing measurement artifact, not
-  a regression — the reason to keep watching at 0.5-pip resolution had
-  passed. Un-holding forced by a live incident the same day: 0.5-pip
-  yellow-alert spam buried a real daily-loss-limit red alert for 8 hours.
-  `_ALERT_THRESHOLD` in `bot/execute_trade.py`; console `[SL DRIFT]` log
-  stays unconditional (still full-resolution for diagnostics), only the
-  Telegram send gates on the new threshold. Floor-breach branch (webhook
-  path) left unconditional — not the noise source, out of scope.
-- **Mid-vs-dealing-price comparison fix — still DEFERRED.** Cosmetic/
-  measurement-accuracy issue, not urgent (doesn't affect real SL/TP
-  math or execution, only the drift-metric's apparent size). Batch
-  with the next reanchor-logic review rather than a one-off patch.
+**One item still DEFERRED:** the mid-vs-dealing-price comparison fix. Cosmetic
+— affects the drift metric's apparent size, not real SL/TP math. Batch it with
+the next reanchor-logic review.
 
 ### Three production bugs found + fixed (2026-07-20)
+Diagnosed by read-only VPS audit, fixed and deployed same day. Full accounts,
+including the ledger re-audit → `docs/INCIDENT_HISTORY.md`.
 
-Diagnosed via read-only VPS audit (webhook_log/trades cross-check + real
-IG transaction history), then fixed same day. All three deployed and
-verified live.
+1. **Webhook "EXECUTED" ghost rows** — logged unconditionally whenever
+   `place_trade_from_alert()` returned without raising, but that returns `False`
+   on many non-exception branches. Now gated on
+   `result.get("status") == "OPEN"`.
+2. **USDCAD never traded for 7 days** — `candle_stream` had a second,
+   independently-hardcoded symbol list. **Killed the class**: both lists now
+   import the shared `symbols.py`.
+3. **Cross-symbol close_price/pnl contamination** — the poller's fallback
+   matcher searched IG's entire multi-instrument history with **no symbol
+   filter**. 8 rows corrected; the pre-correction ledger survives only as
+   `trades.bak-20260720T012352Z.db` (see Database Backups).
 
-**Bug 1 — webhook "EXECUTED" ghost log rows.** `webhook/receiver.py` wrote
-`result="EXECUTED"` to `webhook_log` unconditionally whenever
-`place_trade_from_alert()` returned without raising — but that function
-returns `False` on many non-exception branches (cooldown, missing SL/TP,
-counter-trend filter, IG `REJECTED`, sizing failure) that never place a
-real order. Found 5 EXECUTED rows (4 EURUSD swiftalgo + 1 US500,
-2026-07-15→17) with no matching `trades` row; confirmed against real IG
-transaction history that no position was ever opened for any of them —
-false logging, not an untracked ghost position. Fixed: EXECUTED now
-gated strictly on `isinstance(result, dict) and result.get("status") ==
-"OPEN"`; everything else logs `REJECTED`. Also fixed a dead
-`deal_reference` column — the old code read `result.get("deal_reference")`
-but IG/execute_trade.py use camelCase `dealReference`, so the column was
-always `NULL` even on genuine fills (this also weakens Bug 3's primary
-match, see below).
+⚠️ **This file's own earlier assumption that `pnl` was unaffected was WRONG** —
+`_fetch_close_data()` returns `close_price` and `realised_pnl` from the same
+matched row, so a wrong-symbol match corrupts both. It read as "sane" only
+because every trade risks ~$10 with similar R:R.
 
-**Bug 2 — USDCAD 15MIN williams_r never traded.** Active in
-`active_strategy` since 2026-07-13, but `bot/candle_stream.py`'s
-`EPIC_MAP`/`SYMBOLS` (a second, independently-hardcoded copy of the
-symbol list, despite a comment claiming it "mirrors
-`live_signal_loop.SYMBOLS`") never got USDCAD added. Its `(USDCAD,
-15MIN)` candle buffer was therefore never created — not stale, never
-populated — producing "ig_stream buffer not warm yet" on every single
-signal_loop cycle for 7 straight days. `scripts/run_backtest.py`'s
-`YF_SYMBOLS` was missing USDCAD too (would have broken the FX
-yfinance-fallback path as well). Fixed: added USDCAD to both maps, and
-— to kill the class of bug, not just this instance — replaced both
-`candle_stream.py`'s and `live_signal_loop.py`'s independent `SYMBOLS`
-lists with a single shared import (`symbols.py`, project root). A direct
-import between the two modules would be circular (`live_signal_loop`
-already imports `candle_stream`), so `symbols.py` has zero imports/side
-effects and both depend on it safely.
-
-**Bug 3 — `positions_poller.py` cross-symbol close_price/pnl
-contamination.** `_fetch_close_data()`'s fallback matcher (used whenever
-the primary `deal_reference` lookup misses — which the dead
-`deal_reference` column above made more likely to happen) searched IG's
-*entire* multi-instrument transaction history for any row within 60s of
-the trade's own entry_time, with **no symbol filter**. `live_signal_loop`
-routinely opens EURUSD/GBPUSD/AUDUSD within single-digit seconds of each
-other, so the fallback could — and did — return a sibling trade's
-transaction row: right symbol's scale divisor applied to the *wrong*
-symbol's `closeLevel`. Confirmed 3 instances this way (ids 583/596/604,
-2026-07-16→17).
-
-**Correction to this file's own earlier assumption:** the original
-finding assumed `pnl` was unaffected ("corruption confined to the
-close_price column"). That was wrong. `_fetch_close_data()` returns
-`close_price` **and** `realised_pnl` from the same matched row, so a
-wrong-symbol match contaminates both identically — confirmed by
-diffing against the sibling trade's own stored pnl (exact matches, not
-coincidental). It only read as "sane" because every trade here risks
-~$10 with similar R:R, so a swapped pnl still landed in a plausible
-dollar range for a win or a loss. Fixed: the fallback now requires the
-candidate row's `instrumentName` (mapped via a confirmed
-IG-instrument-name → symbol table, verified live via
-`fetch_market_by_epic` per symbol) to match the trade's own symbol
-before accepting it; no same-symbol candidate → returns `None`, leaving
-the trade for the next poll rather than borrowing.
-
-**Ledger re-audit** (`scripts/reaudit_close_prices.py`, dry-run by
-default, `--confirm` to apply): cross-checked every CLOSED trade since
-the 2026-07-08 demo switch against real IG transaction history. Found
-**8** contaminated rows (ids 548, 566, 568, 581, 583, 596, 604, 619) —
-deeper than the 3 originally spotted by the read-only audit that
-triggered this investigation. DB backed up before correction —
-**moved 2026-08-16 to `/home/ubuntu/backups/trades.bak-20260720T012352Z.db`
-on the VPS** (was `database/trades.bak-…`; relocated out of the repo tree
-so `COPY . .` stops baking it into every image, see Database Backups).
-It is the **sole surviving pre-correction ledger state** — 565 trades,
-179,413 backtest_results, `integrity_check ok`, sha256 verified across the
-move. Do not delete it. Full before/after values for the 8 corrected rows
-logged to `logs/ledger_reaudit_20260720T012352Z.jsonl`. One trade
-(id=500, GBPUSD) has no matching IG transaction in history at all and
-was left uncorrected — flagged, not explained. Re-run the script
-periodically or after any future poller/ig_scale change; it's
-read-only against IG and idempotent (dry-run reports zero once clean).
+`scripts/reaudit_close_prices.py` is idempotent and read-only against IG —
+re-run it after any poller or `ig_scale` change.
 
 ### Correlation cluster logging + per-instance daily loss limit (2026-07-22)
+`_check_correlation_cluster()` flags 3+ OPEN williams_r positions, same
+direction, across {EURUSD, GBPUSD, AUDUSD, USDCAD} → `correlation_events` +
+INFO Telegram. **Report-only, NOT a trading gate** — measuring frequency before
+deciding whether to build blocking logic. Trigger incident and design notes →
+`docs/INCIDENT_HISTORY.md`.
 
-**Trigger incident:** all 3 williams_r USD-pair instances (GBPUSD, EURUSD,
-AUDUSD) went SELL together same day and all lost — the multi-symbol
-correlated-exposure scenario Tier 4's "Correlation/exposure limits" roadmap
-item existed to anticipate, now observed live rather than hypothetical.
-
-**Daily loss limit fix (see also Daily Loss Limits above):** was one
-$75 pool summed across every symbol+strategy — the correlated williams_r
-loss blew the combined limit and would have also halted unrelated,
-uncorrelated instances (US500 stoch_rsi, EURUSD swiftalgo) for the rest
-of the day, despite them having nothing to do with the loss. Now keyed
-per (symbol, strategy_name): confirmed via simulated GBPUSD-breach test
-that AUDUSD (same strategy_name, different symbol) is unaffected.
-
-**Correlation cluster logging — report-only, added same day:**
-`bot/live_signal_loop.py::_check_correlation_cluster()`, runs once per
-signal_loop cycle (not per-symbol — needs the full open-position picture).
-Flags 3+ OPEN williams_r positions, same direction, across
-{EURUSD, GBPUSD, AUDUSD, USDCAD} — logs to new `correlation_events` table
-(`database/models.py::log_correlation_event`/`get_correlation_events`) and
-sends an INFO Telegram alert. NOT a trading gate — purely measuring
-frequency before deciding whether to build blocking logic (Tier 4
-prerequisite). Triggers on distinct-pair count, not raw open-position
-count — found live on the very first post-deploy cycle that williams_r can
-hold 2 concurrent positions on the same symbol (re-entry across signal
-cycles isn't deduped), which would otherwise inflate the cluster size
-without adding real cross-pair diversification risk.
-
-Direction is the raw per-symbol BUY/SELL signal, not USD-exposure
-normalized — USDCAD is USD-as-base while the other three are
-USD-as-quote, so a USDCAD SELL is not the same underlying bet as a
-EURUSD/GBPUSD/AUDUSD SELL. Fine for report-only counting; **any future
-blocking logic built on this table must normalize to net USD exposure
-direction first**, per explicit instruction when this was built.
+⚠️ **Direction is the raw per-symbol BUY/SELL, not USD-exposure normalized.**
+USDCAD is USD-as-base while the other three are USD-as-quote, so a USDCAD SELL
+is not the same underlying bet. Fine for counting; **any future blocking logic
+built on this table MUST normalize to net USD exposure direction first.**
 
 ## Paper Trading System
 - paper_trades table in DB — logs every paper signal
@@ -1220,96 +1014,19 @@ direction first**, per explicit instruction when this was built.
 - Multi-strategy: active_strategy UNIQUE(symbol,timeframe,strategy_name)
   allows multiple strategies on same symbol+TF
 
-### New Paper Strategies (added 2026-05-20)
-| Symbol | TF   | Strategy   | Rationale                              |
-|--------|------|------------|----------------------------------------|
-| US500  | HOUR | williams_r | Mean reversion, uncorrelated to stoch_rsi |
-| DAX    | HOUR | williams_r | Mean reversion forward test            |
-| DAX    | HOUR | macd_rsi   | Trend-momentum with EMA50 confirmation |
+### Paper strategy design notes — MOVED
+Entry rules, parameters, baseline backtests and per-strategy rationale for
+`williams_r`, `macd_rsi`, `london_breakout`, `stoch_rsi_confluence`,
+`ny_session_momentum`, `ema_pullback` and `fvg` → `docs/INCIDENT_HISTORY.md`.
 
-williams_r entry rules:
-- Long: %R(14) crosses below -85 (enters oversold)
-- Short: %R(14) crosses above -15 (enters overbought)
-- Exit: SL/TP from backtesting engine (ATR-based)
+Kept out of this file deliberately, and not only for size: **params recorded in
+docs have diverged from the live roster four times** (see Critical Rules). The
+archive copy is the design intent as written; `active_strategy` is what
+actually runs, and it is the only source any analysis may use.
 
-macd_rsi entry rules:
-- Long: MACD(12,26,9) line crosses above signal AND RSI(14)<60 AND close>EMA(50)
-- Short: MACD line crosses below signal AND RSI(14)>40 AND close<EMA(50)
-- Exit: SL/TP from backtesting engine (ATR-based)
-
-Baseline backtest (default params, 5000 HOUR candles, test window 1000):
-- US500 HOUR williams_r: 47 trades, 74.5% win rate, $857 profit
-- DAX   HOUR williams_r: 47 trades, 59.6% win rate, $419 profit
-- DAX   HOUR macd_rsi:   10 trades, 10.0% win rate, -$865 loss
-  ⚠️  macd_rsi DAX baseline weak — paper trading to observe live behaviour
-
-### London Breakout (added 2026-06-04)
-| Symbol | TF    | Strategy        | Source | Rationale                     |
-|--------|-------|-----------------|--------|-------------------------------|
-| EURUSD | 15MIN | london_breakout | loop   | London session range breakout |
-
-Params: min_range_pips=8, breakout_buffer=0.3, tp_multiplier=2.0, use_ema_filter=false
-Range window: 06:00-07:00 UTC
-Entry window: 07:00-09:00 UTC
-SL: range low - buffer (BUY) / range high + buffer (SELL) — range-based, not ATR
-TP: entry ± (range_size × 2.0)
-Max one trade per day
-Backtest note: inconclusive — yfinance 15MIN limited to 60 days, test window only
-8-10 trades. Best sweep params: min_pips=8, buffer=0.3, tp=2.0, ema=false.
-Review after 30 resolved paper trades.
-
-### stoch_rsi_confluence (added 2026-06-12)
-| Symbol | TF   | Strategy             | Source | Rationale                          |
-|--------|------|----------------------|--------|-------------------------------------|
-| US500  | HOUR | stoch_rsi_confluence | loop   | stoch_rsi + session/ATR confluence  |
-
-Base: stoch_rsi US500 HOUR (same signal generation as live stoch_rsi)
-ATR filter disabled — hurts in backtest.
-Session filter only. Shadow logging active.
-Filters: session (London 07:00-08:59 UTC + NY 13:00-15:59 UTC)
-Blocked signals logged as SHADOW_BUY/SHADOW_SELL with
-notes="SHADOW: filtered by session" for A/B comparison.
-Review after 30 paper trades + 30 shadow trades.
-Promote if confluence WR > shadow WR by 10%+
-
-### ny_session_momentum + ema_pullback (added 2026-06-12)
-| Symbol | TF    | Strategy             | Source | Rationale                          |
-|--------|-------|----------------------|--------|-------------------------------------|
-| EURUSD | 15MIN | ny_session_momentum  | loop   | NY-open range breakout, follow mode |
-| US500  | 15MIN | ema_pullback         | loop   | EMA8/EMA50 trend pullback           |
-| US100  | 15MIN | ema_pullback         | loop   | EMA13/EMA50 trend pullback          |
-
-ny_session_momentum EURUSD params: range_minutes=60, min_range_pips=3,
-breakout_buffer=0.0, tp_multiplier=1.0, fade_mode=false, range_start=13, entry_window=3
-Backtest: 37 trades, 75.7% WR, PF 1.64, ~15 trades/month.
-Note: fade_mode=True won on US500 (double-break fade), fade_mode=False won on EURUSD —
-direction edge is instrument-dependent.
-
-ema_pullback US500 params: ema_fast=8, ema_slow=50, min_move_atr=1.0,
-sl_atr_mult=1.5, tp_atr_mult=3.0, session 07:00-17:00 UTC
-Backtest: 44 trades, 45.5% WR, PF 1.57, ~15 trades/month.
-
-ema_pullback US100 params: ema_fast=13, ema_slow=50, min_move_atr=1.5,
-sl_atr_mult=1.0, tp_atr_mult=3.0, session 07:00-17:00 UTC
-US100 15MIN ema_pullback validation:
-  86% of 72 param combos profitable (PF > 1.0)
-  22 combos with PF > 1.5
-  Consistent params: fast=13, slow=50, tp_mult=3.0
-  Strong concept edge confirmed across params
-Backtest: 16 trades, 56.2% WR, PF 3.17 — low sample, watch closely.
-
-Review all 3 after 30 resolved paper trades.
-
-### FVG Strategy (added 2026-05-29)
-| Symbol | TF    | Strategy | Rationale                                         |
-|--------|-------|----------|---------------------------------------------------|
-| US500  | 15MIN | fvg      | SMC Fair Value Gap POC, London/NY sessions only   |
-
-fvg params: atr_period=10, min_gap_atr=0.5, expiry_candles=15
-Entry: close retraces into 3-candle gap zone (confirmation close)
-Session filter: London 07:00-09:59 UTC, NY 13:00-15:59 UTC
-FVG expiry: 15 candles without retracement
-Min gap size: 0.5x ATR10
+⚠️ Two of those write-ups quote figures now VOID — US500/US100 15MIN
+`ema_pullback` (PF 1.57 / PF 3.17) was measured on **ETF-scaled candles**, see
+the ETF cache blocker.
 
 ## IG Sync (sync_ig_trades.py)
 - Self-contained IG session (does not import execute_trade.py)
@@ -1871,9 +1588,24 @@ files keep their original ownership.
 ## Backtest Engine Parity — Stage 1 (2026-08-16)
 
 Four commits: `e0f51f8` marking → `14c3c17` sizing → `0fdbe7e` contract →
-`36fac3b` spread capture. Driven by the AUDUSD hard gate resolving Branch B:
-the backtest was modelling a different strategy from the one running live.
+`36fac3b` spread capture. The backtest was modelling a different strategy from
+the one running live.
 
+**What `parity-v2` does, the entanglement finding, the convergence table and
+the four still-unmodelled mechanics → `docs/OPERATIONS_LOG.md`.**
+
+One result from there is worth keeping in front of anyone reading this file:
+**TP and reversal-exit MASK EACH OTHER.** Neither change alone explains the
+result, so neither would have shown up in isolation — TP alone barely moves PF,
+reversal-off alone is degenerate. Only together do they resemble live. AUDUSD
+`parity-v2` PF **1.085** against live demo actual **0.71**: converging, still
+flattering, spread the known residual. **Still not promotion evidence.**
+
+The flat `SPREAD_COSTS` constant is deliberately LEFT IN PLACE and named
+(`spread_model = flat-roundtrip-dollars-UNCALIBRATED`) — removing it would make
+every backtest look better while being no more correct.
+
+**Retained here because it is the comparability key, not history:**
 ### engine_version — three versions, what each means
 `engine_version.py` (repo root, zero imports). Versions the trade model's
 **structure**. Bump only if two runs of the same strategy over the same candles
@@ -1890,544 +1622,103 @@ would produce different trades or different P&L. **Never commit SHAs.**
 `score_strategies()` raises `MixedEngineVersionError` rather than ranking
 across models.
 
-### parity-v2 — what the engine now does
-- **Three-branch contract** mirroring `live_signal_loop.py:552`. Neither price
-  supplied → `DEFAULT_TP_R = 2.0` off the floored candle range (the *measured*
-  live rule, not a guess: 569 real williams_r trades span R:R 1.941–2.040,
-  median exactly 2.000). Both supplied → **passed through unchanged**, so the
-  13 emitters keep their own designs including the three that aren't
-  R-multiples. Exactly one → `EngineContractError`, raised not logged.
-- **`MIN_SL_DIST` floor** imported from `instrument_limits.py` — one source
-  shared with the live path, never a copy.
-- **Honest sizing**: `get_risk_per_trade(symbol)`, round-then-clamp, abort when
-  unsizeable.
-- **SL exits booked from the actual stop price**, `exit_price` recording
-  `sl_price`.
-- **Exit ladder**: `sl_stop`/`tp_hit` are intrabar and outrank
-  `max_hold`/`signal`, which are evaluated at the bar's close.
-  `intrabar_priority` default **`"sl"`** (pessimistic — and the more likely
-  resolution, since a 1R stop is nearer than a 2R target). `ambiguous_bars`
-  reported on every run: measured 0.0–1.8% of trades.
-- **`reversal_exit` default `False`**, matching live FX which has none.
-
-### ⚠️ The entanglement finding — why this hid for months
-**TP and reversal exit mask each other. Neither change alone explains the
-result**, so neither would have shown up in isolation. AUDUSD 15MIN:
-
-```
-v1 baseline: no TP, reversal ON     n=391  net=$512.46  PF=1.246  tp_hit=0
-+TP only     (reversal still ON)    n=388  net=$476.69  PF=1.241  tp_hit=57
-reversal OFF only (still no TP)     n= 17  net=$122.59  PF=1.723  tp_hit=0
-v2: TP + reversal OFF               n=221  net=$124.45  PF=1.085  tp_hit=82
-```
-TP alone barely moves PF — the reversal exit was already closing positions
-before the target. Reversal-off alone is degenerate — without a TP a position
-has almost no way to close. **Only together do they resemble live.**
-
-### Where the numbers stand — converging, still flattering
-| | AUDUSD PF |
-|---|---|
-| Live demo actual (51 post-cap clean trades) | **0.71** |
-| `parity-v1` | 1.246 |
-| `parity-v2` | **1.085** |
-
-**Spread is the known remaining residual.** Still not promotion evidence.
-
-### Spread — capture live, model deliberately unchanged
-`trades.spread` was 906 NULLs from **one hardcoded `None`** in
-`live_signal_loop`; column, write path and aggregation query all existed.
-Now captured from two sources, both costing **zero extra IG calls**:
-`execute_trade.last_spread` (the quote `place_trade` already fetches) and
-`candle_stream.get_spread()` (BID/OFR already arrive on every tick and were
-being averaged away). Per-check sampling gives 96–480 observations/symbol/day
-vs ~1/symbol/day from trades alone.
-
-**The flat `SPREAD_COSTS` constant is deliberately LEFT IN PLACE and named,
-not deleted** — removing it would make every backtest look better while being
-no more correct. Every result row now carries `spread_model`
-(`flat-roundtrip-dollars-UNCALIBRATED`) and `spread_table_sha`, because
-`engine_version` versions structure while spread is a *parameter*, and a name
-can be kept while numbers change underneath it.
-
-Use `get_spread_samples()` to read samples — it collapses to one observation
-per `(symbol, minute)`. Raw `signal_log` rows carry ~1.75× duplication,
-unevenly (EURUSD 480 checks/day vs AUDUSD 96).
-
-### ❌ What is still NOT modelled after Stage 1
-Out of scope for the entire parity sequence, still divergent from live:
-
-| row | mechanic | live | engine |
-|---|---|---|---|
-| 1 | entry price | deals at `offer`/`bid` | candle close |
-| 2 | entry lag | fills 25–55 min after the signal candle | close of the signal bar |
-| 16 | weekend | blocks Sat, Sun until 23:00, Fri from 20:45 | only where data has gaps |
-| 17 | session window | per-strategy windows | one hardcoded 13:30–21:00 UTC |
-
-Plus spread until commit 5. **`parity-v2` is the first version that takes
-profit at all — it is not yet a faithful execution model.**
-
-### Uncalibrated-parameter findings (see docs/SESSION_20260812_FINDINGS.md)
-Three instances of the same pattern, all recorded and **none fixed**:
-`SPREAD_COSTS` (the engine constant), **finding 14 `MIN_SL_DIST`** (drives
-sizing on 45–55% of FX entries, IG's `minNormalStopOrLimitDistance` never read
-back), and **finding 15 `NORMAL_SPREADS`** (see the correction below).
 
 ## Engine parity work — caveats to carry forward (2026-08-16)
 
-### ⚠️ The 36/36 contract result is NOT full coverage
-`EngineContractError` enforces "emit BOTH `sl_price` and `tp_price`, or
-NEITHER". Checked across every strategy module on real candles: **zero
-violations, 13 emit both, 21 emit neither.**
+Two caveats, both still live; full text → `docs/OPERATIONS_LOG.md`.
 
-**But `orb` and `first_bar_breakout` produced ZERO signals on the test
-candles**, so they are contract-**untested**, not contract-clean. Nothing was
-observed either way for those two. The first real run that makes them fire is
-the first test of their compliance — if one of them emits only one price, it
-will raise at that point, and that is the check working, not a regression.
-Do not read "36/36" as proof all 36 are compliant.
+1. **The 36/36 contract result is NOT full coverage.** `orb` and
+   `first_bar_breakout` produced ZERO signals on the test candles, so they are
+   contract-**untested**, not contract-clean. The first run that makes them fire
+   is the first test of their compliance.
+2. **`score_strategies()` returning `[]` is AMBIGUOUS.** After a version bump
+   there are zero rows at the current version until the gauntlet is
+   regenerated, so "no candidates" and "selector working but idle" look
+   identical — both are silence. **Before re-arming the selector, make the two
+   states distinguishable by a positive signal.** Harmless today only because
+   the selector is inert at both layers.
 
-(Count is 36 rather than 34 because it includes the untracked working-tree
-strategies `liquidity_sweep` and `first_bar_breakout`.)
+## ✅ CONTROLS AWAITING FIRST REAL FIRE — THE LIST IS EMPTY
 
-### ⚠️ `score_strategies()` returning `[]` is ambiguous — resolve before re-arming
-`get_backtest_results()` filters to `CURRENT_ENGINE_VERSION`. After each
-version bump there are zero rows at the current version until the gauntlet is
-regenerated, so `score_strategies()` returns `[]` rather than raising. That is
-correct — an empty single-version set is legitimate, not a mixed-model error —
-and it is harmless **only because the selector is inert at both layers**.
+Every control that was waiting on a first production fire has been observed
+firing, each by positive signal rather than inferred from silence: FX weekend
+block (Sat 2026-08-22), 21:00 rollover gate (Sun 08-23, weekday Mon 08-24),
+collector disable → IG warm-up (Mon 08-25), shadow spread gate (Mon 08-25).
+Dated evidence table → `docs/OPERATIONS_LOG.md`.
 
-The hazard is for whenever the selector is re-armed: from the outside,
-**"no candidates at this engine_version" and "selector working but idle" look
-identical.** Both produce silence, no rows written, no error. That is the same
-absence-is-not-evidence trap as the cron disable (see Unverified Controls).
+**The shadow gate's standing rule, kept here because it governs live reads:**
+`risk/spread_gate.py` runs with `ENFORCE=False`, so the string
+`SHADOW spread gate: ratio ...` must **never** be the sole explanation for a
+*missing* trade. Its first fire was on a **paper** signal that still logged as
+`PAPER_BUY` — gate reported, trade taken. If a trade is ever missing and this
+string is the only explanation, the shadow gate has been promoted by accident.
 
-Before re-arming, make the two states distinguishable — e.g. have the selector
-log explicitly when the candidate pool is empty *and why* (zero rows at
-`engine_version=X`), so a silent selector can be told apart from a starved one
-by a positive signal rather than inferred from nothing happening.
+**Add a row to the archive table BEFORE deploying the next dated control, not
+after** — the value of that table is that it was written while the control was
+still unobserved.
 
-## ✅ CONTROLS AWAITING FIRST REAL FIRE — THE LIST IS NOW EMPTY
+## ✅ CHECK 3 — PASSED 2026-08-25. `CANDLE_SOURCE=ig_stream` is true end to end.
 
-Every control that was waiting on a first production fire has now been observed
-firing, each with a positive signal rather than inferred from silence. **Keep
-this section**: an empty list is a claim, and the dates below are what backs it.
+Both claims have evidence: the collector no longer runs (marker test,
+2026-08-23 14:31 UTC), and `candle_stream` warm-up now reaches IG instead of
+yfinance — **7/7 pairs `source=IG REST`, zero fallback, zero quota errors**
+(2026-08-25 04:02 UTC). Full result block → `docs/OPERATIONS_LOG.md`.
 
-| control | deployed | first real fire | `signal_log.error` string |
-|---|---|---|---|
-| FX weekend block | 2026-08-17 | ✅ **Sat 2026-08-22** | `market closed — weekend` |
-| 21:00 rollover gate | 2026-08-21 | ✅ **Sun 2026-08-23**, weekday case **Mon 2026-08-24** | `entry window closed — daily rollover hour` |
-| collector disable → IG warm-up | 2026-08-23 | ✅ **Mon 2026-08-25 04:02 UTC** | `source=IG REST` in the warm-up log |
-| shadow spread gate | (before 2026-08-21) | ✅ **Mon 2026-08-25 04:04 UTC** | `SHADOW spread gate: ratio ...` |
+**Why it is not merely a tidy-up record:** the collector was taking
+100,800 points/week of a 10,000/week budget, so `_warm_up` and `_backfill_gap`
+fell through to yfinance on every pair for the rest of the week.
+`CANDLE_SOURCE=ig_stream` was half true — IG ticks, **yfinance seed data** —
+which is the off-session index staleness the 2026-07-15 flip existed to fix.
+Stopping the drain fixed it on the first attempt. That is the causal claim
+tested rather than argued.
 
-**The shadow gate's first fire**, caught on the first cycle after the
-2026-08-25 deploy:
-
-```
-SHADOW spread gate: ratio 0.250 >= k 0.25 (GBPUSD, spread=0.00015, sl_dist=0.0006)
-```
-
-It fired on a **paper** signal, exactly as designed — `risk/spread_gate.py`
-sits before the paper/live branch — and **the trade still logged as
-`PAPER_BUY`.** That is the passing observation: `ENFORCE=False` means the gate
-reports and blocks nothing. The standing rule is unchanged and now has a
-baseline to read against: this string must never be the sole explanation for a
-*missing* trade while `ENFORCE` is False.
-
-Nothing is currently awaiting a first fire. **Add a row here before deploying
-the next dated control, not after** — the value of this table is that it was
-written while the control was still unobserved.
-
-## ✅ CHECK 3 — PASSED 2026-08-25. The warm-up reaches IG. `CANDLE_SOURCE=ig_stream` is true end to end for the first time.
-
-Both claims now have evidence. The second one was the whole point of the
-change, and it took two days and an allowance reset to become observable:
-
-| claim | status | evidence |
-|---|---|---|
-| the collector no longer runs | ✅ **VERIFIED 2026-08-23 14:31 UTC** | marker test, below |
-| `candle_stream` warm-up now reaches IG instead of yfinance | ✅ **VERIFIED 2026-08-25 04:02 UTC** | 7/7 pairs `source=IG REST`, zero fallback |
-
-**The observation, exactly as it was predicted before it was made** (the
-passing string was written into this file on 2026-08-23, before the run):
-
-```
-[candle_stream] warm-up US500/15MIN: 200 candles (source=IG REST)
-[ig_allowance] candle_stream REST US500/15MIN: remaining=9000 of 10000 (10.0% used),
-               resets_at=2026-09-01T04:02:18+00:00 (expiry=604798s)
-```
-
-All seven warm-up pairs returned `source=IG REST`. **Zero
-`source=yfinance (quota fallback)` lines, zero quota errors, on the whole
-start-up.** That log line is only producible by IG actually serving the
-request.
-
-**The collector was the blocker, and the fix working is what proves it.** Until
-2026-08-23 the collector took 100,800 points/week of a 10,000/week budget,
-exhausted it in ~16.7 hours, and left `_warm_up` and `_backfill_gap` falling
-through to yfinance on every pair for the rest of the week. `CANDLE_SOURCE=ig_stream`
-was half true — IG ticks, **yfinance seed data**. Stop the drain, let the
-allowance reset, and the warm-up reaches IG on the first attempt. That is the
-causal claim tested rather than argued.
-
-**This deploy was a legitimate CHECK 3 observation, not a self-manufactured
-one** — per the distinction drawn when the check was written. The deploy was
-scheduled for its own reasons (gated on CHECK 2, code waiting since 2026-08-23),
-and `source=IG REST` cannot be faked by restarting: only IG serving the request
-produces it. Contrast CHECK 1's criterion 4, where a restart *did* manufacture
-an artifact resembling the passing state.
-
-### ✅ The reset time is now KNOWN — 2026-09-01T04:02 UTC
-
-`resets_at=2026-09-01T04:02:18+00:00 (expiry=604799s)` — a rolling 7-day window
-that begins at the first request after a reset, **not** a fixed weekly boundary.
-
-This number was **arriving on every successful `/prices` response for the life
-of the system and was discarded** by both consumers doing
-`result.get("prices")`. Finding 35 made it visible; this is the first time it
-has ever been read. Before 2026-08-23 the reset time was simply unknown, and
-every plan that depended on it was a guess.
-
-⚠️ The window is anchored to the first request after a reset, so it **moves**.
-Do not hardcode 04:02 as a recurring weekly time — read `resets_at` off the
-next successful response.
-
-**Marker test result (positive signal, not silence).** A one-shot cron line was
-added in the same edit that commented the collector, scheduled 6 minutes out,
-`%` escaped as `\%`:
-- it **fired at `2026-08-23T14:31:01Z`** → cron was alive and had re-read
-  `/etc/cron.d/trading-bot` after the change;
-- the `*/15` collector run due at **14:30 did not fire** — `candles.log` stayed
-  at 243 lines with mtime `14:15:04`, its last pre-edit write.
-
-Cron demonstrably working and reading that exact file in the same window, so
-the 14:30 no-show is a real disable rather than a dead daemon. Marker line
-removed immediately after observation; in-container md5 back to the committed
-value.
-
-*(The prospective reasoning that stood here — why the second claim could not be
-checked before the reset, what PASSING would look like, and why the
-post-CHECK-2 deploy would be a legitimate rather than self-manufactured
-observation — has been folded into the result block above. It was all correct
-and the prediction held exactly, which is the argument for writing such things
-before the run rather than after.)*
-
-### ⚠️ The rebuild cost DOUBLE the prediction — 2,800 points, not 1,400
-
-This section predicted `WARMUP_COUNT` 200 x 7 pairs = **1,400 points, ~14% of
-the weekly 10,000**. The measured cost was **2,800 points, 28%** — fourteen
-REST calls, not seven. Gap-backfill fires immediately after warm-up, re-fetches
-200 points per pair, and leaves the buffer at the same 200 candles warm-up had
-just produced. **Zero gained, 1,400 spent, on every reconnect.**
-
-That is **finding 37**, and it is scoped there but deliberately **not fixed** —
-it is being kept separate from the post-reset measurement work. Read it before
-planning any allowance budget: at 2,800 points per restart the weekly allowance
-funds **three** of them.
-
-### ⛔ The two unknowns are STILL UNMEASURED — the probe exhausted the allowance
-
-The instruction above ("measure the two unknowns promptly rather than letting
-the rest drain on reconnects") was followed on 2026-08-25, and the probe
-designed to do it **consumed the remaining ~7,200 points and measured neither.**
-
-Root cause is a single unchecked assumption — *a request that fails is a
-request that was free*. It is not: `numpoints=100000` and `50000` came back
-`error.price-history.io-error`, **not** a quota error, meaning IG attempted and
-charged them. By the third request a **four-bar** date-range window was being
-refused. Full account, and the general rule it produced, in **finding 38** and
-in the Unverified Controls section below.
-
-Still unknown, now until after 2026-09-01T04:02 UTC:
-1. **Max `numpoints` per request** — bracketed only as "attempted, IO error, at
-   50,000+". No accepted value has ever been measured above 200.
-2. **How far back `MINUTE_15` reaches per epic** — entirely unknown. The
-   index-backfill sizing (~17,000 points per index symbol) remains a guess.
-
-**When the allowance resets, probe from the SMALLEST request upward**, reading
-`allowance.remainingAllowance` off each response before escalating. A one-hour
-date-range window is four bars. Do not bracket from above.
-
-### 🔴 LIVE EXPOSURE until 2026-09-01T04:02 UTC — bounded, no action available
-
-The historical allowance is at zero for a week. Stated honestly rather than
-minimised:
-
-- **Live trading is unaffected in steady state.** Lightstreamer ticks do not
-  draw on the historical allowance. Buffers were warmed from IG REST during the
-  2026-08-25 deploy, and both heartbeats, the cycle cadence and paper signal
-  firing were all confirmed healthy afterwards.
-- **The exposure is a stream reconnect.** If the stream drops before the reset,
-  `_warm_up` / `_backfill_gap` fall back to yfinance — which **for indices is
-  the off-session staleness the 2026-07-15 `CANDLE_SOURCE` flip existed to
-  fix.** FX fallback is comparatively benign; US500/US100 is the real risk.
-- **No action is available.** The allowance cannot be refilled early, and
-  restarting to re-warm would itself need the allowance. The only mitigations
-  are not restarting the container and not running historical fetches. Both are
-  already the case.
-- **This is a self-inflicted, one-week window.** Recording it rather than
-  discovering it later, per the same rule that governs undocumented backups and
-  re-opened drift.
-
-CHECK 1 **passed on 2026-08-22 and in full on 2026-08-23** — the control is
-verified. One of its four criteria was found to be mis-specified and re-scoped
-to Sunday; that is a defect in the checklist, not in the control. **CHECK 2
-passed on 2026-08-24** and **CHECK 3 on 2026-08-25.** All three are closed.
-
-Delete none of these sections. A control recorded as verified when it never
-fired is the same error as a monitoring gap recorded as outstanding while the
-monitor existed — and the dated result blocks are what distinguish the two.
+**The reset time is now read from `resets_at` on every successful response** —
+see IG Historical Allowance for the current value. It had been arriving on
+every response for the life of the system and was discarded by both consumers.
 
 ## ✅ CHECK 1 — FX market-hours block (deployed 2026-08-17) — VERIFIED IN FULL 2026-08-22/23
 
-`_is_blocked` never blocked FX. `MARKET_CLOSE` holds only US500/US100/DAX/BTC,
-so every FX symbol hit `.get(symbol) is None → return False` before reaching
-any weekend rule. **21 weekend trades were placed as a result**, at exactly the
-timestamps where measured spread is 10–17 pips. Fixed by `market_hours.py`
-(`is_market_open` = venue fact, `is_entry_allowed` = our policy);
-`_is_blocked` is now a thin call. Findings doc finding 23.
+`_is_blocked` never blocked FX: `MARKET_CLOSE` holds only US500/US100/DAX/BTC,
+so every FX symbol hit `.get(symbol) is None → return False` before reaching any
+weekend rule. **21 weekend trades were placed as a result.** Fixed by
+`market_hours.py` (`is_market_open` = venue fact, `is_entry_allowed` = our
+policy). Findings doc finding 23.
 
-**THE FIRST REAL WEEKEND AFTER THIS DEPLOY IS THE ACTUAL TEST.** Everything
-verified so far used *constructed* timestamps. This control has never once
-fired for FX in production, so — per the marker-test rule in Unverified
-Controls — its silence proves nothing on its own.
+**PASSED Sat 2026-08-22** (block itself) **and Sun 2026-08-23** (criterion 4,
+re-scoped). Full result blocks → `docs/OPERATIONS_LOG.md`.
 
-**That Saturday is 2026-08-22.** Confirm all three:
+**Two things in that record are load-bearing and are the reason it was archived
+rather than dropped:**
+1. **Criterion 4 was MIS-SPECIFIED, not failed.** It asked for a non-null
+   `signal_log.spread` on a Saturday, when the venue is shut and there is
+   nothing to sample. It reported a false failure against a working control.
+   This is the first instance of CRITERIA AGE AGAINST THE SYSTEM THEY MEASURE.
+2. **The spread-sampling ordering is load-bearing**: the sample is taken before
+   the block check and the blocked branch still calls `log_signal_check`. That
+   is what keeps the thin reopen — the most expensive window we have — from
+   going blind. Verified 111/111 FX rows non-null on the Sunday reopen.
 
-1. FX symbols log `BLOCKED` in `signal_log` with reason
-   `market closed — weekend` (not the old `near market close`)
-2. **Zero** FX entries in `trades` over the weekend
-3. The `signal_loop` heartbeat kept beating through a fully-blocked cycle
-   (`upsert_heartbeat` is outside the per-symbol loop, but prove it, don't
-   infer it)
-
-Also confirm spread sampling **continues** while blocked — `signal_log.spread`
-non-null on FX rows during the blocked window. The sample is taken before the
-block check and the blocked branch still calls `log_signal_check`; that
-ordering is load-bearing and commented as such, because the thin reopen is the
-most expensive window we have and the one we least want to go blind on.
-
-### ✅ OBSERVED Sat 2026-08-22 05:27 UTC — CONTROL WORKS. VERIFIED.
-
-> **READ THIS FIRST.** One of the four criteria below is marked as not met.
-> **That is not a defect in the control.** The block itself is confirmed
-> working on every criterion that tests it. Criterion 4 was *mis-specified*
-> when it was written — it asked for an observation that is impossible on a
-> Saturday for reasons unrelated to the block, and it has been re-scoped to
-> Sunday. Do not read "criterion 4 failed" as "the weekend block is broken."
-> It is not, and the evidence for that is criteria 1–3 plus the trade count.
-
-**Status: FX weekend block is VERIFIED IN PRODUCTION.** First real weekend
-after the deploy, and the first time this control has ever fired for FX.
-
-- **Positive control:** 266 `signal_log` rows exist on 2026-08-22, so the loop
-  was running and the test genuinely ran.
-- **Criterion 1 PASS.** All 266 rows carry `signal='BLOCKED'` and
-  `error='market closed — weekend'` — exactly that string, nothing else, and
-  all four FX symbols present: EURUSD 116, GBPUSD 44, AUDUSD 22, USDCAD 22
-  (plus US500 40, US100 22).
-- **Criterion 2 PASS.** Zero `trades` rows on 2026-08-22. This is the control
-  that had never once fired for FX before 2026-08-17 — 21 weekend trades were
-  placed under the old code.
-- **Criterion 3 PASS.** `signal_loop` heartbeat current (05:25:59) through
-  fully-blocked cycles.
-- **Criterion 4 — NOT A FAILURE OF THE CONTROL. The criterion was
-  mis-specified.** Nothing about the weekend block is in question here; this
-  criterion tests the *spread-sampling ordering*, which is a different
-  mechanism that happens to have been bundled into the same checklist.
-  `signal_log.spread` is **NULL on all 266 rows**. This is NOT the load-bearing
-  ordering failing. The ordering is correct — the sample is still taken before
-  the block check. There is simply **nothing to sample**: the Lightstreamer
-  stream disconnects at the Friday close (`candle_stream` heartbeat last beat
-  `2026-08-21T22:00:00`), so `get_stream_spread` has no quote and correctly
-  returns `None`. A spread from a shut book is not a quote anyone could have
-  traded on — which is exactly what `market_hours.is_market_open` exists to say.
-
-**The criterion conflated two different blocked windows**, and as written it
-would have reported a false failure every Saturday:
-
-| blocked window | venue | stream | spread expected |
-|---|---|---|---|
-| Saturday, all day | **shut** | down | **NULL — correct, nothing to sample** |
-| Sunday 20:00–22:59 UTC reopen | **open** | up | **non-NULL — this is the real test** |
-
-The load-bearing ordering only matters where the venue is open and *we* decline
-to enter. That is the Sunday reopen, not Saturday. **Re-test criterion 4 on
-Sunday 2026-08-23 between 20:00 and 22:59 UTC**: FX `signal_log` rows should
-carry `error='entry window closed — thin reopen / pre-weekend policy'` **with
-`spread` non-null**. If spread is NULL *there*, the ordering has genuinely
-broken.
-
-This is the self-invalidating-probe rule applied to a written check: on
-Saturday the probe cannot observe the passing state at all, so its negative
-carried no information about the thing it claimed to test.
-
-### ✅ CRITERION 4 RE-TESTED AND PASSED — Sun 2026-08-23 20:00–22:59 UTC
-
-**CHECK 1 IS NOW VERIFIED IN FULL.** The Saturday NULL was the shut book,
-exactly as diagnosed — not the ordering failing.
-
-- **Positive control:** 144 `signal_log` rows, `20:11:02` → `22:56:03`, all
-  four FX symbols (EURUSD 63, GBPUSD 24, AUDUSD 12, USDCAD 12) plus US500 21,
-  US100 12. The loop was running; the test genuinely ran.
-- **Reason strings: 144/144 `BLOCKED`**, every row an exact expected string,
-  zero NULL, zero others.
-- **Spread: 111 of 111 FX rows NON-NULL**, 37/37 in each of hours 20, 21, 22.
-  The load-bearing ordering holds — sample taken before the block check, and
-  the blocked branch still calls `log_signal_check`.
-- **Zero `trades` rows** in the window and across all of 2026-08-23; zero
-  `trade_placed=1`.
-- **14 unbroken cycles** at 15-minute cadence through fully-blocked cycles.
-  `heartbeat` is an upsert, so past beats are unrecoverable — the row
-  timestamps are the durable evidence here, not the heartbeat table.
-
-**The captured spreads are why the policy exists.** First reopen sample per
-symbol: **GBPUSD 0.0026 (26 pips)**, AUDUSD 0.0013, USDCAD 0.00133, EURUSD
-0.00019. GBPUSD ran **wider than the 10–17 pip range quoted elsewhere in this
-file** — raise that upper bound when the spread table is built.
-
-### 🔴 CORRECTION — the rollover gate fires at 21:xx on SUNDAY
-
-Surfaced by this check, contradicting CHECK 2's table below:
-
-| hour (Sun 2026-08-23) | reason logged | rows |
-|---|---|---|
-| 20 | `entry window closed — thin reopen / pre-weekend policy` | 48 |
-| **21** | **`entry window closed — daily rollover hour`** | **48** |
-| 22 | `entry window closed — thin reopen / pre-weekend policy` | 48 |
-
-CHECK 2 asserts Sunday 21:30 is blocked by *"the **Sunday reopen** rule
-(23:00), not this one"*. **Wrong — the rollover branch wins the ordering in
-`_block_reason`.** Two consequences:
-
-1. **The 21:00 rollover gate has ALREADY had its first real fire** — real
-   clock, 2026-08-23 21:00–21:59 UTC, 48 rows — a day earlier than CHECK 2
-   said was reachable.
-2. That table's reasoning was argued, never observed. Same shape as every
-   conclusion-by-argument this file warns about. Do not re-derive the ordering
-   from it.
-
-**What ABSENCE would mean.** Zero FX rows carrying `market closed — weekend`
-on Saturday is **not** evidence the block works — it is equally consistent with
-the loop not running at all. Positive control first: confirm `signal_log` has
-**any** rows on 2026-08-22. Rows present and none carrying the reason → the
-block is broken. No rows at all → the loop was down and the test did not run;
-reschedule, do not conclude. (`candle_stream`'s heartbeat legitimately goes
-quiet at weekends — `watchdog.check_heartbeat` early-returns outside
-Sun 22:00 – Fri 21:00 UTC — so a silent candle_stream is the gate working, not
-a fault. `signal_loop` should keep beating.)
-
-Until that observation exists, this control is verified only against
-constructed timestamps.
+The reopen spread measurements themselves are retained in the GATE section
+below, where the spread table will read them.
 
 ## ✅ CHECK 2 — 21:00 UTC rollover gate (deployed 2026-08-21) — VERIFIED IN FULL 2026-08-24
 
-> ### ✅ THE GATE HAS FIRED ON A REAL CLOCK — Sun 2026-08-23 21:00–21:59 UTC
->
-> **48 `signal_log` rows** carrying `entry window closed — daily rollover hour`,
-> found while re-testing CHECK 1's criterion 4. **This is no longer a
-> first-exercise check.** Monday still runs — see "What Monday still tests"
-> below — but read the correction first, because the reason the gate was
-> thought unreachable until Monday is more instructive than the gate itself.
+**PASSED, all six criteria, Mon 2026-08-24 21:00–21:59 UTC.** The gate refuses
+entries in the 21:00 UTC hour on **all instruments**, checked before the
+`_ALWAYS_OPEN` short-circuit so BTC is covered. Rationale and the
+DAX/BTC-are-mechanism-not-evidence caveat live in the `market_hours.py`
+comment.
 
-`market_hours.is_entry_allowed` refuses entries in the 21:00 UTC hour, **all
-instruments**, checked before the `_ALWAYS_OPEN` short-circuit so BTC is
-covered. Rationale, evidence table and the DAX/BTC-are-mechanism-not-evidence
-caveat live in the `market_hours.py` comment; do not restate them here.
+**Full result block, all six criteria, the 2026-08-23 Sunday correction, and
+the "what Monday still tests" scoping → `docs/OPERATIONS_LOG.md`.** That
+material matters and is not filler: it contains the correction proving this
+file's own prediction table was wrong — the rollover branch wins the ordering
+in `_block_reason`, and the gate had **already fired on a real clock** a day
+before this file said it was reachable. It also carries the criterion-1
+exact-string test that would catch an ordering drift.
 
-**Marker verification: 33 assertions in the deployed image, all against
-CONSTRUCTED `datetime` values.** Superseded by the real-clock fire above; kept
-because the constructed assertions are still what pins the boundary minutes.
-
-### 🔴 THE CORRECTION — and HOW the claim was wrong
-
-This table stood here until 2026-08-24. The Sunday row was **false**:
-
-| | `is_entry_allowed` | `is_market_open` | who blocks |
-|---|---|---|---|
-| Fri 2026-08-21 21:30 | False | **False** | venue already shut |
-| Sat 2026-08-22 21:30 | False | False | venue shut |
-| Sun 2026-08-23 21:30 | False | True | ~~the **Sunday reopen** rule (23:00), not this one~~ → ❌ **OBSERVED: THIS GATE.** 48 rows logged `daily rollover hour` |
-| Mon 2026-08-24 21:30 | False | True | this gate — ~~first genuine exercise~~ **not first; see below** |
-
-**The claim was ARGUED, NEVER OBSERVED — and it was not even argued from the
-code.** Both relevant functions check the rollover **first**, and both say so
-in a comment:
-
-- `market_hours.is_entry_allowed` tests `when.hour == ROLLOVER_BLOCK_HOUR`
-  before the `weekday == 6 and hour < ENTRY_REOPEN_HOUR` reopen rule.
-- `live_signal_loop._block_reason` mirrors it deliberately, commented
-  *"Checked before the reopen/pre-weekend catch-all so the rollover hour is
-  attributable on its own … Ordering here MUST mirror is_entry_allowed's rule
-  order."*
-
-So the code was explicit, self-documenting, and the opposite of what this file
-claimed. The claim came from **which rule felt semantically dominant** — "it's
-the Sunday reopen, so the Sunday rule governs" — rather than from reading
-either function or watching either fire. **A conclusion reached by argument
-where an observation was cheap and available.** Same shape as finding 29 and as
-the self-invalidating-probe rule; this is the file's own mechanism catching the
-file.
-
-**The consolation is that it was caught by a scheduled check rather than by an
-incident**, and caught only because CHECK 1 criterion 4 grouped `signal_log`
-rows by hour instead of asserting a single expected string. A check that
-matched only the reason it expected would have passed and taught nothing.
-
-### What Monday 2026-08-24 21:00–21:59 UTC still tests
-
-Not a first fire. Three things the Sunday observation genuinely does not cover:
-
-1. **`is_market_open` is True for a different reason.** Sunday it is True
-   because the venue reopened at 22:00; Monday it is True as an ordinary
-   trading day. The gate is reached through a different path.
-2. **The Sunday reopen rule is not also live.** On Sunday both rules would
-   have blocked, so the observation shows which one *reports* — not that the
-   rollover gate blocks anything the reopen rule would have let through.
-   Monday is the first hour where **this gate is the only thing** standing
-   between a due signal and an entry.
-3. **Criterion 1's exact-string test is now the interesting part**, and its
-   meaning is unchanged: the pre-weekend string appearing in hour 21 means the
-   ordering has drifted. That test was correct all along — it is the
-   *prediction table* that was wrong, not the criterion.
-
-### ✅ VERIFIED Mon 2026-08-24 21:00–21:59 UTC — ALL SIX CRITERIA PASSED
-
-**The weekday case is confirmed. CHECK 2 is closed.** Queried
-`2026-08-25` from the durable `signal_log` rows (`checked_at`, ISO with `T`,
-`+00:00`), every criterion run as an enumeration and the distribution reported
-before the verdict, per ENUMERATE, DON'T ASSERT.
-
-- **Criterion 0 — positive control PASS.** 48 rows, `21:10:46` → `21:55:41`,
-  all six symbols: EURUSD 21, GBPUSD 8, US500 7, AUDUSD 4, US100 4, USDCAD 4.
-  The loop was running; the test genuinely ran.
-- **Criterion 1 — reason strings PASS.** `GROUP BY symbol, signal, error`
-  returned **one bucket**: all 48 rows `BLOCKED` /
-  `entry window closed — daily rollover hour`, the exact string. Zero rows
-  carry `thin reopen / pre-weekend policy`, zero NULL, zero others. The
-  ordering in `_block_reason` has **not** drifted from `is_entry_allowed`.
-- **Criterion 2 — spread PASS.** 48/48 non-null, indices included. The
-  load-bearing ordering holds: sample taken before the block check, blocked
-  branch still calls `log_signal_check`.
-- **Criterion 3 — zero entries PASS.** Zero `trades` rows in hour 21 and zero
-  across all of 2026-08-24; all 48 rows `trade_placed=0`; zero `paper_trades`
-  in the hour. **Reinforced by a second positive control: 58 `paper_trades`
-  rows exist elsewhere on 2026-08-24**, so the loop demonstrably produced
-  entries that day and the hour-21 absence is the gate acting, not a dead loop.
-  Without that row the criterion's absence would have carried no information.
-- **Criterion 4 — cadence PASS.** Unbroken 15-minute cycles across the window
-  from the durable row timestamps, not the heartbeat upsert: 20:10 / 20:25 /
-  20:40 / 20:55 → **21:10 / 21:25 / 21:40 / 21:55** → 22:10 / 22:25 / 22:40 /
-  22:55. No gap.
-- **Criterion 5 — all six symbols PASS, and the indices MATCH FX.** US500 (7
-  rows) and US100 (4) carry the identical error string and non-null spreads.
-  US500's 7 vs US100's 4 is the extra 21:30 cycle where US500 and EURUSD were
-  `_is_due` — a cadence artifact, not differing gate behaviour.
-
-**What Monday tested that Sunday could not**, as scoped in advance:
-`is_market_open` was True as an ordinary trading day rather than via the 22:00
-reopen, and the Sunday reopen rule was **not** also live — so this is the first
-hour where this gate alone stood between a due signal and an entry.
-
+**Retained here because it is a MEASUREMENT and the spread table has no other
+source for this hour:**
 #### 📏 Rollover-hour spreads — measured, and the indices are the interesting part
 
 | symbol | min | max | ~normal | ratio at max |
@@ -2473,78 +1764,6 @@ correct — including criterion 1's exact-string test, which is what would have
 caught an ordering drift. It was the prediction table above them that was
 wrong, and that correction is recorded in place rather than edited away.)*
 
-### On Mon 2026-08-24, after 22:00 UTC, confirm all five
-
-**Run every query as an enumeration, not an assertion** — see "ENUMERATE,
-DON'T ASSERT". Criterion 4 of CHECK 1 found the error in *this section* only
-because it grouped by hour instead of testing for the string it expected.
-Report the distributions first, verdicts second.
-
-0. **Positive control before anything else:** `signal_log` has **any** rows in
-   21:00–21:59 UTC on that date. No rows means the test did not run.
-1. `signal_log` rows exist in 21:00–21:59 UTC with
-   `error = 'entry window closed — daily rollover hour'` — the **exact** string,
-   distinct from `'entry window closed — thin reopen / pre-weekend policy'`.
-   Getting the pre-weekend string instead means the rollover branch is being
-   shadowed by an earlier rule and the ordering in `_block_reason` has drifted
-   from `is_entry_allowed`. **Query it as `GROUP BY symbol, error`**, not as an
-   equality test.
-2. **Zero** `trades` rows with `substr(timestamp,12,2) = '21'` on that date.
-3. `signal_log.spread` **non-null** on FX rows inside the blocked window —
-   sampling must continue through the block. Same load-bearing ordering as
-   CHECK 1: the sample is taken before the block check and the blocked branch
-   still calls `log_signal_check`. The rollover hour is the widest-spread hour
-   of the day and the single most valuable hour to keep sampling.
-4. `signal_loop` heartbeat kept beating through a fully-blocked cycle.
-   (`heartbeat` is an upsert, so past beats are unrecoverable — the durable
-   evidence is unbroken 15-minute `signal_log` cycle timestamps across the
-   window, as used on 2026-08-23.)
-5. **Report what the INDICES did in that hour, not only FX.** The gate is
-   all-instruments — `is_entry_allowed` checks `ROLLOVER_BLOCK_HOUR` *before*
-   the `_ALWAYS_OPEN` short-circuit, specifically so a 24/7 instrument is
-   covered too. US500 and US100 are in the window and log every cycle. The
-   evidence base behind the rule is FX-specific, so **an index behaving
-   differently is exactly the thing that would not appear in an FX-only
-   query.** Enumerate all six symbols; if indices match FX, that is a result
-   worth one line, and if they do not, it is the finding.
-
-**What ABSENCE would mean — read this before concluding anything.** No rows
-carrying that reason on Monday is **not** evidence the gate works. It is
-equally consistent with:
-- no strategy being `_is_due` during that hour (15MIN cadence, so plausible);
-- the roster being all-paper — *paper strategies still reach `_check_symbol`
-  and still log*, so this should not suppress it, but confirm rather than
-  assume;
-- the container not carrying the code.
-
-Distinguish them with a positive control before drawing a conclusion: confirm
-`signal_log` has **any** rows at all in that hour on that date. If it has rows
-and none carry the reason, the gate is broken. If it has no rows at all, the
-loop was not checking and the test simply did not run — reschedule, do not
-conclude.
-
-### ✅ The shadow ratio gate has fired — 2026-08-25 04:04 UTC
-
-`risk/spread_gate.py`, `ENFORCE=False`, k=0.25. It only evaluates on an actual
-BUY/SELL, so it was unexercised until a signal landed. It sits before the
-paper/live branch, so a **paper** signal exercises it — and that is exactly
-what happened, on the first cycle after the 2026-08-25 deploy:
-
-```
-signal_log id: GBPUSD 2026-08-25T04:04:01 PAPER_BUY
-error: SHADOW spread gate: ratio 0.250 >= k 0.25 (GBPUSD, spread=0.00015, sl_dist=0.0006)
-```
-
-**The passing observation is the pairing**: the gate reported *and* the row is
-`PAPER_BUY`, i.e. the trade was still taken. `ENFORCE=False` reports and blocks
-nothing, confirmed rather than assumed. The ratio landed exactly on k — 0.250
-against a 0.25 threshold — which is a boundary case worth knowing the gate
-evaluates with `>=`.
-
-The standing rule is unchanged and now has a baseline to read against: this
-string must **never** appear as the cause of a *skipped* trade while `ENFORCE`
-is False. If a trade is ever missing and this string is the only explanation,
-the shadow gate has been promoted by accident.
 
 ## Stage 4 re-validation — WHERE IT RUNS AND HOW RESULTS COME HOME
 
@@ -2702,314 +1921,50 @@ written, which code-reading had missed.
 
 ## ✅ DEPLOY 2026-08-25 — queue SHIPPED, drift CLEARED
 
-**The deploy queue is empty and the 2026-08-23 drift entry is closed.** Gated
-on CHECK 2, which passed on 2026-08-24; shipped the following morning.
+16 commits, `591dc3a..715bc18`, image `sha256:9da8a7927a09`. Full post-deploy
+verification (six positive observations, none inferred from silence) →
+`docs/OPERATIONS_LOG.md`.
 
-| | |
-|---|---|
-| running image | `sha256:9da8a7927a09`, built **2026-08-25 04:02 UTC** |
-| image contains | `715bc18` — same as `origin/main` at deploy time |
-| carried in | **16 commits**, `591dc3a..715bc18`, resolved from `git log` at deploy time rather than from a list |
+**The one item worth repeating here:** the collector disable existed in the
+container only as a `docker cp`, which Unverified Controls instance 3 says is
+lost on rebuild. **This rebuild is what made it permanent.** The crontab md5
+anchor below is how you check that a future rebuild has not silently reverted
+it.
 
-The queue was resolved with `git rev-list --count 591dc3a..origin/main` against
-the running image's commit, exactly as the previous entry instructed — **not**
-from an enumerated list. That rule was written after an enumerated list went
-stale within one commit, and it held: the queue had grown from 5 to 16 between
-the note being written and the deploy happening.
-
-**Runtime-reachable in what shipped:** `4323dea` (the `scripts/crontab`
-collector disable, the new `ig_allowance.py`, and its two additive
-`log_allowance` call sites in `candle_stream._rest_fetch` and
-`engine.fetch_candles`). `40d716b`, `be0138c` and `6145779` touch the backtest
-engine only — `bot/live_signal_loop.py` does not import
-`backend.backtesting.engine`, so they are unreachable from the loop, webhook,
-poller or execution path. Everything else is docs.
-
-**Post-deploy verification — every item a positive observation, none inferred
-from silence:**
-
-1. ✅ in-container `/etc/cron.d/trading-bot` md5
-   **`0f1cc206193f5d30341c3db530357b06`**, byte-matching the committed
-   `scripts/crontab`. **This was the one that mattered most**: the collector
-   disable existed in the container only as a `docker cp` (lost on rebuild per
-   Unverified Controls instance 3), and this rebuild is what made it permanent.
-   One active cron line, the 06:10 Stage E job.
-2. ✅ **CHECK 3 PASSED** — 7/7 warm-up pairs `source=IG REST`, zero yfinance
-   fallback, `[ig_allowance]` printing live. See the CHECK 3 result block,
-   including the two things it cost.
-3. ✅ finding 29's rule: `ig_allowance` imports, `bot.live_signal_loop` imports
-   with `STRATEGIES: 34`, and `main` / `webhook.receiver` /
-   `data.positions_poller` all import clean. Run **before and after** the
-   deploy; the pre-deploy baseline was identical, so a post-deploy pass is a
-   comparison rather than an isolated reading. `ig_allowance.py` confirmed
-   present at `/app/ig_allowance.py` — a new module imported by two files in
-   the loop's import graph, whose absence would stop the bot booting.
-4. ✅ stamps unchanged: `parity-v2`.
-5. ✅ `localhost:80` 200, `/health` 200, `/webhook` 405; all three containers up.
-6. ✅ both heartbeats beating after the restart, a full cycle logged, and
-   `signal_log.spread` non-null on every FX symbol. The **shadow spread gate
-   fired for the first time** on the same cycle — see CHECK 2's section.
-
-**The next deploy has no queue.** Re-verify the crontab md5 anchor above
-whenever one is built; it is the check that catches a rebuild silently
-reverting the collector disable.
-
-⚠️ **Do not rebuild before 2026-09-01T04:02 UTC without a reason that
-outweighs the cost.** A restart now re-warms all seven pairs against an
-**exhausted** historical allowance, so every buffer falls back to yfinance —
-for indices, the off-session staleness the 2026-07-15 flip existed to fix. See
-the live-exposure note in the CHECK 3 section.
+**The deploy queue must be resolved from `git log` against the running image's
+commit, never from an enumerated list** — a list written here went stale within
+one commit, and the queue had grown 5→16 between the note and the deploy.
 
 ## ✅ DEPLOY 2026-08-22 — earlier drift CLEARED
 
-The repo/image drift recorded here from 2026-08-21 is **resolved**. Kept as a
-short record rather than deleted, because "the image matches the repo" is an
-assumption every verify-the-deploy step in this file makes, and the date it
-became true again is worth knowing.
+Image `sha256:42f5585b3e34` at `591dc3a`. Record → `docs/OPERATIONS_LOG.md`.
+Kept as a pointer because "the image matches the repo" is an assumption every
+verify-the-deploy step in this file makes, and the date it became true again is
+worth knowing.
 
-| | |
-|---|---|
-| running image | `sha256:42f5585b3e34`, built **2026-08-22 18:07 UTC** |
-| image contains | `591dc3a` — same as `origin/main` at deploy time |
-| carried in | `7d6e961`, `1d3725d`, `66e4d54`, `3708a49`, plus `d6f1c8c` (finding 31 columns) and `591dc3a` (Stage 4 export/import) |
-
-**Post-deploy verification — every item a positive observation, none inferred
-from silence:**
-
-- committed `scripts/crontab` md5 **`aea93925651e8ee24ce7d52e70b3434d`**, and
-  in-container `/etc/cron.d/trading-bot` matches byte-for-byte. The disable
-  survived the rebuild.
-- **finding 29's rule**: `bot.live_signal_loop` imports in the deployed image,
-  `STRATEGIES: 34`. `main`, `webhook.receiver` and `data.positions_poller` all
-  import clean too.
-- `docker exec … scripts/run_backtest.py --help` now offers **`--from-roster`
-  and `--roster-db`**, which failed with `unrecognized arguments` before this
-  deploy.
-- stamps unchanged: **`parity-v2` / `paper-v2` /
-  `flat-roundtrip-dollars-UNCALIBRATED`**.
-- `localhost:80` 200, `/health` 200, `/webhook` 405. All three containers up.
-- both heartbeats beating after the restart (`signal_loop` 18:09:18,
-  `candle_stream` 18:08:32), a 15-key cycle logged, and `signal_log.spread` is
-  **non-null on AUDUSD (0.00053) and USDCAD (0.00061)**.
-
-⚠️ **Do not read that last spread observation as CHECK 1's criterion 4.** It is
-a Saturday: the venue is shut, and those numbers exist only because the
-container restart re-warmed the stream from a **closed book**. Pre-deploy the
-same column was NULL on all six symbols for the whole day. It proves the
-sampling path survived the deploy — nothing more. Criterion 4 still needs the
-**Sunday reopen**, per the CHECK 1 result block.
-
-⚠️ **The restart burned IG historical-data quota** re-warming every buffer:
-`error.public-api.exceeded-account-historical-data-allowance` on GBPUSD/15MIN,
-USDCAD/15MIN, US100/15MIN, US500/15MIN and US500/HOUR, all falling back to
-yfinance. Expected, deduped per the 2026-07-16 cooldown, and self-clearing —
-but a weekday rebuild pays this cost during live hours, so prefer weekends.
-
-Note for anyone probing a deployed container: `python3 -c "import
-webhook.receiver"` **creates a fresh IG session on import** (documented gotcha).
-Three such probes in a row on 2026-08-22 produced three session recreations and
-a run of `[ig_scale] market fetch failed` lines on the FX epics. That is the
-probe's own cost, not a fault in the deploy — but it is a real cost, so probe
-imports sparingly.
+**Two costs recorded there that recur on every weekday rebuild:** the restart
+burns IG historical allowance re-warming every buffer (prefer weekends), and
+`python3 -c "import webhook.receiver"` **creates a fresh IG session on import** —
+three such probes produced three session recreations. Probe imports sparingly.
 
 ## Stage 4 DRESS REHEARSAL — one strategy, 2026-08-23
 
-AUDUSD 15MIN `williams_r`, `--from-roster --roster-db ./roster.db` against a VPS
-snapshot (`git_head 591dc3a`, host `trading-bot`, 31 rows). Run before Stage 4
-so that anything surprising surprises us on one strategy rather than thirteen.
-It did.
+AUDUSD 15MIN `williams_r` against a VPS roster snapshot. Run so that anything
+surprising surprised us on one strategy rather than thirteen. It did.
 
-**Wall clock: 1 minute 46 seconds**, against a 27-minute estimate — roughly 15x
-faster. Breakdown, all four stages sequential on 29,995 candles:
+**Headlines that govern Stage 4 planning** (full account → `docs/OPERATIONS_LOG.md`):
+- **1m48s per strategy, not 27 minutes.** Thirteen strategies is under an hour.
+  No case for parallelising, none for a reduced gauntlet on time grounds.
+- **Two defects found and FIXED** (`40d716b`): the stability map persisted in a
+  batch at the end (a crash at cell 80 of 84 lost everything), and
+  `windows_json` was NULL on all 84 cells. Both now verified by reconstruction.
+- **`parity-v2` makes AUDUSD materially worse**: REJECT 11→**50** of 84 cells,
+  the single ROBUST cell **gone**. Risk of ruin 67.3–84.3% at $10/$500.
+- **Round trip to the VPS is idempotent** — re-import inserted 0, skipped 92.
 
-| stage | duration | persisted |
-|---|---|---|
-| single backtest | ~1 s | 1 `backtest_results` row |
-| walk-forward | ~2 s | 1 `walkforward_runs` row |
-| permutation (200 synthetic runs) | 70 s | 1 row |
-| stability map, 84 cells + MC top-5 | 33 s | 84 + 5 rows |
-
-Plus ~1 min for export → scp → import → read-back → re-import. **The 27-minute
-figure should not be carried into Stage 4 planning.** Thirteen strategies is
-minutes, not hours — which changes what is worth parallelising (nothing) and
-removes the main argument for running a reduced gauntlet.
-
-### ✅ BOTH REHEARSAL DEFECTS FIXED — commit `40d716b`, 2026-08-23
-
-The two findings below were fixed and the rehearsal re-run end to end before
-Stage 4. Kept in full because *what they were* is the reusable lesson.
-
-- **Cells now persist the moment they are produced**, via an `on_cell` callback
-  on `run_stability_map`. Verified by interrupting a sweep at 25s: **72 of 84
-  cells survived**, all with windows. Pre-fix that number is 0 by construction.
-- **Cells now store the full per-window list.** Verified by reconstruction, not
-  by presence: all 84 cells reproduce their stored `median_pf` and
-  `pct_profitable` from their stored windows using the engine's own median rule
-  — on the local DB and again after import on the VPS. A column that cannot
-  rebuild the verdict it sits next to is decorative; this one is not.
-- **No `engine_version` bump, and that was checked rather than assumed**: the
-  re-run returns the identical verdict distribution (FRAGILE 22 / MARGINAL 12 /
-  REJECT 50) and the identical single-backtest figure. Persistence changed, the
-  trade model did not.
-- **Cost: 1m46s → 1m48s**, export file 61 KB → 200 KB.
-- `neighbor_avg_pf` is merged in after the sweep (it is a property of a cell's
-  neighbours and cannot exist when the cell is written) via
-  `models.update_walkforward_extra`, which **merges rather than replaces** so it
-  can never drop `params_source` or an import stamp.
-
-**✅ The permutation row's windows were fixed too** (2026-08-23). It stores the
-REAL walk-forward's per-window breakdown, so **both legs of the row are now
-checkable from the row alone**: `median_pf` rebuilds from `windows_json`
-(1.0784, exact), and `percentile` rebuilds from `synthetic_median_pfs` (100.0,
-exact). The 200 synthetic runs' windows are deliberately NOT stored — their unit
-of analysis is the distribution of medians, which `extra_json` already carries in
-full, and 200 window lists would bloat the row for nothing.
-
-`monte_carlo` rows still carry `windows_json` NULL, correctly: a bootstrap
-resamples a P&L list and has no windows to record.
-
-**The pre-fix rehearsal rows are KEPT AND MARKED, not deleted** — 91 rows on
-each of local and VPS now carry `extra_json.superseded_by` and
-`superseded_reason`. Their verdicts are correct and reproduce exactly in the
-replacement batch; what they cannot do is show the windows that produced them.
-That distinction is the whole point, and deleting them would erase the evidence
-that the defect existed.
-
-### 🔴 FINDING 1 (fixed) — the stability map persisted in a BATCH AT THE END
-
-`run_stability_map()` computes all 84 cells, returns, and only then does
-`run_backtest.py` loop over `stability["cells"]` calling `_persist_wf_run`.
-Measured: computation 03:59:00 → 03:59:29, **all 84 rows written 03:59:29 →
-03:59:32**. Nothing is durable until the whole map finishes.
-
-**This is the walkforward_runs gap one layer up.** That table exists because the
-2026-07-15 AUDUSD verdict was console-only and is now unrecoverable. Persisting
-at the end reintroduces exactly that exposure: a crash, an OOM, a Ctrl-C or a
-laptop sleep at cell 80 of 84 loses all 84 cells' work with no partial record
-and no way to tell how far it got.
-
-At 33 seconds for AUDUSD this is survivable. **It is the wrong shape for a
-13-strategy batch**, and it is the one stage where the fix matters, because it
-is also the most expensive stage. Every other stage already persists as it
-produces: the `--sweep` walk-forward writes inside its loop, and the auto-MC
-writes inside its loop. Only the map defers. Fix is to persist per cell inside
-`run_stability_map`'s loop, or to yield cells — **not done here**, recorded so
-Stage 4 does not run 13 strategies on this shape by default.
-
-### Also found
-
-- **🔴 FINDING 2 (fixed) — `windows_json` was NULL on all 84 stability cells.**
-  `run_stability_map` stored `windows` as a COUNT, so a cell recorded its
-  verdict, median PF and pct-profitable but not the per-window breakdown that
-  produced them. That is precisely the detail whose absence made the 2026-07-15
-  AUDUSD result unrecoverable — reproduced, in the table built to prevent it, on
-  the stage that generates 84 verdicts at a time rather than one.
-- **`STABILITY_GRIDS` contains ONLY `williams_r`.** A 13-strategy Stage 4 would
-  emit **12 `REDUCED_GAUNTLET` markers** and one real stability map. The marker
-  mechanism works (verified below), so this is not silent — but "Stage 4 ran the
-  full gauntlet" would be true of one roster row out of thirteen.
-- **The VPS `walkforward_runs` table had ZERO rows** before this import. All 280
-  local rows were local-only. Finding 11's corpus split was total for that
-  table, not partial.
-- **`export_roster.py` run INSIDE the container records `git_head = NULL`** —
-  `git` is not installed in the image and `/app` is not a work tree. Run it on
-  the VPS **host** (read-only access to the DB works fine as `ubuntu`); only
-  writes are blocked. A roster snapshot with a NULL git_head is the
-  no-provenance case the script exists to prevent.
-
-### ⚠️ parity-v2 makes the AUDUSD stability picture materially WORSE
-
-Same 84-cell grid, same cache, roster params — but under `parity-v2` rather
-than the pre-parity engine whose numbers this file records elsewhere:
-
-| verdict | pre-parity (recorded above) | **parity-v2 (this run)** |
-|---|---|---|
-| ROBUST | 1 | **0** |
-| FRAGILE | 38 | 22 |
-| MARGINAL | 34 | 12 |
-| REJECT | 11 | **50** |
-
-**REJECT goes from 11 of 84 to 50 of 84, and the single ROBUST cell is gone.**
-Best cell is `period=10, oversold=-95, overbought=-20`, median PF 1.2022, 66.7%
-windows — FRAGILE, not ROBUST. The correction in Active Strategies that already
-downgraded "robust plateau" to "one robust point in a mostly-fragile field" now
-goes further: under the current engine there is no robust point at all.
-
-Consistent with the rest: the single backtest reproduced this file's documented
-parity-v2 figure **exactly** — `n=221, net=$124.45` — so the engine is behaving
-as recorded. Walk-forward on the full cache: **FRAGILE**, median PF 1.0784,
-50.0% of windows profitable, 585 trades, worst window PF 0.83. Permutation:
-real result at the **100.0th percentile** of 200 synthetic runs under
-`seed=42`, EDGE CONFIRMED — the signal is not noise, it is a real but fragile
-edge that the demo record (PF 0.71 live) says is not currently profitable after
-costs.
-
-⚠️ **State that as "at the resolution floor", never as "100%".** At
-`n_iter=200` the p-value floor is 0.00498, so 100.0 means only *no synthetic run
-beat the real one* — it cannot separate a result at the 99.6th percentile from
-one at the 99.99th. The unseeded runs that preceded it gave 98.5 and 99.0 (2 and
-1 synthetics above the real result). **All three are the same claim at this
-resolution**; the spread is the tail noise the floor exists to warn about, not
-disagreement.
-
-**Seeding history, kept as the evidence for finding 32.** Before 2026-08-23 both
-`permutation_test` and `bootstrap_mc` ran `seed=None` and stored no seed, so
-re-running the identical gauntlet on identical candles moved the percentile
-98.5 → 99.0 and every MC cell. Both now REQUIRE an explicit seed
-(`UnseededRunError` otherwise), store it on the row, and stamp
-`reproducible: true/false`. `--seed` defaults to 42, so reproducibility is the
-default rather than an option.
-
-Verified both ways, because **a seed that changes nothing is as broken as no
-seed**: same seed twice → all 200 synthetic medians identical and every MC
-distribution field equal; different seed → both move. Separately the
-*deterministic* stages were confirmed deterministic — two independent stability
-maps agreed on **84/84** cells for verdict, median PF and pct-profitable.
-
-Monte Carlo on the top-5 plateau cells reports **risk of ruin 67.3%–84.3%**
-(`seed=42`, reproducible) at
-$10 risk on a $500 account. That is the $500 planning account, not the demo
-account — see the Phase-5 Sizing Reference for why the demo cannot produce a
-ruin event — but it is far worse than the pre-parity ruin table's 5.58% at the
-same fraction, and that table is explicitly flagged there as needing
-regeneration under the fixed engine. **This is that regeneration's first data
-point, and it says the old table was optimistic by more than an order of
-magnitude.**
-
-### Mechanisms confirmed working (positive observations, not silence)
-
-- **MC stamp hardening refuses an unstamped trade list.** `bootstrap_mc` with no
-  `engine_version` → `UnstampedTradesError`; with `pre-parity-v0` → refuses to
-  resample across trade models; with `parity-v2` → accepts and stamps the
-  result. All three branches exercised, including the passing one.
-- **`REDUCED_GAUNTLET` marker persists when a grid is missing.** Forced with
-  `bb_squeeze` (no `STABILITY_GRIDS` entry): one `stability_map` row, verdict
-  `REDUCED_GAUNTLET`, carrying `engine_version`, `spread_model`,
-  `spread_table_sha`, full cache fingerprint, and
-  `extra_json.params_source = "roster:active_strategy.id=24"`.
-- **Every stage stamps correctly**: all 91 rows `parity-v2` /
-  `flat-roundtrip-dollars-UNCALIBRATED` / `1ca5c7cb03b2ccc2`, zero rows with a
-  NULL `cache_file`.
-- **Round trip to the VPS**: 1 `backtest_results` + 91 `walkforward_runs`
-  exported, imported, read back with `produced_on = LAPTOP-6PF6QIRR` and
-  `roster_snapshot.git_head = 591dc3a` intact; **re-import inserted 0, skipped
-  92.** Idempotent on production.
-
-### Operational sequence the rehearsal established
-
-The VPS `database/trades.db` is **root-owned**, so:
-
-```
-# VPS host — backup works (read-only source), and git_head resolves here
-python3 scripts/export_roster.py --out /tmp/roster.db
-python3 -c "import sys;sys.path.insert(0,'.');from scripts.import_stage4 import backup_target;backup_target('database/trades.db','/home/ubuntu/backups')"
-# import must run IN the container — same file via the ./database volume
-docker cp /tmp/stage4_<stamp>.db trading_bot-bot-1:/tmp/
-docker exec trading_bot-bot-1 python3 /app/scripts/import_stage4.py     --file /tmp/stage4_<stamp>.db --target /app/database/trades.db --no-backup --confirm
-```
-
-`--no-backup` is correct **only** because the host took one first. Record it in
-the Database Backups table in the same change.
+The operational sequence (export on the host, import in the container, the
+root-owned-DB constraint) is in the Stage 4 re-validation section above, not in
+the archive — it is a runbook, not a record.
 
 ## 🚦 GATE — do not build the spread table before these are all true
 
@@ -3178,54 +2133,21 @@ so the live path keeps a reserve. `scripts/candle_cache/` is **not** a volume
 (`docker-compose.yml` mounts only `./database`) — anything written there dies
 with the image layer.
 
-### 🔴 The live path pays TWICE per restart — gap-backfill duplicates warm-up
+### ✅ FIXED — gap-backfill no longer duplicates warm-up (change 1, 2026-09-02)
 
-*(measured 2026-08-25 on the first restart with the meter live. **Finding 37.
-Scoped there, deliberately NOT fixed** — kept separate from the post-reset
-measurement work.)*
+`_backfill_gap` had an upper bound and no lower one: it ran for every pair on
+every reconnect and always requested the `WARMUP_COUNT` ceiling, re-fetching
+200 points per pair seconds after warm-up had filled the same buffers. **1,400
+points off a 10,000/week allowance for zero candles, every restart.** Finding
+37; full pre-fix measurement → `docs/INCIDENT_HISTORY.md`.
 
-A restart costs **2,800 points, 28% of the weekly allowance** — not the ~1,400
-this file predicted. Fourteen REST calls, not seven: warm-up fetches 200 per
-pair, then gap-backfill immediately re-fetches 200 per pair and leaves the
-buffer at the same 200 candles (`gap backfill AUDUSD/15MIN: buffer now 200`).
-**Zero candles gained, 1,400 points spent, every reconnect.**
+Fixed by `_bars_missing()` — skips when the buffer is current (`missing <= 1`)
+or future-dated (`missing < 0`); unknown still fetches, because a redundant
+backfill costs points while a wrongly-skipped one leaves the loop on stale
+candles.
 
-**Arguably worse than the collector it sits next to.** The collector wasted
-~98% on a schedule that could be — and was — commented out. This wastes **100%**
-on the **live path**, fires on **every stream reconnect** rather than a cron
-line, and cannot be disabled without touching the candle path. At 2,800 points
-per restart the weekly allowance funds **three**.
-
-Fix options are scoped in finding 37 (prefer: skip the backfill when warm-up
-just ran, *and* size backfills to the measured gap rather than `WARMUP_COUNT`).
-
-**CHANGE 1 SHIPPED 2026-09-02 — the SKIP half only.** `_backfill_gap` now calls
-`_bars_missing()` and returns without issuing a REST request when the buffer is
-already current (`missing <= 1`) or future-dated (`missing < 0`). Unknown
-(`None` — empty buffer, unmapped timeframe, unparseable timestamp) still
-fetches: a redundant backfill costs points, a wrongly-skipped one leaves the
-signal loop on stale candles.
-
-**Sizing a real backfill to the measured gap is NOT in change 1** — that needs
-the minimum accepted `numpoints`, still unmeasured. Skipping needs no such
-measurement because it issues no request at all, which is why the halves
-shipped separately.
-
-**⚠️ The verification predicate as originally written was WRONG — it asserted a
-fixed count.** "Seven lines, `remaining=8600`" bakes in an assumption about how
-many pairs fetch, and a restart where one pair legitimately needs a backfill
-would read as a failure. Enumerate per pair instead:
-
-1. **one `[ig_allowance]` line per pair that actually reached IG** — name them,
-   do not count them;
-2. **a skip line naming its reason for every pair that did NOT fetch** —
-   `skipped, no REST request — buffer current ...`. A pair that is silent in
-   both lists is the interesting case: it means neither branch ran.
-3. **remaining delta == 200 x (number of pairs that fetched)**, computed from
-   the enumeration in (1), *not* compared against a constant.
-
-Expected on a clean restart: ~**1,400** for warm-up, ~**0** for backfill,
-against 2,800 before.
+**NOT fixed: sizing a real backfill to the measured gap.** That needs the
+minimum accepted `numpoints`, still unmeasured.
 
 #### ✅ VERIFIED 2026-09-02 01:27–01:32 UTC — restart cost HALVED, 1,400 not 2,800
 
@@ -3352,15 +2274,9 @@ Known, accepted, still real — probe sparingly.
 *(The exhausted-allowance block below is retained as the state it describes,
 which is what the 2026-09-01 reset ended.)*
 
-### ⛔ STATE AS OF 2026-08-25 — allowance EXHAUSTED, resets 2026-09-01T04:02 UTC (SUPERSEDED)
-
-| | |
-|---|---|
-| reset time | **2026-09-01T04:02:18+00:00** — read from `resets_at`, first time ever known |
-| window shape | **rolling 7 days from the first request after a reset** (`expiry=604799s`), not a fixed weekly boundary — it MOVES, re-read it |
-| spent on the deploy warm-up | **2,800** of 10,000 (28%) — see finding 37, half of it wasted |
-| spent on the unknowns probe | the remaining **~7,200** — see finding 38, and it measured nothing |
-| remaining | **0** |
+*(The 2026-08-25 exhausted-allowance state block → `docs/INCIDENT_HISTORY.md`.
+It is what the 2026-09-01 reset ended, and it records that the allowance was
+destroyed by a probe rather than by use — see finding 38.)*
 
 ### 🔭 TWO UNKNOWNS — STILL UNMEASURED. Probe from the SMALLEST request upward.
 
@@ -3469,20 +2385,17 @@ columns (`d6f1c8c`).
   1.7 GB and 29 GB free, disk is not pressing — check before the next rebuild.
 
 ## Infrastructure Incidents
-2026-08-15: Selector-disable deploy (commit 9e5f21a). `run_daily` 06:00 cron
-permanently disabled in `scripts/crontab`; Stage E added at 06:10;
-`SYMBOL_BLOCKLIST` widened to all three selector symbols. Rebuild verified by
-marker test, not by absence. **Open positions at the time: 937 EURUSD, 939
-AUDUSD (both 2026-08-07 williams_r SELLs), 964 GBPUSD, 965 USDCAD (both opened
-2026-08-14 14:00 UTC).** 938 and 954 from the earlier handoff had closed by
-then — the roster churns, never carry a hardcoded position list forward.
+Two recorded; full accounts → `docs/OPERATIONS_LOG.md`.
 
-2026-07-02: Found stale systemd service (tradingbot.service) running
-since Apr 12 alongside Docker container — both sharing same IG account,
-same DB, same repo. Duplicate signal loop was firing live trades on
-stale Apr-12 code for 3+ months undetected. Process killed, systemd
-service disabled. Docker-only policy confirmed — no systemd services
-should run the bot.
+- **2026-08-15** selector-disable deploy (`9e5f21a`), verified by marker test.
+- **2026-07-02** a stale `tradingbot.service` had been running since Apr 12
+  **alongside** the Docker container — same IG account, same DB — firing live
+  trades on 3-month-old code, undetected. **This is why the policy is
+  Docker-only, no systemd**, and why `watchdog.py` checks for a duplicate
+  uvicorn process outside the container's own tree.
+
+⚠️ The 2026-08-15 record lists the open positions at that moment. **The roster
+churns — never carry a hardcoded position list forward.**
 
 ## Key Gotchas
 - VPS backtest_results table diverges from local —
@@ -3600,36 +2513,10 @@ PHASE 7 — Risk Management & Stability
 ---
 
 ## Completed ✅
-- Phase 1A: SQLite database + table schemas
-- Phase 1B: Streamlit dashboard (4 pages)
-- Phase 1C: Docker Compose on VPS (3 containers)
-- Phase 1D: Nginx remote access live
-- Phase 2A: Live trade logging → database
-- Phase 2B: Positions poller + close detection
-            Consecutive empty counter, deal_reference
-            match, timezone fix, deferred P&L checker
-- Phase 3:  Backtesting engine complete
-- Phase 4:  11 strategies built and backtested
-            yfinance as default data source
-            connors_rsi2 added (daily bars only — not active)
-- Phase 5:  Strategy Selector complete
-            active_strategy unique on symbol+timeframe
-            Morning cron auto-selects best per symbol+TF
-- Phase 6:  Daily Automation complete
-            bot/live_signal_loop.py — unified loop,
-            timeframe-aware, wakes every 5min
-            scripts/run_daily.py — 6am UTC cron
-            scripts/sync_ig_trades.py — self-contained,
-            duplicate-safe IG import
-            dashboard pages 01-08 complete
-            signal_log table — heartbeat monitoring
-            paper_trades table — forward test tracking
-            Source labels: swiftalgo/signal_loop/manual/ig_import
-            Active HOUR live: US500 stoch_rsi, US100 stoch_rsi
-            Active HOUR paper: DAX rsi, BTC vwap_ema
-            Active 5MIN paper: US100 stoch_rsi
-
----
+Phases 1A–6 complete (database, dashboard, Docker/nginx on VPS, trade logging,
+positions poller, backtesting engine, 11 strategies, strategy selector, daily
+automation). Per-phase detail → `docs/OPERATIONS_LOG.md`. Current phase and
+what remains in it are below.
 
 ## Upcoming Phases
 
