@@ -3227,6 +3227,71 @@ would read as a failure. Enumerate per pair instead:
 Expected on a clean restart: ~**1,400** for warm-up, ~**0** for backfill,
 against 2,800 before.
 
+#### ✅ VERIFIED 2026-09-02 01:27–01:32 UTC — restart cost HALVED, 1,400 not 2,800
+
+Enumerated per pair, per the corrected predicate. Deploy `cc9055d`,
+image rebuilt 01:27:25 UTC.
+
+**(1) One `[ig_allowance]` line per pair that reached IG — SEVEN, named:**
+
+| pair | remaining after its call |
+|---|---|
+| AUDUSD/15MIN | 5,590 |
+| EURUSD/15MIN | 5,390 |
+| GBPUSD/15MIN | 5,190 |
+| US100/15MIN | 4,990 |
+| US500/15MIN | 4,790 |
+| US500/HOUR | 4,590 |
+| USDCAD/15MIN | 4,390 |
+
+All seven `source=IG REST`, zero yfinance fallback, zero quota errors.
+
+**(2) A skip line naming its reason for every pair that did NOT fetch — SEVEN,
+the same seven, all in the backfill pass:**
+
+```
+[candle_stream] gap backfill AUDUSD/15MIN: skipped, no REST request —
+    buffer current — newest bar is 0 bucket(s) back, nothing complete is missing
+```
+…identically for EURUSD/15MIN, GBPUSD/15MIN, US100/15MIN, US500/15MIN,
+US500/HOUR, USDCAD/15MIN. **No pair is silent in both lists** — that was the
+case worth checking, and it did not occur.
+
+**(3) Remaining delta == 200 x (pairs that fetched), from the enumeration:**
+5,790 → 4,390 = **1,400 = 200 x 7**. Backfill contributed **0**.
+
+`ig_allowance` line count for the whole boot: **7**, not 14. Non-skipped
+backfill fetches since restart: **0**.
+
+**Against the pre-change baseline: 2,800 → 1,400.** The weekly allowance now
+funds ~7 restarts instead of 3.
+
+Rest of the post-deploy check, every item a positive observation:
+- **finding 29 full import check, in-container, before AND after** — 17/17
+  modules import clean both times (the local check was partial: no fastapi, so
+  `main` and `webhook.receiver` were never exercised there). `STRATEGIES: 34`,
+  `_bars_missing` callable in the image.
+- in-container `/etc/cron.d/trading-bot` md5 **`0f1cc206193f5d30341c3db530357b06`**,
+  byte-matching the committed `scripts/crontab`. One active line, the 06:10
+  Stage E job.
+- `/app/ig_allowance.py` present.
+- stamps unchanged: **`parity-v2` / `paper-v2` /
+  `flat-roundtrip-dollars-UNCALIBRATED`**.
+- both heartbeats resumed after the restart — `candle_stream` 01:30:39,
+  `signal_loop` 01:31:51 (its pre-restart beat was 01:26:38; the post-restart
+  one was **waited for**, not inferred).
+- spread sampling flowing: **13 of 13** `signal_log` rows since the restart
+  carry a non-null spread, all six symbols present (EURUSD 5, US500 3,
+  GBPUSD 2, AUDUSD 1, US100 1, USDCAD 1).
+- `localhost:80` 200, `/health` 200, `/webhook` 405; all three containers up.
+
+**⏸️ HOLD — the finding-38 probe is deliberately NOT run.** Observe the
+post-change daily burn first. Pre-change it was ~4,210 per 18 hours with no
+restart; if change 1 works that should fall sharply, and the size of the drop
+is what says how much of the ~2,790 spare is genuinely free rather than
+reserved against reconnects. Budget the probe against the observed rate, not
+against the headline remaining.
+
 ### The allowance is now logged — `ig_allowance.py`
 
 IG returns `allowance{remainingAllowance, totalAllowance, allowanceExpiry}` on
