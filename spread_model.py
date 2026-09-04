@@ -16,12 +16,17 @@ The same reasoning applies to MIN_SL_DIST, which is currently an uncalibrated
 hand-set table that drives sizing on 45-55% of FX entries with no provenance at
 all — recorded as finding 14 in docs/SESSION_20260812_FINDINGS.md, not fixed.
 
-CURRENT STATE: NOTHING HERE IS MEASURED.
-`flat-roundtrip-dollars-UNCALIBRATED` names what engine.py actually does today:
-subtracts a flat per-round-trip dollar constant from SPREAD_COSTS at exit. That
-is not what live pays. Live crosses the book at ENTRY, in price units, which
-shifts both trigger levels rather than deducting a fee — so the current model
-is wrong in units, wrong in timing, and does not scale with position size.
+CURRENT STATE (2026-09-04, pass B): `measured-2026-09-median` is STAMPED AND
+APPLIED. engine.py crosses the book in PRICE units — half the measured spread
+at entry on the side taken, half at exit on the side crossed — under
+engine_version parity-v3.
+
+The predecessor `flat-roundtrip-dollars-UNCALIBRATED` subtracted a flat
+per-round-trip dollar constant from SPREAD_COSTS at exit. That was not what
+live pays: live crosses the book at ENTRY, in price units, which shifts both
+trigger levels rather than deducting a fee — so it was wrong in units, wrong
+in timing, and did not scale with position size. It is retained in the History
+below because rows stamped with it still exist and must stay readable.
 
 It is left in place deliberately rather than replaced with a guess:
   - NORMAL_SPREADS covers only US500, EURUSD and DAX. Three of the four
@@ -43,7 +48,7 @@ import hashlib
 
 # Names the spread treatment a result row was produced under. Stamped into
 # backtest_results.spread_model and walkforward_runs.spread_model.
-CURRENT_SPREAD_MODEL = "flat-roundtrip-dollars-UNCALIBRATED"
+CURRENT_SPREAD_MODEL = "measured-2026-09-median"
 
 # History:
 #   flat-roundtrip-dollars-UNCALIBRATED
@@ -52,14 +57,15 @@ CURRENT_SPREAD_MODEL = "flat-roundtrip-dollars-UNCALIBRATED"
 #       against a real quote, never revised. Treat every figure produced
 #       under this model as optimistic by an unquantified amount.
 #   measured-2026-09-median
-#       MEASURED AND FROZEN 2026-09-03, NOT YET APPLIED. Per-symbol median,
-#       one-way, PRICE units, from signal_log spread samples over two complete
-#       Mon-Fri cycles (see MEASURED_SPREADS_2026_09 below). The name is
-#       REGISTERED HERE ONLY — CURRENT_SPREAD_MODEL still names the flat
-#       dollar constant, because that is still what engine.py does. Stamping
-#       this name before the engine applies the table would mislabel every row
-#       written in between, which is the one failure the stamp exists to
-#       prevent.
+#       Measured and frozen 2026-09-03 (pass A); STAMPED AND APPLIED
+#       2026-09-04 (pass B, engine_version parity-v3). Per-symbol median,
+#       PRICE units, from signal_log spread samples over two complete Mon-Fri
+#       cycles (see MEASURED_SPREADS_2026_09 below). Half is crossed at entry
+#       on the side taken and half at exit on the side crossed.
+#       In pass A the name was registered here but NOT stamped, because the
+#       stamp must describe what the engine actually does — flipping it early
+#       would have mislabelled every row written in between. That is why the
+#       two passes exist.
 #       TAIL IS UNCALIBRATED: median only. Not usable for risk of ruin.
 
 

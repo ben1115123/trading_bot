@@ -1214,3 +1214,181 @@ accumulation can produce an hour-21 sample in a market-open-filtered pool.
 
 ---
 
+
+## 📏 parity-v3 — measured spread applied to prices, 2026-09-04
+
+Dated detail. The standing conclusion, the version meaning and the residual
+live in CLAUDE.md and `engine_version.py`.
+
+Pass B of two. Pass A measured and froze the table (2026-09-03) without
+applying it; this applies it, flips `CURRENT_SPREAD_MODEL` to
+`measured-2026-09-median`, and bumps `CURRENT_ENGINE_VERSION` to `parity-v3`.
+
+### STEP 0 — the price-series identity, and why it is a RESIDUAL not a finding
+
+The symmetric half-spread application is only correct if the vendor caches
+carry a **mid**. `candle_source_compare` was the available evidence:
+`delta_pips = (yf_close - stream_close) / pip_size`, and `stream_close` is
+explicit mid — `(BID_CLOSE + OFR_CLOSE)/2`, `candle_stream.py:551-560`. So a
+bid series should read −1.0× its half-spread on every symbol, an ask series
++1.0× on every symbol.
+
+**First cut was contaminated and it had to be found before the numbers meant
+anything.** The comparison differences `yf_candles[-2]` against
+`stream_candles[-1]` — *different bars* — so it carries a price-drift term.
+Measured: the median timestamp gap is 0 minutes on FX but the mean is 24–43
+minutes, and on the indices the median gap is 390–510 minutes. Restricting to
+rows whose two timestamps are **identical** removes the drift term:
+
+| symbol | n (same-timestamp) | mean delta | half-spread | ratio |
+|---|---|---|---|---|
+| AUDUSD | 2451 | **+2.434 pips** | 0.30 | **+8.1×** |
+| EURUSD | 3182 | **+3.209 pips** | 0.30 | **+10.7×** |
+| GBPUSD | 3345 | **+0.340 pips** | 0.45 | **+0.76×** |
+| USDCAD | 2840 | **−0.935 pips** | 0.65 | **−1.44×** |
+
+**The signs disagree and the magnitudes span 0.76×–10.7×.** Neither the bid
+hypothesis nor the ask hypothesis fits: both predict one sign on all four and
+a ratio near 1.0. What the data actually shows is symbol-specific **vendor
+price-level differences**, and on EURUSD and AUDUSD those are an order of
+magnitude larger than the spread this commit models.
+
+**Verdict: INDETERMINATE.** Mid assumed, symmetric application, recorded as a
+named residual in the `parity-v3` History entry and the commit message rather
+than assumed silently.
+
+**The larger implication, which is NOT fixed here:** on EURUSD and AUDUSD the
+backtest corpus differs from tradeable IG prices by more than the cost this
+commit adds. Spread parity is now modelled; **price-level parity is not**, and
+it is the bigger number of the two.
+
+US100 excluded from the verdict as instructed (its ~100-pip divergence is
+documented off-session yfinance staleness). US500/US100 are shown above only
+in the timestamp-gap measurement, where their 390–510 minute median gaps are
+themselves the reason they cannot contribute.
+
+### STEP 3 — reconstruction, AUDUSD 15MIN williams_r
+
+Identical candles (`AUDUSD_15MIN_AV.json`, 29,995), identical params
+(`period=14, oversold=-85, overbought=-20`, roster id 34), identical seed 42.
+"Before" was run from a clean `git archive HEAD` tree so the comparison is
+against real pre-change code, not a remembered number.
+
+**Direction predicted before running: costs rise, so PF must fall.** Old
+AUDUSD cost was a flat $0.60 per round trip; the measured 0.6-pip spread at
+typical sizing is ≈$1.00.
+
+| | parity-v2 | parity-v3 |
+|---|---|---|
+| trades | 221 | **234** |
+| win rate | 37.1% | **34.2%** |
+| **profit factor** | **1.0849** | **1.0431** |
+| net profit | $124.45 | **$66.03** |
+| max drawdown | $149.61 | $169.99 |
+| Sharpe | 0.0388 | 0.0198 |
+
+PF −3.9%, net profit −47%. **The parity-v2 figure reproduces CLAUDE.md's
+recorded AUDUSD parity-v2 PF of 1.085 exactly**, which is independent evidence
+the baseline tree is the right one.
+
+Trade count *rose* (221 → 234) rather than falling. That is the fill shifting
+the SL/TP anchors and the exit ladder evaluating against the crossed side, so
+different bars trigger — not merely the same trades costing more.
+
+Walk-forward at parity-v3: median PF 1.0514, 66.7% windows profitable, 607
+trades over 6 windows, **MARGINAL**.
+
+### Stamps, checked on the written row rather than in the code
+
+That column was NULL on every row ever written until 2026-08-22 and
+code-reading missed it, so both were read back after writing:
+
+```
+backtest_results id=5332   engine_version=parity-v3
+                           spread_model=measured-2026-09-median
+                           spread_table_sha=c0c905fc6c071dd4
+walkforward_runs id=554    engine_version=parity-v3
+                           spread_model=measured-2026-09-median
+                           spread_table_sha=c0c905fc6c071dd4
+```
+
+`UnmeasuredSpreadError` verified by positive signal on all six unmeasured
+symbols (DAX, USDJPY, EURGBP, NZDUSD, XAUUSD, BTC) and end-to-end: a real
+`--symbol DAX` backtest aborts with it rather than silently using the old
+constant.
+
+---
+
+## 📏 Spread-table dispersion, the 09-03 reconnect, and the date-banner misread
+
+Three pass-A observations, dated detail. Standing conclusions in CLAUDE.md.
+
+### 1. US500 and US100 have ZERO dispersion — a posted tier, not a distribution
+
+In the frozen pool (2026-08-16 → 2026-08-29, market-open filtered), median =
+p90 = max on both indices: **0.6 on all 1,074 US500 samples and 2.0 on all 906
+US100 samples.** Not one sample differs.
+
+That is a broker-posted spread, not a market distribution. It matches CHECK 2's
+rollover-hour measurement, which found the same two symbols flat at 1.5 and
+5.0 while FX widened 11–19× — i.e. IG posts **two fixed tiers** on the index
+CFDs and switches between them, rather than quoting a varying book.
+
+**Consequence: no percentile of this pool can ever give the indices a tail.**
+p99, p999 and max are all 0.6 and 2.0 by construction. An index tail needs a
+different data source — tick-level quotes, or the rollover/reopen tiers treated
+as the tail rather than derived from one.
+
+FX is the opposite shape: EURUSD's median equals its p90 (0.00006), and all
+four pairs carry max/median ratios of 4.5–6.5× entirely inside the last decile.
+
+### 2. The 2026-09-03 16:06 reconnect — the discriminating observation
+
+The change-1 burn window could not test the fix: it contained **zero
+disconnects**, and `_backfill_gap` only runs from `_reconnect_supervisor`, once
+per connect. A pre-change container would have burned zero in that window too.
+
+A real reconnect then happened, unprompted:
+
+```
+2026-09-03T15:59:53Z  [candle_stream] disconnected — will reconnect
+2026-09-03T16:06:52Z  [candle_stream] connected
+```
+
+Seven minutes down, two backoff steps. On reconnect, enumerated:
+
+- **6 pairs FETCHED** — AUDUSD/EURUSD/GBPUSD/US100/US500/USDCAD 15MIN, each
+  `buffer now 355 (source=IG REST)`, i.e. genuinely stale after seven minutes
+  and correctly *not* skipped.
+- **1 pair SKIPPED** — US500/HOUR, `buffer current — newest bar is 0 bucket(s)
+  back`. The HOUR bucket had not turned over.
+- Meter: 9,980 → 8,780 = **1,200 points**, against **1,400** pre-change.
+
+**This closes the ordinary-gap case for change 1.** `_bars_missing` did exactly
+what it was built to do on a real reconnect — skipped the one buffer that was
+current, fetched the six that were not.
+
+⚠️ **The storm case remains UNTESTED.** The 2026-08-28 failure was 511
+backfills from reconnects seconds apart, against buffers a previous reconnect
+had just filled. A single seven-minute outage does not exercise that path, and
+nothing here should be read as if it did.
+
+### 3. The harness date banner is not a clock
+
+On 2026-09-03 the session context asserted the date was 2026-09-04. The spread
+pool's last sample was `2026-09-03T18:00`, which against the banner reads as
+**~19 hours of weekday silence** — a dead signal loop. An incident check was
+started on that basis.
+
+There was no incident. VPS and local WSL both read `2026-09-03T18:13:30Z`,
+VPS NTP-synced and NTP active. The data was **13 minutes old**. The banner was
+the only wrong clock in the room.
+
+Same family as the rest of Unverified Controls: a conclusion resting on an
+absence — here, absence of recent rows — where the absence was manufactured by
+the measuring instrument rather than by the system. **Check freshness against a
+real clock on the machine that owns the data**, never against the session's
+own idea of the date.
+
+---
+

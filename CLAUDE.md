@@ -1376,6 +1376,38 @@ failed to answer: **4,210 points spent in ~18 hours with no container restart**
 (511 backfills) reads as exceptional and is easy to discount; this one is the
 baseline burn and is not.
 
+### 🔴 THE SESSION'S DATE BANNER IS NOT A CLOCK — 2026-09-03
+
+*(Third member of the "conclusion resting on an absence" family, and the
+cheapest to fall for, because the wrong number arrives unasked.)*
+
+**What happened.** The session context asserted the date was 2026-09-04. The
+spread pool's newest sample was `2026-09-03T18:00`. Against the banner that
+reads as **~19 hours of weekday silence** — a dead signal loop on a live FX
+day. An incident investigation was opened on that basis.
+
+**There was no incident.** VPS and local WSL both read
+`2026-09-03T18:13:30Z`; the VPS is NTP-synced with NTP active. The data was
+**13 minutes old**. The banner was the only wrong clock in the room.
+
+> **THE RULE:** freshness is a comparison between two times, and BOTH have to
+> come from real clocks. Never date-check data against the session's own idea
+> of the date — read the clock on the machine that owns the data, in the same
+> command if possible.
+
+Why it belongs beside the others: the conclusion rested on an **absence** (no
+recent rows), and the absence was manufactured by the measuring instrument
+rather than by the system — the same shape as a probe sampling after its own
+teardown. It is also a live instance of the mechanical form recorded below:
+*for any check whose conclusion rests on an empty result, write down the other
+ways that result could be empty.* "My clock is wrong" was on that list and was
+not consulted.
+
+**This one has a cheap standing fix**, which is why it is worth a section:
+`ssh … 'date -u'` costs nothing and settles it outright. The 2026-09-03 check
+took four extra tool calls because the question was asked of the codebase
+first and the clock second.
+
 ### 🔴 CRITERIA AGE AGAINST THE SYSTEM THEY MEASURE — two unsatisfiable criteria now
 
 *(named 2026-08-31, on the second instance. The first was not recognised as an
@@ -1700,7 +1732,71 @@ would produce different trades or different P&L. **Never commit SHAs.**
 |---|---|
 | `pre-parity-v0` | Everything before 2026-08-16. No take-profit for 21 of 34 strategies, $15 risk vs live $10, no SL floor, SL exits booked at a flat `-RISK`. **History, never evidence.** All 268,117 VPS rows and 276 local `walkforward_runs` rows carry this. |
 | `parity-v1` | Sizing only. Floor applied, risk via `get_risk_per_trade`, clamp order matched to live, unsizeable trades aborted, SL booked from the actual stop price. **Half-fixed — still no TP. Generate no evidence at v1.** |
-| `parity-v2` | **Current.** The `sl_price`/`tp_price` contract. |
+| `parity-v2` | The `sl_price`/`tp_price` contract. Still no spread realism: a flat dollar deduction at exit. |
+| `parity-v3` | **Current, 2026-09-04.** Measured spread applied to PRICES at the crossed side — see below. |
+
+### ✅ parity-v3 — measured spread, applied at the crossed side (2026-09-04)
+
+**COMMIT 5, pass B.** `SPREAD_COSTS` and its flat per-round-trip dollar
+deduction at exit are **deleted**. Spread now moves the prices:
+
+- **entry** — a BUY fills at `close + half`, a SELL at `close - half`. The
+  **fill**, not the mid, anchors `sl_price`/`tp_price` and `sl_dist`, as live
+  does. This collapses TWO of parity-v2's listed divergences into one change:
+  applying spread at entry **is** the offer/bid entry-price fix.
+- **exit** — a LONG is closed by selling and is evaluated against **bid**
+  (`candle - half`); a SHORT against **ask** (`candle + half`). Applies to the
+  intrabar sl/tp ladder *and* to `session_close`/`max_hold`/`signal`.
+- **unmeasured symbols RAISE.** `UnmeasuredSpreadError` for DAX, USDJPY,
+  EURGBP, NZDUSD, XAUUSD, BTC. No fallback to the old constant — that would
+  put two cost models inside one `engine_version`. Costs nothing: all 13
+  rostered paper strategies are on the six measured symbols.
+
+**Measured effect, AUDUSD 15MIN williams_r, identical candles/params/seed**
+(before run from a clean `git archive HEAD` tree, not a remembered number):
+
+| | parity-v2 | parity-v3 |
+|---|---|---|
+| trades | 221 | **234** |
+| PF | **1.0849** | **1.0431** |
+| net | $124.45 | **$66.03** |
+| win rate | 37.1% | 34.2% |
+
+Trade count **rose**, which is the tell that this is not just "same trades,
+more cost": the fill shifts the SL/TP anchors so different bars trigger.
+Walk-forward at parity-v3: median PF 1.0514, 66.7% windows, **MARGINAL**.
+
+🔴 **THE SPREAD TABLE IS MEDIAN-ONLY AND ITS TAIL IS UNCALIBRATED.
+RISK-OF-RUIN AND DRAWDOWN WORK MUST NOT USE IT.**
+
+#### ⚠️ NAMED RESIDUAL — the price series identity is ASSUMED, not shown
+
+The symmetric application is correct only if the vendor caches carry a **mid**.
+`candle_source_compare` cannot settle it. Restricted to rows whose yfinance and
+IG-stream candles share an **identical timestamp** (removing a drift term worth
+24–43 min of mean gap on FX), against IG stream mid:
+
+| symbol | n | mean delta | half-spread | ratio |
+|---|---|---|---|---|
+| AUDUSD | 2451 | +2.434 pips | 0.30 | **+8.1×** |
+| EURUSD | 3182 | +3.209 pips | 0.30 | **+10.7×** |
+| GBPUSD | 3345 | +0.340 pips | 0.45 | +0.76× |
+| USDCAD | 2840 | −0.935 pips | 0.65 | **−1.44×** |
+
+A bid series reads −1.0× on **every** symbol; an ask series +1.0×. **These
+signs disagree and the magnitudes span 0.76×–10.7×**, so no bid/ask hypothesis
+fits — these are symbol-specific **vendor price-level offsets**. Mid is assumed
+because the data cannot resolve it.
+
+**The bigger number this exposes, and it is NOT fixed:** on EURUSD and AUDUSD
+the backtest corpus differs from tradeable IG prices by **more than the spread
+this commit models**. Spread parity is now done; **price-level parity is not**.
+
+**Still divergent at parity-v3:** entry LAG (live fills 25–55 min later),
+weekend handling, session windows, and that price-level offset.
+
+Full run record, the contaminated first cut, and the stamp read-back →
+`docs/OPERATIONS_LOG.md`.
 
 `get_backtest_results()` filters to the current version by default;
 `engine_version=None` reads all (archive/inspection only — dashboard page 04).
@@ -2092,6 +2188,18 @@ the other.
   `_PROVENANCE` (n, p90, max per symbol) and `_WINDOW` (bounds, filter,
   source) beside it. Rebuild with `scripts/build_spread_table.py`.
 
+🔴 **US500 AND US100 HAVE ZERO DISPERSION — NO PERCENTILE OF THIS POOL CAN
+EVER GIVE THE INDICES A TAIL.** median = p90 = max, on **all 1,074** US500
+samples (0.6) and **all 906** US100 samples (2.0). Not one sample differs.
+That is a broker-**posted tier**, not a distribution — and it matches CHECK 2's
+rollover measurement, where the same two sat flat at 1.5 and 5.0 while FX
+widened 11–19×. IG posts two fixed tiers and switches between them. So p99,
+p999 and max on the indices are all 0.6 and 2.0 **by construction**; an index
+tail needs a different data source (tick quotes, or the rollover/reopen tiers
+treated *as* the tail), not a higher percentile of this one. FX is the opposite
+shape — EURUSD's median equals its p90, with max/median 4.5–6.5× entirely in
+the last decile.
+
 🔴 **THE TAIL IS UNCALIBRATED. This is a median-only table. RISK-OF-RUIN AND
 DRAWDOWN WORK MUST NOT USE IT.** Ruin lives in the tail. The pre-parity ruin
 table was already wrong by more than an order of magnitude (5.58% against a
@@ -2350,6 +2458,32 @@ Rest of the post-deploy check, every item a positive observation:
   carry a non-null spread, all six symbols present (EURUSD 5, US500 3,
   GBPUSD 2, AUDUSD 1, US100 1, USDCAD 1).
 - `localhost:80` 200, `/health` 200, `/webhook` 405; all three containers up.
+
+#### ✅ ORDINARY-GAP CASE CLOSED 2026-09-03 — a real reconnect, enumerated
+
+The burn window could not test this fix: it held **zero disconnects**, and
+`_backfill_gap` runs only from `_reconnect_supervisor`, once per connect — so a
+**pre-change** container would have burned zero in that window too. The window
+was non-diagnostic. A real reconnect then supplied the missing observation:
+
+```
+2026-09-03T15:59:53Z  [candle_stream] disconnected — will reconnect
+2026-09-03T16:06:52Z  [candle_stream] connected
+```
+
+- **6 pairs FETCHED** (AUDUSD/EURUSD/GBPUSD/US100/US500/USDCAD 15MIN), each
+  `buffer now 355 (source=IG REST)` — genuinely stale after seven minutes and
+  correctly **not** skipped.
+- **1 pair SKIPPED** — US500/HOUR, `buffer current — 0 bucket(s) back`.
+- Meter **9,980 → 8,780 = 1,200 points**, against 1,400 pre-change.
+
+`_bars_missing` did exactly what it exists to do on a real gap: skipped the one
+current buffer, fetched the six that were not.
+
+⚠️ **The STORM case is still UNTESTED.** 2026-08-28 was 511 backfills from
+reconnects *seconds* apart against buffers a previous reconnect had just
+filled. One seven-minute outage does not exercise that path. Do not read this
+as closing it.
 
 **⏸️ HOLD — the finding-38 probe is deliberately NOT run.** Observe the
 post-change daily burn first. Pre-change it was ~4,210 per 18 hours with no

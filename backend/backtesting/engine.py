@@ -2,7 +2,8 @@ import itertools
 import math
 from datetime import datetime, timezone
 from engine_version import CURRENT_ENGINE_VERSION
-from spread_model import CURRENT_SPREAD_MODEL, spread_table_sha
+from spread_model import (CURRENT_SPREAD_MODEL, MEASURED_SPREADS_2026_09,
+                          spread_table_sha)
 
 from backend.backtesting.metrics import (
     calc_win_rate, calc_max_drawdown, calc_sharpe_ratio,
@@ -76,20 +77,73 @@ class EngineContractError(ValueError):
     valid and gets the DEFAULT_TP_R rule. Emitting one is always a bug.
     """
 
-SPREAD_COSTS = {
-    "EURUSD": 1.05,   # ~1 pip x $10/pip per round trip
-    "US500":  0.75,   # ~0.6pt spread x $1/pt per round trip
-    "DAX":    1.50,   # ~1pt spread x $1/pt per round trip
-    "US100":  1.00,   # estimate
-    "GBPUSD": 1.50,   # ~1.2 pips x $10/pip round trip
-    "USDJPY": 0.70,   # 0.7 pips (pip=0.01 for JPY pairs) x ~$1/pip round trip — corrected 2026-07-09, was 1.20
-    "AUDUSD": 0.60,   # ~0.6 pips x $10/pip round trip
-    "USDCAD": 0.90,   # ~0.9 pips x $10/pip round trip
-    "EURGBP": 1.00,   # 1.0 pip x ~$1/pip round trip
-    "NZDUSD": 1.00,   # 1.0 pip x ~$1/pip round trip
-    "XAUUSD": 20.00,  # gold — for future use
-    "BTC":    0.00,   # not trading
-}
+class UnmeasuredSpreadError(ValueError):
+    """No measured spread exists for this symbol, so no backtest may run on it.
+
+    Same spirit as EngineContractError: refuse rather than substitute. The
+    predecessor table SPREAD_COSTS carried 12 symbols, of which exactly ZERO
+    were measured — the numbers' origin was unknown and they had never been
+    checked against a real quote. MEASURED_SPREADS_2026_09 carries the six
+    that were actually measured.
+
+    Falling back to the old constant for the other six (DAX, USDJPY, EURGBP,
+    NZDUSD, XAUUSD, BTC) would put TWO cost models inside one engine_version,
+    which is precisely the comparability question engine_version exists to
+    answer. A row stamped parity-v3 must mean one thing.
+
+    Failing loud costs nothing today: all 13 rostered paper strategies run on
+    the six measured symbols. DAX is separately blocked (its cache is an ETF,
+    EWG, not the index), and BTC has no strategy. So the only thing this
+    error can stop is a guess being laundered as a measurement.
+    """
+
+
+# 🔴 THE TAIL IS UNCALIBRATED. MEASURED_SPREADS_2026_09 is a per-symbol MEDIAN
+# and nothing else. It says what a typical placeable entry costs and says
+# NOTHING about the wide tail. RISK-OF-RUIN AND DRAWDOWN WORK MUST NOT USE
+# THIS TABLE — ruin lives in the tail. The pre-parity ruin table was already
+# wrong by more than an order of magnitude (5.58% against a measured
+# 67.3-84.3%); a median-only spread is how that happens a second time.
+#
+# UNITS: PRICE units, identical to the candle series. Half of the quoted
+# round-trip spread is crossed at entry and half at exit, so every application
+# below uses HALF the table value.
+def half_spread(symbol: str) -> float:
+    """Half the measured spread for `symbol`, in PRICE units.
+
+    Raises UnmeasuredSpreadError for anything unmeasured rather than guessing.
+    """
+    sym = symbol.upper()
+    try:
+        return MEASURED_SPREADS_2026_09[sym] / 2.0
+    except KeyError:
+        raise UnmeasuredSpreadError(
+            f"{sym}: no measured spread. Measured symbols are "
+            f"{sorted(MEASURED_SPREADS_2026_09)}. Refusing to fall back to the "
+            f"old unmeasured SPREAD_COSTS constant — that would place two cost "
+            f"models inside engine_version={CURRENT_ENGINE_VERSION!r}. Measure "
+            f"the symbol (scripts/build_spread_table.py) or do not backtest it."
+        ) from None
+
+
+# ⚠️ WHICH PRICE SERIES THE CACHES CARRY IS A NAMED RESIDUAL, NOT A FINDING.
+# The application below is SYMMETRIC, which is correct only if the vendor
+# series (Twelve Data / yfinance) is a MID. Measured on candle_source_compare
+# 2026-09-04, restricted to the rows whose yfinance and IG-stream candles carry
+# IDENTICAL timestamps (so no drift term), against IG stream MID:
+#
+#     AUDUSD n=2451  mean +2.434 pips   =  +8.1x its half-spread
+#     EURUSD n=3182  mean +3.209 pips   = +10.7x its half-spread
+#     GBPUSD n=3345  mean +0.340 pips   =  +0.76x
+#     USDCAD n=2840  mean -0.935 pips   =  -1.44x
+#
+# A bid series would sit at -1.0x on every symbol; an ask series at +1.0x on
+# every symbol. These SIGNS DISAGREE and the magnitudes span 0.76x to 10.7x, so
+# no bid/ask hypothesis fits: the offsets are symbol-specific VENDOR price-level
+# differences an order of magnitude larger than the spread on two of the four.
+# Mid is therefore assumed, not demonstrated. Consequence, stated plainly: on
+# EURUSD and AUDUSD the corpus differs from tradeable IG prices by MORE than
+# the cost this commit models, and that error is not addressed here.
 
 
 _TIMEFRAME_MAP = {
@@ -168,10 +222,10 @@ def provenance() -> dict:
 
     engine_version  = structure (how a trade is entered/sized/exited/priced)
     spread_model    = the name of the spread treatment
-    spread_table_sha = a CONTENT HASH of the actual SPREAD_COSTS numbers
+    spread_table_sha = a CONTENT HASH of the actual spread table numbers
 
     The hash matters because spread is a parameter, not structure: someone can
-    edit SPREAD_COSTS and every backtest number moves while engine_version does
+    edit the table and every backtest number moves while engine_version does
     not. Until 2026-08-22 no caller ever passed the table, so spread_table_sha
     was NULL on every row in both backtest_results and walkforward_runs — the
     exact protection it exists to provide did not exist. Found by a write test,
@@ -180,7 +234,7 @@ def provenance() -> dict:
     return {
         "engine_version":   CURRENT_ENGINE_VERSION,
         "spread_model":     CURRENT_SPREAD_MODEL,
-        "spread_table_sha": spread_table_sha(SPREAD_COSTS),
+        "spread_table_sha": spread_table_sha(MEASURED_SPREADS_2026_09),
     }
 
 
@@ -354,7 +408,11 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
     if intrabar_priority not in ("sl", "tp", "skip"):
         raise ValueError(f"intrabar_priority must be sl|tp|skip, got {intrabar_priority!r}")
     vpp = EPIC_CONFIG[symbol.upper()]["value_per_point"]
-    spread_cost = SPREAD_COSTS.get(symbol.upper(), 0.75)
+    # Half-spread in PRICE units. Raises on an unmeasured symbol rather than
+    # substituting the old unmeasured constant. Spread is no longer a dollar
+    # deduction at exit: it is applied to the PRICES, at entry and at exit, on
+    # the side actually being crossed, which is what live pays.
+    half = half_spread(symbol)
     trades = []
     open_trade = None
     ambiguous_bars = 0
@@ -367,14 +425,27 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
             # ---- EXIT LADDER, layer 1: intrabar. These fire the moment price
             # touches, mid-bar, so they outrank everything evaluated at the
             # bar's close (max_hold / signal, layer 2 below).
+            # THE SIDE BEING CROSSED ON EXIT. This is the correctness surface
+            # of the whole change, so it is spelled out rather than inlined.
+            # A LONG is closed by SELLING, which hits the BID  = mid - half.
+            # A SHORT is closed by BUYING, which lifts the ASK = mid + half.
+            # The candle series is treated as mid (see the residual note beside
+            # half_spread), so the executable path is the candle shifted by
+            # `exit_adj` — and the shift is the OPPOSITE SIGN for the two
+            # directions. Getting this symmetric would make both sides free.
+            exit_adj = -half if open_trade["direction"] == "BUY" else half
+            x_high  = candle["high"]  + exit_adj
+            x_low   = candle["low"]   + exit_adj
+            x_close = candle["close"] + exit_adj
+
             _tp = open_trade.get("tp_price")
             tp_hit = _tp is not None and (
-                (open_trade["direction"] == "BUY"  and candle["high"] >= _tp) or
-                (open_trade["direction"] == "SELL" and candle["low"]  <= _tp)
+                (open_trade["direction"] == "BUY"  and x_high >= _tp) or
+                (open_trade["direction"] == "SELL" and x_low  <= _tp)
             )
             sl_hit = (
-                (open_trade["direction"] == "BUY"  and candle["low"]  <= open_trade["sl_price"]) or
-                (open_trade["direction"] == "SELL" and candle["high"] >= open_trade["sl_price"])
+                (open_trade["direction"] == "BUY"  and x_low  <= open_trade["sl_price"]) or
+                (open_trade["direction"] == "SELL" and x_high >= open_trade["sl_price"])
             )
 
             if tp_hit and sl_hit:
@@ -395,8 +466,11 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
             if tp_hit:
                 ep  = open_trade["entry_price"]
                 d   = open_trade["direction"]
+                # No dollar deduction any more. The cost is already in the
+                # prices: `ep` was crossed at entry, and the crossed-side path
+                # (x_high/x_low) is what reached `_tp`, so `_tp` is the fill.
                 pnl = (((_tp - ep) if d == "BUY" else (ep - _tp))
-                       * open_trade["size"] * vpp) - spread_cost
+                       * open_trade["size"] * vpp)
                 try:
                     dur = int((datetime.fromisoformat(candle["time"]) -
                                datetime.fromisoformat(open_trade["entry_time"])
@@ -433,7 +507,7 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
                 _ep, _d = open_trade["entry_price"], open_trade["direction"]
                 _slp    = open_trade["sl_price"]
                 _pnl    = (((_slp - _ep) if _d == "BUY" else (_ep - _slp))
-                           * open_trade["size"] * vpp) - spread_cost
+                           * open_trade["size"] * vpp)
                 trades.append({
                     "entry_time":    open_trade["entry_time"],
                     "exit_time":     candle["time"],
@@ -468,9 +542,12 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
             should_close = last or force_close or flat_close or reverse_close
             if should_close:
                 ep  = open_trade["entry_price"]
-                xp  = candle["close"]
+                # session_close / max_hold / signal all leave at market, so
+                # they cross the same side as any other exit for this
+                # direction: x_close, not the raw mid close.
+                xp  = x_close
                 d   = open_trade["direction"]
-                pnl = ((xp - ep) if d == "BUY" else (ep - xp)) * open_trade["size"] * vpp - spread_cost
+                pnl = ((xp - ep) if d == "BUY" else (ep - xp)) * open_trade["size"] * vpp
                 try:
                     dur = int((datetime.fromisoformat(candle["time"]) - datetime.fromisoformat(open_trade["entry_time"])).total_seconds() / 60)
                 except Exception:
@@ -493,7 +570,18 @@ def _simulate_trades(test: list, test_signals: list, symbol: str,
             continue
 
         if open_trade is None and sig["signal"] in ("BUY", "SELL"):
-            entry = candle["close"]
+            # Live does not fill at the mid. A BUY lifts the ASK, a SELL hits
+            # the BID. parity-v2's docstring listed "spread modelling" and
+            # "entry price (live deals at offer/bid, engine uses the candle
+            # close)" as two separate divergences; applying spread AT ENTRY
+            # collapses both, so they are one change, not two.
+            #
+            # The FILL, not the mid, is passed to _resolve_sl_tp: live derives
+            # its levels from the entry price IG actually returned, and
+            # sl_dist must be fill-to-stop or the sizing is not live's sizing.
+            # Strategies that emit their own absolute levels (branch 2) are
+            # unaffected — those are price levels regardless of the fill.
+            entry = candle["close"] + (half if sig["signal"] == "BUY" else -half)
             # Three-branch contract, mirroring live_signal_loop.py:552.
             # Raises EngineContractError rather than silently running a trade
             # with a missing or nonsensical level.
