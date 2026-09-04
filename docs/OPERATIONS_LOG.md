@@ -1475,3 +1475,95 @@ that residual backtest-vs-live divergence should be attributed here first.
 
 ---
 
+
+## 📏 Stage 4 batch — full run record, 2026-09-04
+
+Dated detail. The verdict table, the three non-runs and the standing
+conclusions are in CLAUDE.md.
+
+**Batch window:** start `2026-09-04T02:10:20Z`, end `02:24:20Z` — **14 minutes
+for 11 strategies x 4 stages**. Roster snapshot `/tmp/roster.db` exported on the
+VPS HOST (`git_head=cc9055d`, `source_host=trading-bot`, 31 rows, taken
+`02:05:47Z`), scp'd local, run with `--from-roster --roster-db ./roster.db
+--seed 42`.
+
+### Schema, enumerated before and after
+
+```
+LOCAL  backtest_results (27) ... 'cache_date_end', 'profit_factor'      <- no import_json
+VPS    backtest_results (27) ... 'cache_date_end', 'import_json'        <- no profit_factor
+       walkforward_runs (19)  identical on both
+VPS after migration:
+       backtest_results (28) ... 'import_json', 'profit_factor'
+```
+
+**Both reported 27 columns before the migration while differing in content.**
+A count-based comparison would have passed. This is why the check is
+`PRAGMA table_info` and a set difference, not a length.
+
+### Backups
+
+| file | when | rows |
+|---|---|---|
+| `trades.bak-20260904T020447Z.db` | 02:04:47, host, manual pre-flight | 996 / 268,119 / 182, integrity ok |
+| `trades.bak-20260904T022720Z.db` | import's own rule-5, pre-write | 996 / 268,119 / 182, integrity ok |
+| `trades.bak-20260904T022739Z.db` | idempotency re-run, post-import | deleted — duplicates live state |
+
+The rule-5 backups were written **inside the container** and rescued to the
+host afterwards. See the backup-dir defect in CLAUDE.md.
+
+### Import
+
+```
+[validate] backtest_results: 10 rows OK  spread_table_sha=c0c905fc6c071dd4
+[validate] walkforward_runs: 471 rows OK spread_table_sha=c0c905fc6c071dd4
+[schema] mirror verified against database/db.py — {'backtest_results': 24,
+         'walkforward_runs': 19} reference columns, no drift
+[schema] backtest_results: adding ['profit_factor']
+[WROTE] backtest_results: inserted=10 skipped_existing=0  268119 -> 268129
+[WROTE] walkforward_runs: inserted=471 skipped_existing=0  182 -> 653
+```
+
+Re-run unchanged, immediately after:
+
+```
+[WROTE] backtest_results: inserted=0 skipped_existing=10   268129 -> 268129
+[WROTE] walkforward_runs: inserted=0 skipped_existing=471  653 -> 653
+```
+
+**Idempotent.** `backtest_trades` for the 10 imported ids: **0 rows** —
+expected per gotcha 5, not a failed import. All 10 landed with
+`profit_factor` NOT NULL, `spread_model=measured-2026-09-median`,
+`spread_table_sha=c0c905fc6c071dd4`. VPS ids 268122-268131.
+
+`run_type` totals for the 471: `stability_map` 426 (5 x 84 + 6 markers),
+`monte_carlo` 25, `walk_forward` 10, `permutation` 10.
+
+### The importer had to be given parity-v3 constants explicitly
+
+The container's `/app` is still at `cc9055d`, i.e. `parity-v2` /
+`flat-roundtrip-dollars-UNCALIBRATED`, because nothing was deployed. The
+import's rule-1 check compares each row's `engine_version` against
+`CURRENT_ENGINE_VERSION` **as imported from the code it is running under**, so
+the first attempt refused:
+
+```
+REFUSED: backtest_results row (local id=5334) carries engine_version
+'parity-v3' != 'parity-v2'. Never mix trade models.
+```
+
+Resolved by running the importer from `/tmp/pv3`, carrying the repo's HEAD
+`engine_version.py` and `spread_model.py`, so `sys.path` resolved the
+constants to `parity-v3`. **The running container was not modified** — verified
+by reading `/app`'s constants afterwards (still `parity-v2`) and by
+`RestartCount=0`.
+
+⚠️ **Consequence, and it is a real one: the 10 imported rows are INVISIBLE to
+the deployed selector and dashboard.** `get_backtest_results()` filters to
+`CURRENT_ENGINE_VERSION`, which on the VPS is still `parity-v2`. The rows are
+present and correct but nothing on that box reads them until a deploy. That is
+safe — they cannot influence a promotion decision from where they sit — but it
+means Stage 4's output is not yet live-visible.
+
+---
+

@@ -1672,7 +1672,32 @@ baked into every image layer; the two backups alone were 504 MB per build.
 | `trades.bak-20260822T180436Z.db` | Taken by `scripts/import_stage4.py` before the Stage 4 import write test (rule 5) | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 | `trades.bak-20260823T040057Z.db` | Before the Stage 4 dress-rehearsal import (rule 5) | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 | `trades.bak-20260823T041942Z.db` | Before the post-fix dress-rehearsal re-import (rule 5) | 996 trades, 268,118 backtest_results, `integrity_check ok` |
-| `trades.bak-20260904T020447Z.db` | Before the Stage 4 `profit_factor` schema change + parity-v3 import | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
+| `trades.bak-20260904T020447Z.db` | Before the Stage 4 `profit_factor` schema change + parity-v3 import — taken on the HOST | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
+| `trades.bak-20260904T022720Z.db` | `import_stage4.py`'s own rule-5 backup, immediately before the parity-v3 write. **Was written to the CONTAINER's ephemeral layer and rescued to the host afterwards** — see the backup-dir defect below | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
+
+⚠️ **A THIRD backup, `trades.bak-20260904T022739Z.db` (325,763,072 bytes), was
+taken by the idempotency re-run and DELETED rather than kept.** It is a
+post-import snapshot, identical in content to the live DB at that moment, and
+keeping a 325 MB file that duplicates current state is not a record of
+anything. Noted here so its absence is deliberate rather than unexplained.
+
+#### ⛔ `import_stage4.py`'s rule-5 backup went to the CONTAINER, not the host
+
+**Found 2026-09-04 by listing the host directory after the import, not by the
+run reporting a problem — it reported success.** `DEFAULT_BACKUP_DIR` is
+`/home/ubuntu/backups`, a HOST path, but gotcha 3 forces the script to run
+INSIDE the container (the VPS `trades.db` is root-owned). Inside, that path
+resolves to the container's own writable layer: **ephemeral, invisible to the
+host, absent from this table, and destroyed by the next rebuild.** Two backups
+totalling 650 MB landed there. A rollback would have had nothing to roll back
+to, and the console said `integrity_check ok` both times.
+
+The two gotchas are individually correct and jointly produce this: "backup on
+the host, import in the container" (gotcha 2) versus "the DB is root-owned so
+you must be in the container" (gotcha 3). Fixed by an `st_dev` check —
+`/app/database` is the bind mount, so a backup dir on a different device is on
+the overlay, and the script now REFUSES instead of writing a backup that will
+not exist when it is needed.
 
 All verified `integrity_check ok`. **None is disposable.** Take new ones with
 the SQLite online backup API (`Connection.backup()`), never `cp` — `cp` on a
@@ -2045,6 +2070,16 @@ forcing it with `bb_squeeze` writes one `stability_map` row, verdict
 `REDUCED_GAUNTLET`, fully stamped and carrying
 `extra_json.params_source = "roster:active_strategy.id=24"`.
 
+> 🔴 **THE "12 OF 13" FIGURE IN THIS SECTION'S HEADING WAS WRONG, and it was
+> wrong in the direction that makes a correct run look anomalous.** The roster
+> holds **five** `williams_r` paper rows (ids 6 US500 HOUR, 22 EURUSD, 32
+> GBPUSD, 34 AUDUSD, 36 USDCAD), not one — so five get a real 84-cell
+> stability map and the correct expectation is **8 of 13 reduced**, or **6 of
+> 11** with ids 29/30 held on the ETF blocker. Measured 2026-09-04: exactly
+> **6 REDUCED_GAUNTLET and 5 × 84-cell maps (426 stability rows)**.
+> A pre-registered check is only as good as its arithmetic; this one counted
+> strategies rather than roster rows.
+
 The standing plan was **build 2 grids, mark 4**. Against the current roster that
 now reads: **build one more — `stoch_rsi` and `supertrend` — and accept the rest
 as reduced.** Those two are the ones with live or recently-live history worth a
@@ -2054,6 +2089,74 @@ of what was not run.
 **Write this down before the run, not after.** A batch that returns 12 reduced
 verdicts is either "exactly as planned" or "something is badly wrong", and those
 two look identical in the output. This entry is what makes it the first one.
+
+## ✅ STAGE 4 COMPLETE — 10 of 13 re-validated on parity-v3, 2026-09-04
+
+**Result in one line: ZERO promotable strategies. One MARGINAL, one FRAGILE,
+eight REJECT.** That is the outcome the pre-registration below anticipated, and
+nothing in the batch contradicts it.
+
+| symbol | tf | strategy | walk-forward | median PF | permutation | stability |
+|---|---|---|---|---|---|---|
+| AUDUSD | 15MIN | williams_r | **MARGINAL** | **1.0514** | MARGINAL | 84 cells — REJECT 59, MARGINAL 16, FRAGILE 9, **ROBUST 0** |
+| USDCAD | 15MIN | williams_r | **FRAGILE** | 1.0004 | FRAGILE | 84 — REJECT 69, FRAGILE 8, MARGINAL 7 |
+| US500 | HOUR | williams_r | REJECT | 0.9900 | REJECT | 84 — FRAGILE 40, REJECT 38, MARGINAL 5, **ROBUST 1** |
+| EURUSD | 15MIN | williams_r | REJECT | 0.9709 | REJECT | 84 — REJECT 63, MARGINAL 14, FRAGILE 7 |
+| GBPUSD | 15MIN | williams_r | REJECT | 0.9454 | REJECT | 84 — REJECT 67, FRAGILE 9, MARGINAL 8 |
+| EURUSD | 15MIN | bb_squeeze | REJECT | 0.8892 | REJECT | REDUCED_GAUNTLET |
+| EURUSD | 15MIN | stoch_rsi | REJECT | 0.8837 | REJECT | REDUCED_GAUNTLET |
+| EURUSD | 15MIN | supertrend | REJECT | 0.8821 | REJECT | REDUCED_GAUNTLET |
+| GBPUSD | 15MIN | ema_pullback | REJECT | 0.6607 | REJECT | REDUCED_GAUNTLET |
+| US500 | HOUR | stoch_rsi_confluence | REJECT | 0.0000 | REJECT | REDUCED_GAUNTLET |
+
+**Single-backtest PF (with `profit_factor` now actually populated):** GBPUSD
+ema_pullback 2.2452 (23 trades), EURUSD supertrend 1.1536 (56), EURUSD
+bb_squeeze 1.1033 (45), EURUSD williams_r 1.067 (219), AUDUSD williams_r 1.0431
+(234), EURUSD stoch_rsi 0.9362 (199), US500 williams_r 0.9281 (57), GBPUSD
+williams_r 0.8919 (219), USDCAD williams_r 0.8671 (209), US500
+stoch_rsi_confluence 0.1041 (20).
+
+**Note the disagreement between the two columns and do not resolve it by
+picking the friendlier one:** GBPUSD `ema_pullback` has the highest
+single-backtest PF in the batch (2.2452) on **23 trades**, and the *worst*
+walk-forward median in the batch (0.6607). The single number is the one an
+eyeball lands on; the walk-forward is the one with out-of-sample windows behind
+it.
+
+### 3 of 13 were NOT run, and the reasons differ
+
+- **ids 29 (US500 15MIN) and 30 (US100 15MIN) `ema_pullback` — HELD, not
+  failed.** The ETF-cache blocker still applies and was re-verified
+  empirically rather than taken from this file: `US500_15MIN_AV.json` last
+  close **729.08** against IG's US500 at **7745** (0.094x, SPY), and
+  `US100_15MIN_AV.json` **705.54** against **29480** (0.024x, QQQ). Running
+  them would have produced `parity-v3`-stamped rows on ETF candles and
+  imported them into the table the selector reads.
+- **id 28 EURUSD 15MIN `ny_session_momentum` — FAILED, and the failure is
+  PRE-EXISTING.** `EngineContractError: SELL requires tp_price < entry <
+  sl_price, got tp=1.16781 entry=1.16776 sl=1.1686` at idx=1103. Re-run on a
+  clean `parity-v2` tree: **same idx, same tp, same sl, only entry differs by
+  the 0.00003 half-spread — and it fails there too.** So its roster params
+  (`tp_multiplier: 1.0`, `breakout_buffer: 0.0`) emit a wrong-side take-profit,
+  and this strategy has not been validly backtestable since the contract
+  landed on 2026-08-16. Not caused by parity-v3, not fixed here.
+  ⚠️ **It still wrote a `REDUCED_GAUNTLET` stability marker**, because that
+  branch short-circuits before running a backtest. That marker is on the VPS.
+  **It is not evidence the strategy ran** — the absence of any
+  `walk_forward`, `permutation` or `backtest_results` row for it is the tell.
+
+### 🔴 A GAUNTLET RUN WRITES NO `backtest_results` ROW — the flags do NOT combine
+
+`--stability-map`, `--monte-carlo`, `--permutation` and `--walk-forward` are
+checked in that order and **each branch `return`s**, so passing all four runs
+only `--stability-map` and silently ignores the rest. All of them return before
+the single-backtest save, so a gauntlet invocation writes **only**
+`walkforward_runs`.
+
+The first attempt at this batch did exactly that: ten runs "completed",
+`walkforward_runs` grew by 307, and `backtest_results` did not move at all.
+Caught by enumerating both counts, not by any error. **The gauntlet is FOUR
+separate invocations per strategy**, and that is what the 2026-09-04 batch ran.
 
 ### 🔒 PRE-REGISTERED INTERPRETATION — written 2026-09-04, BEFORE the batch ran
 

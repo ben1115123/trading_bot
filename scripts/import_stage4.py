@@ -185,8 +185,41 @@ def _cols(conn, table):
 
 
 def backup_target(target: str, backup_dir: str) -> str:
-    """Rule 5. SQLite online backup API. Never cp."""
+    """Rule 5. SQLite online backup API. Never cp.
+
+    ⚠️ THE BACKUP MUST LAND ON A PERSISTENT VOLUME, AND THAT IS NOT AUTOMATIC.
+    Gotcha 3 forces this script to run INSIDE the bot container (the VPS
+    database/trades.db is root-owned, so a host-side write dies with
+    "attempt to write a readonly database"). But DEFAULT_BACKUP_DIR is a HOST
+    path. Inside the container that path resolves to the container's own
+    writable layer, which is EPHEMERAL: the backup is invisible to the host,
+    absent from CLAUDE.md's Database Backups table, and destroyed by the next
+    rebuild — while the run that took it reports success.
+
+    Measured 2026-09-04: two rule-5 backups, 650 MB, written to the container
+    overlay and found only because the host directory was listed afterwards.
+    A rollback would have had nothing to roll back to.
+
+    The check is st_dev: /app/database is the bind mount, so a backup dir on a
+    DIFFERENT device from the target is on the overlay. Refuse rather than
+    write a backup that will not be there when it is needed.
+    """
     os.makedirs(backup_dir, exist_ok=True)
+    try:
+        same_device = (os.stat(backup_dir).st_dev ==
+                       os.stat(os.path.dirname(os.path.abspath(target))).st_dev)
+    except OSError:
+        same_device = True          # cannot tell: do not block on a stat failure
+    if not same_device:
+        _refuse(
+            f"backup dir {backup_dir!r} is on a DIFFERENT filesystem from the "
+            f"target {target!r}. Inside the container that means the container's "
+            f"own writable layer — ephemeral, invisible to the host, and gone on "
+            f"the next rebuild, while this run would still report a successful "
+            f"backup. Point --backup-dir at a path on the bind-mounted volume "
+            f"(e.g. alongside the database), or take the backup on the HOST and "
+            f"pass --no-backup."
+        )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = os.path.join(backup_dir, f"trades.bak-{stamp}.db")
     if os.path.exists(out):
