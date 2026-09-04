@@ -1392,3 +1392,86 @@ own idea of the date.
 
 ---
 
+
+## 📏 Stage 4 pre-flight — profit_factor and the residual's dispersion, 2026-09-04
+
+Dated detail. Standing conclusions and the numbers a future decision reads are
+in CLAUDE.md.
+
+### Item 1 — `profit_factor` was a MISSING COLUMN, not a NULL one
+
+The 2026-09-03 report said "NULL on every row". That was wrong, and the way it
+was wrong is the useful part: the check was
+`dict(row).get("profit_factor")`, and **`.get()` cannot distinguish an absent
+key from a NULL value** — both return `None`. `PRAGMA table_info` settled it in
+one call:
+
+```
+local  backtest_results: has profit_factor -> False
+VPS    backtest_results: has profit_factor -> False
+       walkforward_runs: median_pf         -> present since creation
+```
+
+Three-part fix, forward-only:
+1. `database/db.py` — `ALTER TABLE backtest_results ADD COLUMN profit_factor REAL`,
+   in the existing try/except migration idiom.
+2. `database/models.py` — `profit_factor` added to the INSERT column list and
+   VALUES, bound from `**result` with **no `.get()` fallback**, exactly like
+   `:win_rate` and `:sharpe_ratio`. A caller that omits it must raise rather
+   than write NULL, because writing NULL is how the column stayed empty.
+3. `scripts/run_backtest.py` — `pf = calc_profit_factor(trades)` and
+   `"profit_factor": pf` in the saved row. The SAME function the walk-forward
+   path calls; no second implementation.
+
+**Verification — two independent derivations agreeing, not absence of error.**
+Fresh row `backtest_id=5333` (AUDUSD 15MIN williams_r, parity-v3):
+
+| | |
+|---|---|
+| stored `profit_factor` | **1.0431** |
+| derived from that row's `backtest_trades` (gross_win 1599.82 / gross_loss 1533.79, n=234) | **1.0431** |
+| agree | **True** |
+
+Row also carries `engine_version=parity-v3`,
+`spread_model=measured-2026-09-median`, `spread_table_sha=c0c905fc6c071dd4`.
+
+**Guard verified by positive signal**, not by reading the code: an
+`insert_backtest_result` call omitting the key raises
+`ProgrammingError: You did not supply a value for binding parameter
+:profit_factor`, and no partial row was written (`_guardtest` count 0).
+
+**Forward-only.** After the migration: 5,333 local rows, **5,332 NULL**, 1
+populated. Nothing backfilled — every pre-existing row is `pre-parity-v3` and
+is history, not evidence.
+
+⛔ **The migration has NOT reached the VPS** (nothing was deployed this pass).
+It must, before the Stage 4 import runs.
+
+### Item 2 — the step-0 residual VARIES; it does not cancel
+
+Pass B established the mean. The mean alone is consistent with two opposite
+conclusions, so the second moment was the missing input. Identical-timestamp
+subset, pips:
+
+| symbol | n | mean | stdev | Q1 | Q3 | IQR | full spread | stdev/spread | IQR/spread |
+|---|---|---|---|---|---|---|---|---|---|
+| EURUSD | 3182 | +3.209 | 1.021 | 2.81 | 3.78 | 0.97 | 0.60 | **1.70×** | 1.62× |
+| GBPUSD | 3345 | +0.340 | 1.039 | −0.09 | 0.84 | 0.93 | 0.90 | 1.15× | 1.03× |
+| AUDUSD | 2451 | +2.434 | 0.750 | 2.04 | 2.84 | 0.80 | 0.60 | 1.25× | 1.33× |
+| USDCAD | 2841 | −0.935 | 1.448 | −1.05 | 0.05 | 1.10 | 1.30 | 1.11× | 0.85× |
+
+Variance decomposition: pooled stdev across all four **1.978 pips**, mean
+within-symbol stdev **1.093 pips**. A constant per-symbol offset would drive
+the within-symbol figure toward zero.
+
+**Verdict: varying and material.** The bar-to-bar variation is **1.1×–1.7× the
+entire spread parity-v3 models**, on every pair. EURUSD's 1.70× is the
+deciding number. The offset is not a uniform shift that cancels through
+differencing — it is per-bar noise landing on SL/TP trigger evaluation.
+
+This does not invalidate parity-v3; modelling spread correctly remains
+correct. It says the next parity gain is larger than the one just banked, and
+that residual backtest-vs-live divergence should be attributed here first.
+
+---
+

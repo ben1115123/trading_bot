@@ -415,6 +415,18 @@ def _save_run(strategy_class, symbol, timeframe, result, params,
     profit   = calc_total_profit(trades)
     drawdown = calc_max_drawdown(trades)
     sharpe   = calc_sharpe_ratio(trades)
+    # THE SAME calc_profit_factor the walk-forward path uses (engine.py's
+    # per-window loop) — not a second implementation. Four boundary definitions
+    # is how findings 20/22/23 happened; one function, two callers.
+    #
+    # This is the headline metric and it was absent from the row for the whole
+    # life of the table — `profit_factor` was never even a COLUMN, while
+    # walkforward_runs has carried `median_pf` since it was created. It matters
+    # for Stage 4 specifically: backtest_trades does NOT cross on import
+    # (gotcha 5), so without this an imported row lands on the VPS with no PF
+    # and nothing to derive one from — on the box where the roster lives and
+    # promotion happens.
+    pf       = calc_profit_factor(trades)
 
     row = {
         "strategy_name":    strategy_class.name,
@@ -426,6 +438,7 @@ def _save_run(strategy_class, symbol, timeframe, result, params,
         "candles_test":     result["candles_test"],
         "total_trades":     len(trades),
         "win_rate":         win_rate,
+        "profit_factor":    pf,
         "total_profit":     profit,
         "max_drawdown":     drawdown,
         "sharpe_ratio":     sharpe,

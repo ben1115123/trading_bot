@@ -183,6 +183,25 @@ def init_db():
         except Exception:
             pass
 
+    # Migrate backtest_results: profit_factor. It was NEVER a column — not in
+    # the CREATE, not in any migration, and not in insert_backtest_result's
+    # INSERT — while walkforward_runs has carried `median_pf` since it was
+    # created. So the table the SELECTOR reads had no profit factor at all,
+    # and the one it does not read did. Same shape as finding 31 (cache
+    # provenance) and as the spread_table_sha NULLs: the gap was in the table
+    # that matters.
+    #
+    # It read as NULL rather than as missing, which is why it survived: callers
+    # do dict(row).get("profit_factor"), and .get returns None for an ABSENT
+    # KEY exactly as it does for a NULL value. A populated-but-empty column and
+    # a non-existent one are indistinguishable through .get(). Nullable REAL,
+    # so pre-existing rows stay NULL — this is forward-only and nothing is
+    # backfilled; those rows are pre-parity-v3 history, not evidence.
+    try:
+        cursor.execute("ALTER TABLE backtest_results ADD COLUMN profit_factor REAL")
+    except Exception:
+        pass
+
     # Migrate backtest_results: add strategy_type column
     try:
         cursor.execute("ALTER TABLE backtest_results ADD COLUMN strategy_type TEXT DEFAULT 'swing'")

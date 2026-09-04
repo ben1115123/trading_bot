@@ -247,18 +247,22 @@ def insert_backtest_result(result: dict) -> int:
             INSERT INTO backtest_results
                 (strategy_name, symbol, timeframe, run_at,
                  candles_total, candles_train, candles_test,
-                 total_trades, win_rate, total_profit, max_drawdown,
+                 total_trades, win_rate, profit_factor, total_profit, max_drawdown,
                  sharpe_ratio, benchmark_return, params_json, strategy_type,
                  engine_version, spread_model, spread_table_sha,
                  cache_file, cache_candle_count, cache_date_start, cache_date_end)
             VALUES
                 (:strategy_name, :symbol, :timeframe, :run_at,
                  :candles_total, :candles_train, :candles_test,
-                 :total_trades, :win_rate, :total_profit, :max_drawdown,
+                 :total_trades, :win_rate, :profit_factor, :total_profit, :max_drawdown,
                  :sharpe_ratio, :benchmark_return, :params_json, :strategy_type,
                  :engine_version, :spread_model, :spread_table_sha,
                  :cache_file, :cache_candle_count, :cache_date_start, :cache_date_end)
         """, {
+            # profit_factor is bound positionally from **result with NO
+            # .get() fallback, exactly like :win_rate and :sharpe_ratio. A
+            # caller that omits it raises KeyError instead of silently writing
+            # NULL — which is how the column stayed empty for its whole life.
             **result,
             "engine_version":   result.get("engine_version", CURRENT_ENGINE_VERSION),
             "spread_model":     result.get("spread_model", CURRENT_SPREAD_MODEL),

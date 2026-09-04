@@ -1788,6 +1788,36 @@ signs disagree and the magnitudes span 0.76×–10.7×**, so no bid/ask hypothes
 fits — these are symbol-specific **vendor price-level offsets**. Mid is assumed
 because the data cannot resolve it.
 
+##### 📏 The residual's SECOND MOMENT — it VARIES, and that is what decides the cost
+
+The mean alone supports two opposite conclusions. A near-**constant** offset
+largely cancels: entry, stop and TP all shift together and P&L is a function of
+**differences**, so a uniform 3.2-pip EURUSD shift would be close to cosmetic.
+An offset that **varies bar to bar** is unmodelled noise on every trigger
+evaluation. Measured on the same identical-timestamp subset, in pips:
+
+| symbol | n | mean | **stdev** | IQR | full spread | **stdev/spread** | IQR/spread |
+|---|---|---|---|---|---|---|---|
+| EURUSD | 3182 | +3.209 | **1.021** | 0.97 | 0.60 | **1.70×** | 1.62× |
+| GBPUSD | 3345 | +0.340 | **1.039** | 0.93 | 0.90 | 1.15× | 1.03× |
+| AUDUSD | 2451 | +2.434 | **0.750** | 0.80 | 0.60 | 1.25× | 1.33× |
+| USDCAD | 2841 | −0.935 | **1.448** | 1.10 | 1.30 | 1.11× | 0.85× |
+
+Mean within-symbol stdev **1.093 pips** against a pooled 1.978 — a constant
+per-symbol offset would drive the within-symbol figure toward zero, and it does
+not go there.
+
+🔴 **VERDICT: VARYING AND MATERIAL, not constant-and-cancelling.** The
+bar-to-bar variation is **1.1×–1.7× the ENTIRE spread parity-v3 models** on
+every one of the four pairs — EURUSD's 1.70× is the number that decides it. So
+the corpus carries per-bar price noise larger than the cost just modelled, and
+it lands directly on SL/TP trigger evaluation, where it is not a wash.
+
+**What this does NOT do:** it does not invalidate parity-v3. Modelling spread
+correctly is still correct. It says the *next* parity gain is bigger than the
+one just banked, and that any residual backtest-vs-live divergence should be
+attributed here before anywhere else.
+
 **The bigger number this exposes, and it is NOT fixed:** on EURUSD and AUDUSD
 the backtest corpus differs from tradeable IG prices by **more than the spread
 this commit models**. Spread parity is now done; **price-level parity is not**.
@@ -1802,6 +1832,39 @@ Full run record, the contaminated first cut, and the stamp read-back →
 `engine_version=None` reads all (archive/inspection only — dashboard page 04).
 `score_strategies()` raises `MixedEngineVersionError` rather than ranking
 across models.
+
+### ⚠️ `backtest_results.profit_factor` did not EXIST until 2026-09-04
+
+**Not "was NULL" — the column was absent.** Never in the `CREATE TABLE`, never
+in any migration, never in `insert_backtest_result`'s INSERT. Meanwhile
+`walkforward_runs` has carried `median_pf` since the day it was created. **The
+table the selector actually reads had no profit factor; the one it does not
+read did.** Same shape as finding 31 (cache provenance) and the
+`spread_table_sha` NULLs — the gap was in the table that matters.
+
+**Why it survived, and this is the reusable part:** every reader does
+`dict(row).get("profit_factor")`, and **`.get()` returns `None` for an ABSENT
+KEY exactly as it does for a NULL value.** A populated-but-empty column and a
+non-existent one are indistinguishable through `.get()`. This file recorded it
+as "NULL on every row" on 2026-09-03 for precisely that reason; that reading
+was wrong and the correction is here rather than in the archive. **To ask
+whether a column exists, use `PRAGMA table_info`, never `.get()`.**
+
+Fixed forward-only: migration adds `profit_factor REAL`, and
+`insert_backtest_result` binds `:profit_factor` with **no `.get()` fallback**,
+so a caller that omits it raises rather than writing NULL (verified: it does).
+`scripts/run_backtest.py` populates it from the **same** `calc_profit_factor`
+the walk-forward path uses — one function, two callers.
+
+**Pre-existing rows stay NULL and are NOT backfilled.** 5,332 local rows,
+every one `pre-parity-v3`; they are history, not evidence.
+
+⛔ **THE MIGRATION HAS NOT REACHED THE VPS.** It runs from `init_db()` at
+container start and nothing has been deployed. The VPS `backtest_results`
+still has no `profit_factor` column — verified 2026-09-04 by `PRAGMA
+table_info`. **The Stage 4 import will need it there first**, since
+`backtest_trades` does not cross (gotcha 5) and an imported row would land
+with no PF and nothing to derive one from.
 
 
 ## Engine parity work — caveats to carry forward (2026-08-16)
