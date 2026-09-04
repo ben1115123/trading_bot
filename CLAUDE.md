@@ -1448,6 +1448,46 @@ failed to answer: **4,210 points spent in ~18 hours with no container restart**
 (511 backfills) reads as exceptional and is easy to discount; this one is the
 baseline burn and is not.
 
+### 🔴 REPEATED-OBSERVATION DUPLICATION BIASES, IT DOES NOT MERELY INFLATE — 2026-09-04
+
+**Surfaced twice now, under two different query paths, in two different tables
+with two DIFFERENT mechanisms.** Do not assume one table's shape from another's
+— measured, they disagree:
+
+| table | duplication key | factor |
+|---|---|---|
+| `signal_log` | one row per **(symbol, timeframe, strategy_name)** check | EURUSD **4.2×**, GBPUSD 1.86×, AUDUSD/USDCAD **1.0×** |
+| `candle_source_compare` | **1.0×** per `checked_at` minute — but **1.29–1.35×** per `stream_time`, because the 5-minute loop re-observes the same completed 15-minute bar across cycles | 1.30× average |
+
+`get_spread_samples()` dedups the first internally — **but that protects that
+accessor only.** Any analysis querying either table directly re-suffers it, and
+the second mechanism has no accessor guarding it at all.
+
+> **THE PART THAT MATTERS: the multiplier CORRELATES WITH THE QUANTITY BEING
+> MEASURED.** A constant inflation is harmless to a mean — it cancels. This one
+> does not. On `candle_source_compare` the average factor is 1.30×, but on the
+> **divergent** bars it was **~13×** (213 rows over 16 distinct timestamps),
+> because a stalled stream buffer gets re-read every cycle while it is stale.
+> **The anomalies are duplicated ten times more than the ordinary bars.**
+
+Consequences seen, both real:
+1. The tail rate was reported as **5–7%** of bars; deduplicated it is
+   **0.4–0.8%** — off by an order of magnitude, in the alarming direction.
+2. Dukascopy's stdev was reported **worse than Twelve Data's on all four
+   symbols**; deduplicated it is **better on all four**. The duplication was
+   loading exactly the bars where Dukascopy and IG disagreed.
+
+**Both errors pointed the same way — against the new source — because the
+duplicated bars were the divergent ones.** A reviewer sanity-checking the
+direction of the bias would have found it plausible.
+
+> **THE RULE: before computing any statistic from `signal_log` or
+> `candle_source_compare`, dedup to one observation per (symbol, bar) and state
+> which key you used.** `checked_at` and `stream_time` are different keys and
+> give different answers on the same table. If a figure was computed from rows,
+> label it as row-based — it is not wrong, it answers a different question, and
+> the two must never be compared to each other.
+
 ### 🔴 THE SESSION'S DATE BANNER IS NOT A CLOCK — 2026-09-03
 
 *(Third member of the "conclusion resting on an absence" family, and the
@@ -1747,6 +1787,76 @@ body for SL/TP trigger evaluation. GBPUSD is the single exception (1.9% vs
 **104 weekend gaps over 2 years is exactly 52/year** — the series is complete,
 not thinned. Every remaining gap is a Christmas or New Year holiday
 (24.2h at 12-31 in both years, ~14–15h at 12-25). No unexplained holes.
+
+### 🔴 RECOMPUTED ON UNIQUE OBSERVATIONS 2026-09-04 — the row-based table was biased AGAINST Dukascopy
+
+**The earlier three-way table was ROW-based.** Established from the data, not
+assumed: it iterated `candle_source_compare` rows and looked each one up in
+Dukascopy, so a bar observed N times contributed N deltas.
+
+**The correct unit is one observation per `(symbol, stream_time)`** — the
+comparison is bar-vs-bar, so the bar is the observation, not the row.
+
+| symbol | rows | distinct `stream_time` | factor |
+|---|---|---|---|
+| EURUSD | 5,062 | 3,892 | 1.30× |
+| GBPUSD | 5,123 | 3,947 | 1.30× |
+| AUDUSD | 4,371 | 3,236 | 1.35× |
+| USDCAD | 3,447 | 2,672 | 1.29× |
+
+**The adoption decision does not merely survive — it strengthens.** On unique
+observations Dukascopy wins **every metric on every symbol**, including stdev,
+which was the one column Twelve Data won on the row basis:
+
+| symbol | metric | ROWS duka / TD | **UNIQUE duka / TD** |
+|---|---|---|---|
+| EURUSD | mean | −0.274 / +3.210 | **−0.062 / +3.311** |
+| EURUSD | **stdev** | 1.283 / **1.018** ← TD won | **0.624 / 0.857** ← duka wins |
+| GBPUSD | **stdev** | 1.088 / **1.035** ← TD won | **0.712 / 1.048** ← duka wins |
+| AUDUSD | **stdev** | 1.232 / **0.749** ← TD won | **0.501 / 0.749** ← duka wins |
+| USDCAD | **stdev** | 1.835 / **1.444** ← TD won | **0.730 / 1.418** ← duka wins |
+
+**Dukascopy's stdev roughly HALVES on dedup; Twelve Data's barely moves.** That
+asymmetry is the whole story: the repeatedly-observed bars were precisely the
+divergent ones, and they were divergent on the *Dukascopy-vs-IG* leg. Twelve
+Data is *uniformly* displaced, so removing duplicates changes it hardly at all.
+
+All four Dukascopy means are now within **±0.08 pips of zero**
+(−0.062, −0.063, −0.047, −0.076).
+
+### 📏 THE ENTRY-ALLOWED NOISE FLOOR — the interpretation bar for Stage 4
+
+Unique observations, `market_hours.is_entry_allowed` hours only, Dukascopy mid
+vs IG stream mid. **This is the number a Stage 4 pre-registration must carry.**
+
+| symbol | n | mean | **stdev** | IQR | p90 abs | >1 pip | spread | **stdev/spread** |
+|---|---|---|---|---|---|---|---|---|
+| EURUSD | 3,689 | −0.057 | **0.607** | 0.40 | 0.35 | 1.1% | 0.60 | **1.01** |
+| GBPUSD | 3,745 | −0.056 | **0.524** | 0.60 | 0.50 | 1.3% | 0.90 | **0.58** |
+| AUDUSD | 3,081 | −0.056 | **0.459** | 0.40 | 0.35 | 0.9% | 0.60 | **0.77** |
+| USDCAD | 2,556 | −0.055 | **0.596** | 0.90 | 0.80 | 4.0% | 1.30 | **0.46** |
+
+Pooled: **0.547 pips of noise against 0.850 pips of modelled spread = 64%.**
+
+**How to read it, precisely — the two effects behave differently:**
+- **Per-bar trigger evaluation IS affected.** A 0.46–1.01 spread-width noise on
+  a level check can flip whether a bar touched an SL or TP. This is the real
+  constraint and it does not average away.
+- **Aggregate P&L is NOT affected the same way.** The mean is ±0.06 pips, so
+  over hundreds of trades the systematic component is negligible. **This is the
+  material difference from Twelve Data**, whose +3.2 pip EURUSD mean was a
+  *bias* that never averages down no matter how many trades you run.
+
+> **THE BAR: an edge smaller than ~0.5–0.6 pips per bar cannot be
+> distinguished from corpus error.** Carry this into the Stage 4
+> pre-registration alongside the existing "no promotion decision follows"
+> entry.
+
+⚠️ **All four means land at −0.055 to −0.057 pips — identical to three decimal
+places across four different instruments.** That is not a per-symbol vendor
+offset; it looks like a constant sub-tick or rounding artifact in one of the
+two pipelines. Small enough to ignore for now, too uniform to be coincidence,
+and worth a look if anyone ever chases the last tenth of a pip.
 
 ### ✅ THE TAIL IS RESOLVED — non-traded hours plus single-bar artifacts
 
@@ -2586,6 +2696,17 @@ Two consequences, and they point in opposite directions:
 > **THEREFORE: NO PROMOTION DECISION FOLLOWS FROM THIS BATCH, whatever the
 > ordering looks like.** A strategy that comes back "best" is the best of
 > thirteen measurements whose error bars overlap.
+
+**Added 2026-09-04 — THE CORPUS NOISE FLOOR, for the re-run on Dukascopy
+data.** Entry-allowed hours, unique observations, Dukascopy mid vs IG mid:
+stdev **0.607 / 0.524 / 0.459 / 0.596 pips** (EURUSD / GBPUSD / AUDUSD /
+USDCAD) against modelled spreads of 0.60 / 0.90 / 0.60 / 1.30 — i.e.
+**46–101% of one spread width, pooled 64%.** So: **an edge smaller than
+~0.5–0.6 pips per bar cannot be distinguished from corpus error.** Note the
+difference from the Twelve Data era, and it is the whole reason the corpus
+changed: the means are now ±0.06 pips, so the systematic component averages
+away over trades. Twelve Data's +3.2 pip EURUSD mean was a *bias* that never
+did.
 
 **Thirteen rows near 1.0 will otherwise read as a ranking.** That is the
 specific misreading this entry exists to pre-empt — it is the same shape as

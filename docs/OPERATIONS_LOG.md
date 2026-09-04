@@ -2017,3 +2017,94 @@ changed, Stage 4 not re-run.
 
 ---
 
+
+## 📏 Unique-observation recomputation + noise floor — 2026-09-04
+
+Dated detail. Conclusions and the numbers a decision reads are in CLAUDE.md.
+
+### Was the earlier comparison deduped? NO — established from the data
+
+The earlier three-way table iterated `candle_source_compare` rows and looked
+each up in Dukascopy, so a bar observed N times contributed N deltas. The n
+values are the fingerprint: EURUSD Dukascopy leg reported **4,280**; the
+deduplicated count is **3,842**, and the raw row count for EURUSD is 5,062 with
+3,892 distinct `stream_time`. Row-based, confirmed.
+
+### The two tables do NOT share a duplication shape
+
+The task asked this be verified rather than assumed, and they disagree:
+
+```
+candle_source_compare (15MIN FX), by checked_at minute:
+   AUDUSD rows=4373 distinct=4373 factor=1.00
+   EURUSD rows=5064 distinct=5064 factor=1.00
+   GBPUSD rows=5125 distinct=5125 factor=1.00
+   USDCAD rows=3449 distinct=3449 factor=1.00
+
+signal_log, same symbols, by checked_at minute:
+   AUDUSD rows= 5668 distinct=5668 factor=1.00
+   EURUSD rows=40782 distinct=9717 factor=4.20
+   GBPUSD rows=15367 distinct=8261 factor=1.86
+   USDCAD rows= 5069 distinct=5069 factor=1.00
+```
+
+`signal_log` duplicates **per strategy** (`_check_symbol` runs once per
+rostered strategy; EURUSD carries five). `candle_source_compare` does **not** —
+`_log_candle_comparison` is called once per symbol per cycle from
+`live_signal_loop.py:500/512`. Its duplication is a different thing entirely:
+**by `stream_time`, 1.29–1.35×**, because the 5-minute loop re-observes the
+same completed 15-minute bar across several cycles.
+
+My earlier note calling this "one row per strategy" for
+`candle_source_compare` was wrong about the mechanism, though right that a
+dedup was needed. Corrected here and in CLAUDE.md.
+
+### Row-based vs unique-based, side by side (pips)
+
+| sym | leg | basis | n | mean | stdev | IQR | p50 | p90 |
+|---|---|---|---|---|---|---|---|---|
+| EURUSD | Dukascopy | ROWS | 4280 | −0.274 | 1.283 | 0.45 | 0.20 | 0.75 |
+| EURUSD | Dukascopy | **UNIQUE** | 3842 | **−0.062** | **0.624** | 0.40 | 0.20 | 0.40 |
+| EURUSD | TwelveData | ROWS | 3207 | 3.210 | 1.018 | 0.96 | 3.30 | 4.22 |
+| EURUSD | TwelveData | **UNIQUE** | 3109 | 3.311 | 0.857 | 0.93 | 3.33 | 4.23 |
+| GBPUSD | Dukascopy | ROWS | 4340 | 0.129 | 1.088 | 0.65 | 0.30 | 0.71 |
+| GBPUSD | Dukascopy | **UNIQUE** | 3901 | **−0.063** | **0.712** | 0.60 | 0.30 | 0.55 |
+| GBPUSD | TwelveData | ROWS | 3379 | 0.340 | 1.035 | 0.92 | 0.55 | 1.53 |
+| GBPUSD | TwelveData | **UNIQUE** | 3281 | 0.351 | 1.048 | 0.96 | 0.57 | 1.57 |
+| AUDUSD | Dukascopy | ROWS | 3609 | −0.258 | 1.232 | 0.45 | 0.25 | 0.55 |
+| AUDUSD | Dukascopy | **UNIQUE** | 3188 | **−0.047** | **0.501** | 0.40 | 0.20 | 0.40 |
+| AUDUSD | TwelveData | ROWS | 2470 | 2.434 | 0.749 | 0.80 | 2.44 | 3.28 |
+| AUDUSD | TwelveData | **UNIQUE** | 2469 | 2.434 | 0.749 | 0.80 | 2.44 | 3.28 |
+| USDCAD | Dukascopy | ROWS | 2858 | 0.349 | 1.835 | 1.00 | 0.50 | 1.20 |
+| USDCAD | Dukascopy | **UNIQUE** | 2633 | **−0.076** | **0.730** | 0.90 | 0.45 | 0.85 |
+| USDCAD | TwelveData | ROWS | 2878 | −0.936 | 1.444 | 1.10 | 0.65 | 3.45 |
+| USDCAD | TwelveData | **UNIQUE** | 2583 | −0.993 | 1.418 | 1.10 | 0.65 | 3.45 |
+
+Dukascopy's stdev roughly halves on dedup (1.283→0.624, 1.088→0.712,
+1.232→0.501, 1.835→0.730). Twelve Data's moves by less than 0.2 on every
+symbol and is unchanged on AUDUSD. The duplicated bars were the ones where
+Dukascopy and IG disagreed.
+
+### Ordering on unique observations
+
+Dukascopy wins **|mean|, stdev, IQR, p50 and p90 on all four symbols** — 20 of
+20 comparisons. Nothing flips in Twelve Data's favour.
+
+### Entry-allowed noise floor, all four
+
+| symbol | n | mean | stdev | IQR | p90 abs | >1 pip | spread | stdev/spread | p90/spread |
+|---|---|---|---|---|---|---|---|---|---|
+| EURUSD | 3689 | −0.057 | 0.607 | 0.40 | 0.35 | 1.1% | 0.60 | 1.01 | 0.58 |
+| GBPUSD | 3745 | −0.056 | 0.524 | 0.60 | 0.50 | 1.3% | 0.90 | 0.58 | 0.56 |
+| AUDUSD | 3081 | −0.056 | 0.459 | 0.40 | 0.35 | 0.9% | 0.60 | 0.77 | 0.58 |
+| USDCAD | 2556 | −0.055 | 0.596 | 0.90 | 0.80 | 4.0% | 1.30 | 0.46 | 0.62 |
+
+Pooled 0.547 pips of noise against 0.850 pips of modelled spread = **64%**.
+
+The four means agree to three decimals (−0.055 to −0.057) across four
+instruments — too uniform for a per-symbol vendor offset; it reads as a
+constant sub-tick or rounding artifact somewhere in one pipeline. Noted, not
+chased.
+
+---
+
