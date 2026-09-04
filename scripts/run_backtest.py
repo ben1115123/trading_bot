@@ -85,6 +85,32 @@ def _load_alphavantage_candles(symbol: str, timeframe: str) -> list:
         return json.load(f)
 
 
+def _load_dukascopy_candles(symbol: str, timeframe: str) -> list:
+    """Dukascopy mid candles, {SYMBOL}_{TF}_DUKA.json.
+
+    SELECTABLE, NEVER A DEFAULT. `--source` still defaults to "ig"; existing
+    invocations resolve to exactly what they resolved to before this branch
+    existed, and `cache_file` provenance keeps naming the corpus that actually
+    produced each row. Nothing already written changes meaning.
+
+    Mid is (bid+ask)/2 per OHLC field, built at fetch time by
+    scripts/fetch_dukascopy.py — same construction as the engine's IG path.
+    Measured 2026-09-04 against IG stream mid on unique observations: sub-pip
+    mean on all four FX pairs, and the indices at true index scale (US500
+    1.010x, US100 1.008x vs the 2026-08-23 IG snapshots) rather than the
+    SPY/QQQ ETF proxies that voided ids 29/30.
+    """
+    path = CACHE_DIR / f"{symbol.upper()}_{timeframe.upper()}_DUKA.json"
+    if not path.exists():
+        raise RuntimeError(
+            f"No Dukascopy cache found at {path}. "
+            f"Run: PYTHONPATH=<dukalib> python3 scripts/fetch_dukascopy.py "
+            f"--pairs {symbol.upper()}:{timeframe.upper()}"
+        )
+    with open(path) as f:
+        return json.load(f)
+
+
 def _load_ig_cache_candles(symbol: str, timeframe: str) -> list:
     path = CACHE_DIR / f"{symbol.upper()}_{timeframe.upper()}_IG.json"
     if not path.exists():
@@ -632,8 +658,12 @@ def main():
     parser.add_argument("--sweep",         action="store_true", help="Run full parameter sweep")
     parser.add_argument("--cache",         action="store_true", help="Cache candles to disk; load if fresh (<24h)")
     parser.add_argument("--refresh-cache", action="store_true", help="Force re-fetch even if cache exists")
-    parser.add_argument("--source",         default="ig", choices=["ig", "yfinance", "alphavantage", "ig_cache"],
-                        help="Data source: ig (default), yfinance, alphavantage (cached, 2yr 15MIN), or ig_cache (self-collected)")
+    parser.add_argument("--source",         default="ig",
+                        choices=["ig", "yfinance", "alphavantage", "ig_cache", "dukascopy"],
+                        help="Data source: ig (default), yfinance, alphavantage (cached, 2yr "
+                             "15MIN), ig_cache (self-collected), or dukascopy (cached, 2yr "
+                             "15MIN+HOUR, mid from bid/ask, indices at TRUE index scale). "
+                             "The default is unchanged — dukascopy is opt-in.")
     parser.add_argument("--type",           default="swing", choices=["swing", "daytrading"],
                         help="Strategy type label stored in DB (default: swing)")
     parser.add_argument("--session-filter", default=None, choices=["US", "24_7"],
@@ -767,6 +797,10 @@ def main():
         print(f"Loading {args.symbol} {args.timeframe} candles from Alpha Vantage cache...")
         candles = _load_alphavantage_candles(args.symbol, args.timeframe)[-args.count:]
         print(f"Loaded {len(candles)} candles.")
+    elif args.source == "dukascopy":
+        print(f"Loading {args.symbol} {args.timeframe} candles from Dukascopy cache...")
+        candles = _load_dukascopy_candles(args.symbol, args.timeframe)[-args.count:]
+        print(f"Loaded {len(candles)} candles.")
     elif args.source == "ig_cache":
         print(f"Loading {args.symbol} {args.timeframe} candles from IG-collected cache...")
         candles = _load_ig_cache_candles(args.symbol, args.timeframe)[-args.count:]
@@ -795,6 +829,7 @@ def main():
     cache_file_name = {
         "alphavantage": f"{args.symbol.upper()}_{args.timeframe.upper()}_AV.json",
         "ig_cache":     f"{args.symbol.upper()}_{args.timeframe.upper()}_IG.json",
+        "dukascopy":    f"{args.symbol.upper()}_{args.timeframe.upper()}_DUKA.json",
     }.get(args.source, _cache_path(args.symbol, args.timeframe, args.count, args.source).name)
     fingerprint = _cache_fingerprint(candles, cache_file_name)
 

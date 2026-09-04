@@ -2674,6 +2674,87 @@ not dropped flags. They were **not** made to compose — composing would layer a
 second dispatch model on a chain that already returns, and the gauntlet
 genuinely is four invocations.
 
+### 🔒 PRE-REGISTRATION — DUKASCOPY STAGE 4 RE-RUN, written 2026-09-04 BEFORE the batch
+
+Same engine (`parity-v3`), same spread model (`measured-2026-09-median`,
+`c0c905fc6c071dd4`), **different corpus**. Any movement is attributable to the
+data alone.
+
+#### The noise floor, per symbol, as a ratio to that symbol's own spread
+
+| symbol | noise stdev | spread | **ratio** | roster rows |
+|---|---|---|---|---|
+| **EURUSD** | 0.607 | 0.60 | **1.01** ← worst | **5 of 13** |
+| AUDUSD | 0.459 | 0.60 | 0.77 | 1 |
+| GBPUSD | 0.524 | 0.90 | 0.58 | 2 |
+| USDCAD | 0.596 | 1.30 | 0.46 ← best | 1 |
+| pooled | 0.547 | 0.850 | **0.64** | |
+
+🔴 **EURUSD is the LEAST resolvable symbol and carries FIVE of the thirteen
+roster rows.** Its per-bar noise is a full spread width. So **EURUSD results
+carry the widest error bars precisely because they are the most numerous** —
+the temptation will be to read the biggest block of results as the most
+reliable, and it is the least. State any EURUSD conclusion with that attached.
+
+#### Trigger vs aggregate — which conclusions each supports
+
+| | status | supports |
+|---|---|---|
+| **Aggregate PF, net P&L, win rate** | ✅ **trustworthy now** — the mean error is ±0.06 pips and averages down over hundreds of trades | comparing strategies to each other; comparing old corpus to new; verdict-level conclusions |
+| **Per-bar trigger evaluation** | ❌ **NOT resolvable** at ~0.5–1.0 spread widths — noise can flip whether a bar touched an SL or TP | any claim about a specific trade, a specific bar, exact trade counts, or a PF difference smaller than the noise |
+
+**This is the material change from the Twelve Data era.** Its +3.2 pip EURUSD
+mean was a *bias* that never averaged down at any trade count. A ±0.06 mean
+does. So aggregate comparisons are meaningful for the first time.
+
+#### What each outcome would MEAN — written before, because afterwards either will feel like confirmation
+
+- **RANKINGS CHANGED** → the old Stage 4 conclusions were **corpus artifacts**.
+  The Twelve Data corpus was shaping which strategies looked good, not merely
+  adding noise. Everything ranked on it is void, not just imprecise.
+- **RANKINGS HELD** → the strategy conclusions are **about the strategies**.
+  A +3.2 pip systematic offset failed to reorder them, which is strong evidence
+  the ordering reflects strategy behaviour rather than data.
+
+**Both are informative. I expect RANKINGS TO CHANGE**, and I am recording the
+specific shape so a vague "it moved" cannot be claimed as a hit:
+- **EURUSD (offset +3.31 pips = 5.5x its spread) and AUDUSD (+2.43 = 4.1x)
+  should move MOST.**
+- **GBPUSD (+0.35 = 0.4x) and USDCAD (−0.99 = 0.8x) should move LEAST.**
+- Early signal already seen while wiring the loader: **AUDUSD 15MIN
+  `williams_r` goes PF 1.0431 → 0.8168**, same engine, same params, same seed.
+  Consistent with that prediction.
+- **US500/US100 15MIN `ema_pullback` (ids 29, 30) have NO comparison** — their
+  old figures were measured on ETF candles and are void, not merely different.
+
+#### Derived expected verdict counts — DERIVED, not carried
+
+Read at run time from `roster.db` and `run_backtest.py`, not from this file:
+
+```
+paper roster rows                                    13
+  STABILITY_GRIDS keys                     = ['williams_r']
+  rows whose strategy_name IS in GRIDS      =  5  (ids 6, 22, 32, 34, 36)
+  rows whose strategy_name is NOT in GRIDS  =  8  (ids 23,24,25,26,28,29,30,31)
+  id 28 ny_session_momentum raises EngineContractError on BOTH corpora
+    (TwelveData idx=1103, Dukascopy idx=9523 — corpus-independent defect)
+```
+
+| outcome | expected | derivation |
+|---|---|---|
+| full 84-cell stability maps | **5** | roster rows with a grid |
+| `stability_map` rows from those | **420** | 5 x 84 |
+| `REDUCED_GAUNTLET` markers | **7** | 8 without a grid, minus id 28 |
+| `NOT_RUNNABLE` markers | **1** | id 28 |
+| total `stability_map` rows | **428** | 420 + 7 + 1 |
+| `backtest_results` rows | **12** | 13 minus id 28 |
+| `walk_forward` rows | **12** | ″ |
+| `permutation` rows | **12** | ″ |
+
+**The last pre-registration said 12 of 13 reduced and was wrong because it
+counted strategy NAMES where the system counts roster ROWS.** This one is
+derived from both sources at run time and shows its working.
+
 ### 🔒 PRE-REGISTERED INTERPRETATION — written 2026-09-04, BEFORE the batch ran
 
 The entry above pre-registers the VERDICT SHAPE. This one pre-registers **what
