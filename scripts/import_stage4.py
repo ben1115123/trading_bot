@@ -57,6 +57,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -76,17 +77,99 @@ NATURAL_KEYS = {
                          "params_json", "cache_file", "created_at"],
 }
 
-# Mirrors database/db.py exactly. Additive only.
+# Columns this script may add to the target. Additive only.
+#
+# ⚠️ THE COMMENT HERE USED TO READ "Mirrors database/db.py exactly." It did
+# not. dc34602 added `profit_factor` to db.py and never touched this file, so
+# an export carrying that column would have built an INSERT naming a column the
+# VPS table does not have — OperationalError at import, AFTER the whole batch
+# had run. A comment claiming a mirror is a control believed present and never
+# checked; that is the recurring failure class in this repo, so the mirror is
+# now VERIFIED AT RUN TIME by check_mirror() below rather than asserted here.
+#
+# `import_json` is deliberately NOT in db.py: it is written only by this
+# script, on the target. So the check is ONE-DIRECTIONAL — db.py must not
+# contain anything this list cannot supply, but this list may carry extras.
 ENSURE_COLUMNS = {
     "backtest_results": [
         ("cache_file",         "TEXT"),
         ("cache_candle_count", "INTEGER"),
         ("cache_date_start",   "TEXT"),
         ("cache_date_end",     "TEXT"),
+        ("profit_factor",      "REAL"),
         ("import_json",        "TEXT"),
     ],
     "walkforward_runs": [],
 }
+
+
+def reference_schema() -> dict:
+    """The columns database/db.py ACTUALLY creates, obtained by running it.
+
+    Not by parsing db.py — its schema is spread across a CREATE TABLE plus a
+    dozen try/except ALTER migrations, and a parser would be a second
+    definition of the schema that can drift from the first. This builds a
+    throwaway database, runs init_db() against it, and reads PRAGMA
+    table_info. Executable definition, no parsing, cannot drift.
+
+    DDL SAFETY: DATABASE_PATH is patched to a temp file BEFORE init_db() is
+    called, so this can never touch a real database. get_connection() reads the
+    module global at call time, which is what makes the patch effective.
+    """
+    import tempfile
+    import database.db as _db
+    original = _db.DATABASE_PATH
+    tmpdir = tempfile.mkdtemp(prefix="stage4_refschema_")
+    try:
+        _db.DATABASE_PATH = os.path.join(tmpdir, "reference.db")
+        _db.init_db()
+        conn = sqlite3.connect(_db.DATABASE_PATH)
+        try:
+            return {t: {r[1]: (r[2] or "TEXT") for r in
+                        conn.execute(f"PRAGMA table_info({t})")}
+                    for t in ENSURE_COLUMNS}
+        finally:
+            conn.close()
+    finally:
+        _db.DATABASE_PATH = original
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def check_mirror(conn) -> None:
+    """Refuse if db.py declares a column the target lacks and this script
+    cannot add.
+
+    This is the guard that the stale comment was standing in for. It fires on
+    exactly the case that would otherwise surface as an OperationalError after
+    the batch: a new column in db.py, absent from the target, undeclared here.
+    """
+    try:
+        reference = reference_schema()
+    except Exception as e:
+        _refuse(f"could not build the reference schema from database/db.py "
+                f"({type(e).__name__}: {e}). The mirror between db.py and "
+                f"ENSURE_COLUMNS cannot be verified, and an unverified mirror "
+                f"is what this check exists to replace. Refusing rather than "
+                f"proceeding on the assumption that it still holds.")
+    drift = {}
+    for table, refcols in reference.items():
+        have      = set(_cols(conn, table))
+        declared  = {c for c, _ in ENSURE_COLUMNS[table]}
+        # Only columns that are genuinely missing from the target matter: on a
+        # normal target everything else already exists.
+        gap = [c for c in refcols if c not in have and c not in declared]
+        if gap:
+            drift[table] = gap
+    if drift:
+        _refuse(
+            f"ENSURE_COLUMNS has DRIFTED from database/db.py. Missing from the "
+            f"target and undeclared here: {drift}. db.py gained the column and "
+            f"this script was not updated — the exact shape that made "
+            f"`profit_factor` a post-batch OperationalError. Add it to "
+            f"ENSURE_COLUMNS with its type, then re-run."
+        )
+    print(f"[schema] mirror verified against database/db.py — "
+          f"{ {t: len(c) for t, c in reference.items()} } reference columns, no drift")
 
 
 def _refuse(msg):
@@ -127,6 +210,7 @@ def backup_target(target: str, backup_dir: str) -> str:
 
 
 def ensure_columns(conn, confirm: bool):
+    check_mirror(conn)
     for table, cols in ENSURE_COLUMNS.items():
         have = _cols(conn, table)
         missing = [(c, d) for c, d in cols if c not in have]

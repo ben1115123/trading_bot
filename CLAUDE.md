@@ -1672,6 +1672,7 @@ baked into every image layer; the two backups alone were 504 MB per build.
 | `trades.bak-20260822T180436Z.db` | Taken by `scripts/import_stage4.py` before the Stage 4 import write test (rule 5) | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 | `trades.bak-20260823T040057Z.db` | Before the Stage 4 dress-rehearsal import (rule 5) | 996 trades, 268,117 backtest_results, `integrity_check ok` |
 | `trades.bak-20260823T041942Z.db` | Before the post-fix dress-rehearsal re-import (rule 5) | 996 trades, 268,118 backtest_results, `integrity_check ok` |
+| `trades.bak-20260904T020447Z.db` | Before the Stage 4 `profit_factor` schema change + parity-v3 import | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
 
 All verified `integrity_check ok`. **None is disposable.** Take new ones with
 the SQLite online backup API (`Connection.backup()`), never `cp` — `cp` on a
@@ -2053,6 +2054,40 @@ of what was not run.
 **Write this down before the run, not after.** A batch that returns 12 reduced
 verdicts is either "exactly as planned" or "something is badly wrong", and those
 two look identical in the output. This entry is what makes it the first one.
+
+### 🔒 PRE-REGISTERED INTERPRETATION — written 2026-09-04, BEFORE the batch ran
+
+The entry above pre-registers the VERDICT SHAPE. This one pre-registers **what
+the NUMBERS can support**, and it is written first for the same reason.
+
+**The measured cache-vs-IG-mid residual is VARYING, not a constant offset.**
+Per-symbol stdev **0.750–1.448 pips**, pooled **1.978**, i.e. **1.1×–1.7× the
+entire spread parity-v3 models**. A constant offset would cancel through
+differencing; this one does not, and it lands on SL/TP trigger evaluation.
+
+Two consequences, and they point in opposite directions:
+
+- **RELATIVE comparison across the roster IS meaningful.** The residual applies
+  equally to every strategy on a given symbol, so ordering within a symbol is
+  not corrupted by it.
+- **ABSOLUTE PF is NOT resolvable at these margins.** Walk-forward already sits
+  at median PF **1.0514**. A per-bar noise term larger than the modelled spread
+  cannot be netted out of a number that close to 1.0.
+
+> **THEREFORE: NO PROMOTION DECISION FOLLOWS FROM THIS BATCH, whatever the
+> ordering looks like.** A strategy that comes back "best" is the best of
+> thirteen measurements whose error bars overlap.
+
+**Thirteen rows near 1.0 will otherwise read as a ranking.** That is the
+specific misreading this entry exists to pre-empt — it is the same shape as
+the pre-parity scores that promoted `US100 HOUR supertrend` unreviewed, where
+an ordering was treated as evidence because it was the only thing on the
+screen.
+
+What WOULD change this: a smaller residual (index-scale 15MIN candles from a
+single source, or a cache-vs-IG level correction), or a strategy whose PF is
+far enough from 1.0 that a ~1-pip-per-bar noise term cannot explain it. Neither
+is in this batch.
 
 ### 🔧 FIVE OPERATIONAL GOTCHAS — all found by doing, none by reading
 
