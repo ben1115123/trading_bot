@@ -1567,3 +1567,125 @@ means Stage 4's output is not yet live-visible.
 
 ---
 
+
+## 📏 Post-Stage-4 cleanup — 2026-09-04
+
+Dated detail. Standing conclusions in CLAUDE.md.
+
+### A. The backup that did not exist, and the guard that now refuses
+
+`import_stage4.py`'s rule-5 backup printed a filename, a byte count and
+`integrity_check ok` — twice — while writing to the container's ephemeral
+layer. `DEFAULT_BACKUP_DIR` is a HOST path; gotcha 3 forces the script to run
+INSIDE the container. 650 MB, invisible from the host, absent from the
+Database Backups table, destroyed by the next rebuild.
+
+Device IDs inside the container, which is what the guard now compares:
+
+```
+/app/database          st_dev=2049   <- the bind mount (persistent)
+/home/ubuntu/backups   st_dev=50     <- container overlay (ephemeral)
+/tmp                   st_dev=50
+```
+
+**Guard seen to fire**, on the exact path that failed silently:
+
+```
+REFUSED: backup dir '/home/ubuntu/backups' is on a DIFFERENT filesystem from
+the target '/app/database/trades.db'. Inside the container that means the
+container's own writable layer — ephemeral, invisible to the host, and gone on
+the next rebuild, while this run would still report a successful backup. Point
+--backup-dir at a path on the bind-mounted volume (e.g. alongside the
+database), or take the backup on the HOST and pass --no-backup.
+```
+
+### B. One bug, two symptoms
+
+**Root cause:** `main()` in `scripts/run_backtest.py` dispatches as a chain of
+`if <flag>: ... return` blocks — `stability_map`, `monte_carlo`, `permutation`,
+`walk_forward`, `sweep` — each returning before the single-backtest save.
+
+**Symptom 1 fixed:** multiple mode flags now exit 2 and name them.
+
+```
+REFUSED: 4 mode flags passed together: --stability-map --monte-carlo
+         --permutation --walk-forward.
+         These do NOT compose — main() dispatches as a chain of
+         `if <flag>: ... return`, so only --stability-map would run and the
+         rest would be silently dropped.
+```
+
+Three composites remain allowed because they are real pairings within one
+branch: `--stability-map --monte-carlo`, `--walk-forward --monte-carlo`,
+`--walk-forward --sweep`.
+
+**Symptom 2 fixed:** the no-grid branch proves runnability on a probe backtest
+before writing its marker.
+
+| strategy | verdict written |
+|---|---|
+| `ny_session_momentum` (raises `EngineContractError`) | **`NOT_RUNNABLE`**, with the exception in `extra_json.runnability_error` |
+| `bb_squeeze` (runnable, no grid) | `REDUCED_GAUNTLET`, `runnable=True` — regression check |
+
+**What reads `walkforward_runs.verdict`, enumerated before a new value was
+chosen: NOTHING.** No `get_walkforward*` in `models.py`; the only DB access is
+`merge_extra_json` by id. `score_strategies()` and `select_strategy.py` read
+`backtest_results`. No dashboard page references the table. The only
+verdict-value comparisons (`v in ("ROBUST","MARGINAL")`, `v == "ROBUST"`) are
+in the untracked `scripts/explore_liquidity_sweep.py` and operate on
+in-memory dicts. An unknown value therefore cannot be silently mishandled.
+
+### B3. Production enumeration, before any change
+
+All six VPS `REDUCED_GAUNTLET` rows replayed locally under their own roster
+params against their own caches:
+
+```
+   id symbol tf    strategy              RUNNABLE
+  369 EURUSD 15MIN stoch_rsi             YES
+  372 EURUSD 15MIN bb_squeeze            YES
+  375 EURUSD 15MIN supertrend            YES
+  378 US500  HOUR  stoch_rsi_confluence  YES
+  379 EURUSD 15MIN ny_session_momentum   *** NO *** EngineContractError
+  382 GBPUSD 15MIN ema_pullback          YES
+
+NOT RUNNABLE: 1 of 6 -> ids [379]
+```
+
+id 379 was the one that surfaced during Stage 4, but that it is the ONLY one
+is now measured rather than assumed.
+
+**Annotated, not deleted.** Read back from the VPS:
+
+```
+  id=379 EURUSD 15MIN ny_session_momentum
+    verdict          : NOT_RUNNABLE
+    original_verdict : REDUCED_GAUNTLET
+    runnable         : False
+    annotated_at     : 2026-09-04T02:43:53.071440+00:00
+    annotation       : NOT A RESULT. This row was written by the no-grid
+                       branch of --stability-map, which persisted its marker
+                       BEFORE any backtest ran...
+```
+
+Verdict distribution after: `REJECT` 412, `FRAGILE` 123, `MARGINAL` 76, `None`
+35, `REDUCED_GAUNTLET` 5, `NOT_RUNNABLE` 1, `ROBUST` 1.
+
+Backup first, on the HOST: `trades.bak-20260904T024323Z.db`, 325,763,072
+bytes, 996 trades / 268,129 backtest_results / 653 walkforward_runs,
+`integrity_check ok`.
+
+### C. The pre-registration figure
+
+Heading read "EXPECT 12 OF 13"; correct is **8 of 13**. Verified against
+`roster.db`: 31 rows, 13 `status='paper'`, and `williams_r` holds five of the
+thirteen (ids 6, 22, 32, 34, 36). `STABILITY_GRIDS` contains only
+`williams_r`, so five get 84-cell maps and eight get markers.
+
+The error generalises: **`STABILITY_GRIDS` is keyed by strategy NAME while the
+roster is counted in ROWS**, and one name can hold several rows. With 12 in
+the heading, a correct run returning 6 markers would have been flagged as
+anomalous — the check would have manufactured the alarm it exists to prevent.
+
+---
+

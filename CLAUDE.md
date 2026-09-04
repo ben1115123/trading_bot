@@ -1408,6 +1408,60 @@ not consulted.
 took four extra tool calls because the question was asked of the codebase
 first and the clock second.
 
+### 🔴 DID THE ARTIFACT ACTUALLY LAND WHERE IT WOULD BE NEEDED? — 2026-09-04
+
+*(Seventh member of the family, and the first that is not about an
+observation at all. The six before it ask whether a reading carries
+information, whether the probe could see it, whether we manufactured it, and
+what it cost. **This one asks whether the THING an operation claims to have
+produced actually EXISTS at the address that would consume it.**)*
+
+**The instance.** `import_stage4.py`'s rule-5 backup ran, returned, printed
+`integrity_check ok`, and reported a filename and a byte count. All true. The
+file was on the **container's ephemeral writable layer**, because
+`DEFAULT_BACKUP_DIR` is a HOST path while gotcha 3 forces the script to run
+INSIDE the container. 650 MB across two runs, invisible from the host,
+missing from the Database Backups table, and destroyed by the next rebuild.
+**The rollback path did not exist and reported healthy.** Found only by
+listing the host directory afterwards — nothing in the run said otherwise.
+
+Note what makes it nasty: **two individually-correct rules produced it, and
+neither owned their intersection.**
+
+| rule | correct on its own |
+|---|---|
+| gotcha 2 — "backup on the host, import in the container" | yes |
+| gotcha 3 — "the VPS DB is root-owned, so writes must be in the container" | yes |
+
+> **THE RULE:** when an operation's value is a **fallback you would only use
+> later** — a backup, a snapshot, an export, a log you plan to read after an
+> incident — **verify the artifact from the side that would CONSUME it**, not
+> from the writer's return value. The writer's success is evidence the write
+> happened *somewhere*. It is not evidence the artifact is where the reader
+> will look.
+>
+> A backup whose only evidence of success is that the call returned is not a
+> backup. Check it from the host, in the directory the runbook names.
+
+Where it sits — the family now covers the whole life of an observation and
+then one step past it:
+
+| rule | asks |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | could the probe observe the passing state? |
+| prospective form | did I create the passing observation myself? |
+| enumerate over assert | can the check see anything it did not predict? |
+| observation cost | what does the observation COST if it fails? |
+| non-separating branches | can the branches tell the hypotheses apart? |
+| **this one** | **does the ARTIFACT exist where it will be needed?** |
+
+**Fixed, and the guard has been SEEN to fire** rather than merely added:
+`backup_target()` compares `st_dev` of the backup directory against the
+target's directory — `/app/database` is the bind mount (`st_dev=2049`), the
+container overlay is `st_dev=50` — and refuses. Demonstrated 2026-09-04 by
+pointing it at the exact path that failed silently before.
+
 ### 🔴 CRITERIA AGE AGAINST THE SYSTEM THEY MEASURE — two unsatisfiable criteria now
 
 *(named 2026-08-31, on the second instance. The first was not recognised as an
@@ -1674,6 +1728,7 @@ baked into every image layer; the two backups alone were 504 MB per build.
 | `trades.bak-20260823T041942Z.db` | Before the post-fix dress-rehearsal re-import (rule 5) | 996 trades, 268,118 backtest_results, `integrity_check ok` |
 | `trades.bak-20260904T020447Z.db` | Before the Stage 4 `profit_factor` schema change + parity-v3 import — taken on the HOST | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
 | `trades.bak-20260904T022720Z.db` | `import_stage4.py`'s own rule-5 backup, immediately before the parity-v3 write. **Was written to the CONTAINER's ephemeral layer and rescued to the host afterwards** — see the backup-dir defect below | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
+| `trades.bak-20260904T024323Z.db` | Before annotating `walkforward_runs` id 379 `REDUCED_GAUNTLET` → `NOT_RUNNABLE`. Taken on the HOST — the new `st_dev` guard correctly refuses this path from inside the container | 996 trades, 268,129 backtest_results, 653 walkforward_runs, 325,763,072 bytes, `integrity_check ok` |
 
 ⚠️ **A THIRD backup, `trades.bak-20260904T022739Z.db` (325,763,072 bytes), was
 taken by the idempotency re-run and DELETED rather than kept.** It is a
@@ -2061,7 +2116,7 @@ well under an hour, not an evening.** Consequences: there is no case for
 parallelising, no case for a reduced gauntlet on time grounds, and no reason to
 run it unattended overnight.
 
-### 🟡 EXPECT 12 OF 13 ROWS TO BE REDUCED_GAUNTLET — that is the plan, not a fault
+### 🟡 EXPECT 8 OF 13 ROWS TO BE REDUCED_GAUNTLET — that is the plan, not a fault
 
 `STABILITY_GRIDS` in `scripts/run_backtest.py` contains **only `williams_r`**.
 Every other rostered strategy hits the no-grid branch and persists a
@@ -2070,15 +2125,36 @@ forcing it with `bb_squeeze` writes one `stability_map` row, verdict
 `REDUCED_GAUNTLET`, fully stamped and carrying
 `extra_json.params_source = "roster:active_strategy.id=24"`.
 
-> 🔴 **THE "12 OF 13" FIGURE IN THIS SECTION'S HEADING WAS WRONG, and it was
-> wrong in the direction that makes a correct run look anomalous.** The roster
-> holds **five** `williams_r` paper rows (ids 6 US500 HOUR, 22 EURUSD, 32
-> GBPUSD, 34 AUDUSD, 36 USDCAD), not one — so five get a real 84-cell
-> stability map and the correct expectation is **8 of 13 reduced**, or **6 of
-> 11** with ids 29/30 held on the ETF blocker. Measured 2026-09-04: exactly
-> **6 REDUCED_GAUNTLET and 5 × 84-cell maps (426 stability rows)**.
-> A pre-registered check is only as good as its arithmetic; this one counted
-> strategies rather than roster rows.
+**8, because `williams_r` holds FIVE of the thirteen paper rows** — ids 6
+US500 HOUR, 22 EURUSD, 32 GBPUSD, 34 AUDUSD, 36 USDCAD. Those five get real
+84-cell maps; the remaining eight get markers. Verified against `roster.db`:
+31 rows total, 13 `status='paper'`, 5 of them `williams_r`. With ids 29/30
+held on the ETF blocker it reads **6 of 11**, which is exactly what the
+2026-09-04 batch produced (6 markers, 5 × 84 = 426 stability rows).
+
+> 🔴 **THIS HEADING READ "12 OF 13" UNTIL 2026-09-04, AND THAT IS WORSE THAN
+> HAVING NO NUMBER AT ALL.** The whole purpose of this entry is to separate
+> "exactly as planned" from "something is badly wrong". With 12 in it, a
+> **correct** run returning 6 markers would have been flagged as anomalous —
+> the check would have manufactured the alarm it exists to prevent.
+>
+> **The reason generalises and is worth carrying:** `STABILITY_GRIDS` is keyed
+> by strategy **NAME**, while the roster is counted in **ROWS**, and one
+> strategy name can hold several rows. Counting names where the system counts
+> rows is an off-by-N that scales with the roster, not a slip. Any future
+> figure of this shape must be derived from the roster
+> (`SELECT COUNT(*) ... WHERE status='paper' AND strategy_name NOT IN
+> STABILITY_GRIDS`), never from counting distinct strategies by hand.
+
+**A second marker verdict now exists — `NOT_RUNNABLE`.** The no-grid branch
+used to write its marker **before any backtest ran**, so a strategy that
+cannot be backtested at all still produced a row reading as
+`REDUCED_GAUNTLET` (= "ran, no grid available"). It now proves runnability
+first and records `NOT_RUNNABLE` with the exception in `extra_json` when the
+strategy raises. Safe to add: **nothing reads `walkforward_runs.verdict`** —
+there is no `get_walkforward*` in `models.py`, the selector and
+`score_strategies()` read `backtest_results`, and no dashboard page touches
+the table. Enumerated before the value was chosen, not after.
 
 The standing plan was **build 2 grids, mark 4**. Against the current roster that
 now reads: **build one more — `stoch_rsi` and `supertrend` — and accept the rest
@@ -2145,6 +2221,25 @@ it.
   **It is not evidence the strategy ran** — the absence of any
   `walk_forward`, `permutation` or `backtest_results` row for it is the tell.
 
+### ✅ id 379 ANNOTATED ON THE VPS — the marker that read as a result
+
+`walkforward_runs` id **379** (EURUSD 15MIN `ny_session_momentum`) carried
+`REDUCED_GAUNTLET`, written by the no-grid branch **before any backtest ran**,
+for a strategy that raises `EngineContractError` and cannot be backtested at
+all. Corrected 2026-09-04 to **`NOT_RUNNABLE`**, with the exception text,
+`original_verdict`, `annotated_at` and a plain-English `annotation` merged
+into `extra_json`.
+
+**Annotated, not deleted** — a deleted row leaves no trace the defect
+happened; an annotated row documents itself and the change is reversible from
+the row alone.
+
+**All six VPS `REDUCED_GAUNTLET` rows were probed for runnability first, not
+just the one that surfaced** (ids 369, 372, 375, 378, 379, 382, each replayed
+under its own roster params against its own cache). **Exactly one failed.**
+That is now a measured result rather than an assumption. Post-change
+distribution: `REDUCED_GAUNTLET` 5, `NOT_RUNNABLE` 1.
+
 ### 🔴 A GAUNTLET RUN WRITES NO `backtest_results` ROW — the flags do NOT combine
 
 `--stability-map`, `--monte-carlo`, `--permutation` and `--walk-forward` are
@@ -2157,6 +2252,15 @@ The first attempt at this batch did exactly that: ten runs "completed",
 `walkforward_runs` grew by 307, and `backtest_results` did not move at all.
 Caught by enumerating both counts, not by any error. **The gauntlet is FOUR
 separate invocations per strategy**, and that is what the 2026-09-04 batch ran.
+
+✅ **FIXED 2026-09-04 — it now REFUSES rather than silently dropping flags.**
+Multiple mode flags exit 2 with a message naming every flag passed, which one
+would have run, and the four-invocation sequence. Three genuine composites are
+still allowed (`--stability-map --monte-carlo`, `--walk-forward --monte-carlo`,
+`--walk-forward --sweep`) because those are real pairings inside one branch,
+not dropped flags. They were **not** made to compose — composing would layer a
+second dispatch model on a chain that already returns, and the gauntlet
+genuinely is four invocations.
 
 ### 🔒 PRE-REGISTERED INTERPRETATION — written 2026-09-04, BEFORE the batch ran
 

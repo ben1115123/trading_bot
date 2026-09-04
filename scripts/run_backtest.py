@@ -123,7 +123,7 @@ from trading_ig import IGService
 
 from ig_env import get_ig_credentials
 import backend.backtesting.engine as engine_mod
-from backend.backtesting.engine import (provenance, 
+from backend.backtesting.engine import (provenance, EngineContractError,
     fetch_candles, run_backtest, run_parameter_sweep, run_walk_forward, run_stability_map,
     WF_TRAIN_MONTHS, WF_MIN_WINDOWS,
 )
@@ -798,6 +798,48 @@ def main():
     }.get(args.source, _cache_path(args.symbol, args.timeframe, args.count, args.source).name)
     fingerprint = _cache_fingerprint(candles, cache_file_name)
 
+    # ---- MODE FLAGS ARE MUTUALLY EXCLUSIVE, AND THEY ALWAYS WERE ----------
+    # main() dispatches as a chain of `if <flag>: ... return` blocks —
+    # stability_map, then monte_carlo, then permutation, then walk_forward,
+    # then sweep, then the single backtest at the bottom. Passing several
+    # therefore ran ONLY THE FIRST and silently dropped the rest, with no
+    # error and no output saying so.
+    #
+    # Measured 2026-09-04: the first Stage 4 attempt passed all four to each
+    # strategy. Ten runs "completed", walkforward_runs grew by 307, and
+    # backtest_results did not move AT ALL — every gauntlet branch returns
+    # before the single-backtest save. It was caught by enumerating both row
+    # counts, not by anything the run printed.
+    #
+    # They are NOT made to compose here. Composing would be a second dispatch
+    # model layered on a chain that already returns, and the gauntlet is
+    # genuinely four separate invocations — that is how Stage 4 is actually
+    # driven. Refusing is the honest behaviour: it names what was passed and
+    # makes the caller say which one it meant.
+    _modes = [n for n, v in (("--stability-map", args.stability_map),
+                             ("--monte-carlo",  args.monte_carlo),
+                             ("--permutation",  args.permutation),
+                             ("--walk-forward", args.walk_forward),
+                             ("--sweep",        args.sweep)) if v]
+    # --monte-carlo is the one legitimate pairing: inside the stability branch
+    # it means "also MC the top-N plateau cells", and standalone-with-
+    # walk-forward is handled at the args.monte_carlo branch. Both are real
+    # composites rather than a dropped flag.
+    _allowed_pairs = ({"--stability-map", "--monte-carlo"},
+                      {"--walk-forward", "--monte-carlo"},
+                      {"--walk-forward", "--sweep"})
+    if len(_modes) > 1 and set(_modes) not in _allowed_pairs:
+        print(f"REFUSED: {len(_modes)} mode flags passed together: {' '.join(_modes)}.\n"
+              f"         These do NOT compose — main() dispatches as a chain of "
+              f"`if <flag>: ... return`, so only {_modes[0]} would run and the "
+              f"rest would be silently dropped.\n"
+              f"         That is exactly how the 2026-09-04 Stage 4 batch wrote "
+              f"307 walkforward rows and ZERO backtest_results without an error.\n"
+              f"         Run one mode per invocation. The full gauntlet is four "
+              f"invocations: (none), --walk-forward, --permutation, "
+              f"--stability-map --monte-carlo.")
+        sys.exit(2)
+
     if args.stability_map:
         # NOTE: a line here used to read `engine_mod.RISK_PER_TRADE = 10.0`.
         # It was DEAD as of parity-v1, which removed engine.py's module-level
@@ -808,18 +850,58 @@ def main():
         # from RISK_PER_TRADE_OVERRIDE via the engine's own sizing path.
         if strategy_key not in STABILITY_GRIDS:
             # A missing grid must never read as "the stability stage passed".
-            # Persist an explicit REDUCED_GAUNTLET marker row so the absence is
-            # a positive record rather than a silent gap — same reasoning as
-            # the marker test in CLAUDE.md's Unverified Controls. A reader
-            # querying walkforward_runs for this strategy now finds a row that
-            # says the stage was deliberately not run, and why.
-            print(f"No STABILITY_GRIDS entry for '{strategy_key}'. Available: {list(STABILITY_GRIDS)}")
-            print("Recording a REDUCED_GAUNTLET marker row rather than exiting silently.")
+            # Persist an explicit marker row so the absence is a positive
+            # record rather than a silent gap — same reasoning as the marker
+            # test in CLAUDE.md's Unverified Controls.
+            #
+            # ⚠️ BUT REDUCED_GAUNTLET MEANS "RAN, NO GRID AVAILABLE", AND THIS
+            # BRANCH USED TO WRITE IT BEFORE ANY BACKTEST HAD RUN. So a
+            # strategy that CANNOT run at all still produced a marker that
+            # reads as a result. Measured 2026-09-04: roster id 28 EURUSD
+            # ny_session_momentum raises EngineContractError on its roster
+            # params (wrong-side take-profit, not validly backtestable since
+            # the contract landed 2026-08-16) — every other stage failed, and
+            # this one wrote a REDUCED_GAUNTLET row that went on to be
+            # exported and imported to the VPS.
+            #
+            # So RUNNABILITY IS PROVED FIRST, on a small slice, and the two
+            # outcomes get DIFFERENT verdicts. Enumerated before choosing the
+            # value: nothing reads walkforward_runs.verdict — no
+            # get_walkforward* exists, the selector and score_strategies read
+            # backtest_results, and the dashboard never touches the table — so
+            # a new value cannot be silently mishandled by an existing
+            # consumer.
+            _runnable, _why = True, None
+            try:
+                _probe = strategy_class(params=cli_params) if cli_params else strategy_class()
+                run_backtest(_probe, candles, args.symbol,
+                             max_hold_candles=args.max_hold,
+                             session_filter=args.session_filter)
+            except EngineContractError as e:
+                _runnable, _why = False, f"{type(e).__name__}: {e}"
+            except Exception as e:                     # noqa: BLE001
+                _runnable, _why = False, f"{type(e).__name__}: {e}"
+
+            if _runnable:
+                verdict = "REDUCED_GAUNTLET"
+                reason  = "no STABILITY_GRIDS entry for this strategy"
+                print(f"No STABILITY_GRIDS entry for '{strategy_key}'. "
+                      f"Available: {list(STABILITY_GRIDS)}")
+                print("Recording a REDUCED_GAUNTLET marker row rather than exiting silently.")
+            else:
+                verdict = "NOT_RUNNABLE"
+                reason  = ("strategy could not be backtested at all under these "
+                           "params — this is NOT a reduced gauntlet")
+                print(f"'{strategy_key}' is NOT RUNNABLE under these params: {_why}")
+                print("Recording a NOT_RUNNABLE marker row. This is NOT a result "
+                      "and must never be read as one.")
             _persist_wf_run("stability_map", strategy_class.name, args.symbol, args.timeframe,
                             cli_params if cli_params is not None else {}, fingerprint,
-                            verdict="REDUCED_GAUNTLET",
-                            extra={"reason": "no STABILITY_GRIDS entry for this strategy",
+                            verdict=verdict,
+                            extra={"reason": reason,
                                    "stage_skipped": "stability_map",
+                                   "runnable": _runnable,
+                                   "runnability_error": _why,
                                    "available_grids": sorted(STABILITY_GRIDS)},
                             params_source=params_source, prov=provenance())
             sys.exit(1)
