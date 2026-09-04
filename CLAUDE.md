@@ -558,6 +558,46 @@ both are webhook swiftalgo.** No `live_signal_loop` strategy is trading live.
 Both **demo** (account Z67Y2C). `backtest_id` NULL on both — no recorded
 backtest provenance (findings doc finding 13).
 
+#### 🔴 BOTH ARE ROSTERED ACTIVE AND HAVE RECEIVED NOTHING FOR 29 DAYS
+
+**Measured 2026-09-04, unrestricted — the whole `webhook_log` table, no date
+or hour filter.** "Rostered active" and "receiving alerts" are two different
+claims and only the first was ever checked.
+
+| | |
+|---|---|
+| last arrival, **any** symbol / **any** strategy / **any** result | **`2026-08-06T00:01:06Z`** (US500, `BLOCKED session_filter`) |
+| last EURUSD arrival | `2026-08-05T14:19:01Z` |
+| last webhook-sourced trade | `2026-08-05T14:19:03Z` |
+| arrivals in the **last 30 days** | **EURUSD 1, US500 1** — and both ARE those final rows |
+| arrivals in the **30 days before that** | **EURUSD 105, US500 60** |
+| rows in `webhook_log` since 2026-08-06 | **1**, which is the 08-06 row itself |
+
+Monthly, whole table: `2026-05` 5, `2026-06` 188, `2026-07` 170, `2026-08`
+**19** — then nothing. **The path went from ~5.5 arrivals/day to zero,
+overnight, and stayed there for 29 days.**
+
+This is not "a quiet hour". The upstream TradingView alert has stopped firing
+— expired, deleted, or otherwise broken — and **no code in this repo would
+ever have told anyone.** The 2026-08-21 verification in this section's heading
+confirmed the `active_strategy` ROWS exist; it did not and could not confirm
+that anything arrives.
+
+⚠️ **Read every claim in this file about swiftalgo being "live" against that
+date.** The rows are active, the routing works, the filters work — and there
+has been no traffic to route since 2026-08-05.
+
+**Cause not yet diagnosed.** It is upstream of this repo (TradingView side),
+so it cannot be established from the VPS alone. Candidates: alert expiry,
+alert/chart deletion, a changed webhook URL, or a Pine Script that stopped
+emitting. Checking requires the TradingView account.
+
+**Consequence for deploys, recorded because it inverts a risk assessment:**
+the "a rebuild loses an in-flight webhook" hazard is, right now, **empty** —
+nothing has arrived in 29 days. That does NOT retroactively justify rebuilding
+during market hours; it means the hazard was unmeasured in both directions
+until someone looked.
+
 ### The four williams_r instances moved live → paper (2026-08-21)
 
 ids **22 EURUSD**, **32 GBPUSD**, **34 AUDUSD**, **36 USDCAD**, all 15MIN, all
@@ -2405,6 +2445,68 @@ delete write test against the VPS, exactly as was done for `walkforward_runs` on
 2026-08-22. That test found `spread_table_sha` was NULL on every row ever
 written, which code-reading had missed.
 
+## ⏸️ DEPLOY HELD TO SATURDAY 2026-09-05 — parity-v3 queue, 9 commits
+
+**Decided 2026-09-04 09:34Z, pre-flight complete, nothing changed on the VPS.**
+The deploy was planned as a weekend window; it was actually **Friday, market
+open** (`is_entry_allowed=True` on all six symbols, 138 `signal_log` rows in
+15 minutes all carrying spread). Held.
+
+**The reason, stated precisely, because it is not the obvious one:** alert loss
+during a rebuild is not *likely* — it is **UNDETECTABLE**. A lost webhook is
+silent, unretryable and unrecorded. Every other risk in this deploy announces
+itself: a failed migration raises, a bad image fails healthcheck, a wrong stamp
+shows in the row. This one would leave **a permanent absence to reason from**,
+which this file has repeatedly shown is the hardest evidence to recover.
+
+And there is **no upside pressure forcing the trade**: nothing is being
+promoted, and the 10 invisible parity-v3 rows are currently *a safety
+property* — `get_backtest_results()` filters to `CURRENT_ENGINE_VERSION`, so
+while the container runs parity-v2 they cannot influence anything.
+
+*(Subsequently measured: the webhook has been silent for 29 days, so the
+hazard was empty in fact. That does not change the decision — it was the right
+call on the information available, and the measurement is what converted an
+unmeasured hazard into a known one. See the swiftalgo silence section.)*
+
+### Pre-flight, complete and re-usable — EXCEPT the allowance
+
+| item | state at 2026-09-04 |
+|---|---|
+| queue | **9 commits**, `cc9055d..0648f1e`, resolved from `git log` against the running image's commit — never from a list |
+| running image | `sha256:d936077b2424` @ `cc9055d`, `RestartCount=0`, started 2026-09-02T01:29:33Z |
+| `execute_trade.py` | untouched across all 9 |
+| migration | **NO-OP confirmed** — VPS `backtest_results` already 28 cols with `profit_factor` (gained during the Stage 4 import). `walkforward_runs` 19 |
+| disk | 24G free, backups 3.2G, **30** dangling images (26 on 08-22) — not blocking |
+| rollback target | image `d936077b2424` @ `cc9055d` |
+
+⚠️ **RE-READ THE ALLOWANCE IMMEDIATELY BEFORE THE REBUILD — do not reuse the
+2026-09-04 number.** It stood at **remaining 8,780**, `resets_at`
+**2026-09-10T12:43:44Z**, `expiry=592610s`, last read 2026-09-03T16:06:54Z, and
+the meter has been **linear**: 10,000 → 9,980 (a 2×10-point probe) → 8,780
+(6×200 on the 09-03 16:06 reconnect). Budget ≤1,400 for the restart (200 per
+pair that fetches; 1,200 if one buffer is already current).
+
+### What Saturday can and cannot verify — decide this BEFORE the run
+
+**Verifiable with the market shut** — all change-specific:
+migration no-op; stamps reading `parity-v3` / `measured-2026-09-median` /
+`c0c905fc6c071dd4`; **selector row count 0 → 10** through
+`get_backtest_results()`'s own query path (the observable this deploy exists to
+produce); per-pair warm-up `[ig_allowance]` enumeration with a skip line naming
+its reason for every pair that did not fetch; crontab md5; container health.
+
+⏸️ **DEFERRED — live spread sampling.** `signal_log` rows carrying non-null
+`spread` cannot be observed with the book shut. **This is a STANDING HEALTH
+CHECK, not a verification of this diff** — nothing in the 9-commit queue
+touches `_record_spread` or the Lightstreamer path. Do not report it as
+passed, and do not report it as failed. **What closes it:** at the Sunday
+~23:00 UTC reopen, confirm `signal_log` rows since the reopen carry non-null
+`spread` across all six symbols — the same shape as CHECK 1's 111/111.
+
+⏸️ **DEFERRED — anything depending on live ticks or entry-permitted hours**,
+for the same reason and closed by the same reopen.
+
 ## ✅ DEPLOY 2026-08-25 — queue SHIPPED, drift CLEARED
 
 16 commits, `591dc3a..715bc18`, image `sha256:9da8a7927a09`. Full post-deploy
@@ -2957,6 +3059,19 @@ columns (`d6f1c8c`).
   its last active strategy was deactivated — the baseline is retained for if it
   returns. `DAX`/`BTC` have never logged a row and are named in
   `DIVERGENCE_NO_BASELINE`; anything else unbanded alerts as UNCHECKED.
+- 🔴 **WEBHOOK ARRIVAL FRESHNESS IS UNMONITORED — and the silence was
+  29 days old before anyone noticed (2026-09-04).** `scripts/watchdog.py`
+  never reads `webhook_log`; neither does `scripts/daily_summary.py`; and
+  there is no `webhook` row in the `heartbeat` table (only `signal_loop` and
+  `candle_stream`). So the one signal source that is **rostered `active`**
+  has no liveness check at all, while the two paper-only loops have two.
+  The daily summary reports *trades opened*, so a source producing zero
+  trades reports as a quiet day — **absence again, indistinguishable from a
+  dead upstream.** What would close this: a `webhook_log` recency check in
+  `watchdog.py` on the same market-hours gate `check_heartbeat` already uses,
+  alerting when the newest arrival is older than some multiple of the
+  observed inter-arrival time (~5.5/day in July, so a day of silence during
+  market hours is already anomalous). Not built.
 - **`correlation_events` is still write-only** — 3,824 rows, but they are
   per-cycle re-logs of a *standing state*, not distinct events (~130 episodes).
   Consumer proposed, not built.

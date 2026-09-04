@@ -1689,3 +1689,73 @@ anomalous — the check would have manufactured the alarm it exists to prevent.
 
 ---
 
+
+## 📏 Swiftalgo webhook silence — unrestricted audit, 2026-09-04
+
+Dated detail. Standing conclusion sits next to the Active Strategies table in
+CLAUDE.md, where the "live" claim it corrects is made.
+
+**Why the query was framed this way.** The proposed check was "swiftalgo
+alerts on Fridays 03:00–04:00 UTC". That is a NON-SEPARATING observation: the
+rows were believed silent since 2026-08-06, so a zero is equally consistent
+with *"this hour is quiet"* and *"this webhook has been dead for a month"*.
+Same defect as the 2026-09-02 allowance test. The audit was therefore run
+**unrestricted** — whole table, no date filter, no hour filter, no result
+filter.
+
+`webhook_log` is the right table: `webhook/receiver.py` logs through `_log_wh`
+on **every** terminal path including blocked ones, which is why the all-time
+result split is `BLOCKED` 194 / `EXECUTED` 175 / `REJECTED` 13 rather than
+executions only.
+
+### Extent
+
+```
+webhook_log: 382 rows, 2026-05-29T09:20:02Z .. 2026-08-06T00:01:06Z
+```
+
+| symbol | strategy | n | last arrival |
+|---|---|---|---|
+| US500 | swiftalgo | 144 | **2026-08-06T00:01:06Z** (BLOCKED, session_filter) |
+| EURUSD | swiftalgo | 237 | **2026-08-05T14:19:01Z** |
+| US500 | smc | 1 | 2026-06-25T14:30:03Z |
+
+### The two windows
+
+| window | EURUSD | US500 |
+|---|---|---|
+| last 30 days (≥ 2026-08-05) | **1** | **1** |
+| the 30 before that (07-06 → 08-05) | **105** | **60** |
+
+The two "last 30 days" rows **are** the final arrivals listed above. Rows in
+`webhook_log` since 2026-08-06: **1**, which is the 08-06 row itself.
+
+Monthly: `2026-05` 5, `2026-06` 188, `2026-07` 170, `2026-08` 19, then
+nothing. Cross-checked independently against `trades`: last
+`source='tradingview_webhook'` trade is `2026-08-05T14:19:03Z`, 215 all-time.
+
+**Verdict: the inherited "silent since 2026-08-06" claim is CORRECT**, and
+sharper than inherited — ~5.5 arrivals/day to zero, overnight, sustained 29
+days. It is now verified in-session rather than carried forward.
+
+### Nothing would have reported it
+
+- `scripts/watchdog.py` — no reference to `webhook_log`.
+- `scripts/daily_summary.py` — no reference to `webhook_log`.
+- `heartbeat` table — `signal_loop` and `candle_stream` only. No webhook row.
+
+So the only **rostered-active** signal source has no liveness check, while the
+two paper-only loops have two each. The daily summary reports *trades opened*,
+so a dead source reads as a quiet day. Recorded as a monitoring gap in
+CLAUDE.md.
+
+### Effect on the deploy decision — stated, because it inverts a risk
+
+The deploy was held partly on "a rebuild could lose an in-flight webhook".
+Measured, that hazard is currently **empty**. This does not retroactively
+justify a market-hours rebuild: the hold was correct on the information
+available, and the point of the measurement is that the hazard had been
+**unmeasured in both directions** until someone looked without a filter on.
+
+---
+
