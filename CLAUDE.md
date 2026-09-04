@@ -558,7 +558,38 @@ both are webhook swiftalgo.** No `live_signal_loop` strategy is trading live.
 Both **demo** (account Z67Y2C). `backtest_id` NULL on both — no recorded
 backtest provenance (findings doc finding 13).
 
-#### 🔴 BOTH ARE ROSTERED ACTIVE AND HAVE RECEIVED NOTHING FOR 29 DAYS
+#### ⛔ SWIFTALGO IS RETIRED — the silence is a DECISION, not an outage
+
+**The TradingView source was retired by the operator.** The silence from
+2026-08-06 is **expected**. There is nothing to diagnose and nothing to
+restore. **Do not investigate it as an outage** — this session came within one
+prompt of doing exactly that, and a future reader finding two rows flipped on
+2026-09-04 plus a month of silence will be tempted the same way.
+
+**ids 11 and 13 set `status='inactive'` on 2026-09-04T10:20:58Z.** They read
+`active` until then, which asserted something false — the same class as the
+id-379 marker that read as a result and wasn't.
+
+`inactive` was used deliberately, and **a new value such as `retired` would
+have been unsafe.** `webhook/receiver.py:265` is
+`status = strategy_row.get("status", "active")`, and the only branches are
+`inactive` (blocks) and `paper` (paper path) — **anything unrecognised falls
+through to LIVE EXECUTION.** That is finding 4's fail-open default. `inactive`
+is the only value with an explicit blocking branch, and 18 rows now carry it.
+
+⚠️ **`active_strategy` has NO notes column**, so those two rows carry a status
+and a bare `updated_at` and nothing else. This section is the only place the
+reason exists.
+
+**There are now ZERO `status='active'` rows in the roster** — 18 `inactive`,
+13 `paper`. Nothing in the system trades live.
+
+**The receiver machinery is left DORMANT, deliberately.** It is harmless, costs
+nothing, and is there if a source is ever wired up again. Removing it would
+mean touching the execution path.
+
+*(The measurement that established the silence is retained below — it is what
+converted an assumption into a fact, and its shape is reusable.)*
 
 **Measured 2026-09-04, unrestricted — the whole `webhook_log` table, no date
 or hour filter.** "Rostered active" and "receiving alerts" are two different
@@ -587,10 +618,11 @@ that anything arrives.
 date.** The rows are active, the routing works, the filters work — and there
 has been no traffic to route since 2026-08-05.
 
-**Cause not yet diagnosed.** It is upstream of this repo (TradingView side),
-so it cannot be established from the VPS alone. Candidates: alert expiry,
-alert/chart deletion, a changed webhook URL, or a Pine Script that stopped
-emitting. Checking requires the TradingView account.
+**~~Cause not yet diagnosed.~~ CAUSE KNOWN: the operator retired the source.**
+No investigation is warranted. Corroborating: `git log --since=2026-07-25
+--until=2026-08-14` contains **only two commits, both docs** (the 2026-08-12
+audit write-ups) — **no code change was involved and none should be looked
+for.**
 
 **Consequence for deploys, recorded because it inverts a risk assessment:**
 the "a rebuild loses an in-flight webhook" hazard is, right now, **empty** —
@@ -1769,6 +1801,30 @@ baked into every image layer; the two backups alone were 504 MB per build.
 | `trades.bak-20260904T020447Z.db` | Before the Stage 4 `profit_factor` schema change + parity-v3 import — taken on the HOST | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
 | `trades.bak-20260904T022720Z.db` | `import_stage4.py`'s own rule-5 backup, immediately before the parity-v3 write. **Was written to the CONTAINER's ephemeral layer and rescued to the host afterwards** — see the backup-dir defect below | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
 | `trades.bak-20260904T024323Z.db` | Before annotating `walkforward_runs` id 379 `REDUCED_GAUNTLET` → `NOT_RUNNABLE`. Taken on the HOST — the new `st_dev` guard correctly refuses this path from inside the container | 996 trades, 268,129 backtest_results, 653 walkforward_runs, 325,763,072 bytes, `integrity_check ok` |
+| `trades.bak-20260904T102031Z.db` | Before retiring the swiftalgo roster rows (ids 11, 13 → `inactive`). Host-side | 996 trades, 268,129 backtest_results, 653 walkforward_runs, 31 active_strategy, 325,836,800 bytes, `integrity_check ok` |
+
+#### ℹ️ The `.db-shm` / `.db-wal` siblings are EXPECTED — do not treat them as litter
+
+There are **12** of them in this directory, paired to 6 backups. They were
+initially assumed to be leftovers from one `docker cp`. **That was wrong, and
+the correct explanation matters because it means deleting them is futile:**
+`Connection.backup()` reproduces the source's journal mode, the source is
+`journal_mode=wal`, so **every backup is a WAL database and ANY read — even
+`mode=ro` — recreates its `-shm` and `-wal` siblings.** Demonstrated
+2026-09-04: they were moved aside, the `.db` verified self-contained
+(`integrity_check ok`, 996 / 268,119 / 182 — matching its table row exactly),
+and they **reappeared on the next read**.
+
+**Decision: LISTED, not removed.** They are 32 KB and 0 bytes respectively —
+~200 KB across all twelve, against a 3.5 GB directory. Removing them would be
+undone by the next integrity check anyone runs, and a rule that silently
+reverses itself is worse than a documented exception. **The backup `.db` files
+do not depend on them** and never have; a 0-byte `-wal` holds no committed
+frames.
+
+**They are NOT backups and must never be counted as one.** This note exists so
+that the next reader auditing this directory against the table above does not
+find twelve unlisted files and conclude the table is incomplete.
 
 ⚠️ **A THIRD backup, `trades.bak-20260904T022739Z.db` (325,763,072 bytes), was
 taken by the idempotency re-run and DELETED rather than kept.** It is a
@@ -3059,19 +3115,31 @@ columns (`d6f1c8c`).
   its last active strategy was deactivated — the baseline is retained for if it
   returns. `DAX`/`BTC` have never logged a row and are named in
   `DIVERGENCE_NO_BASELINE`; anything else unbanded alerts as UNCHECKED.
-- 🔴 **WEBHOOK ARRIVAL FRESHNESS IS UNMONITORED — and the silence was
-  29 days old before anyone noticed (2026-09-04).** `scripts/watchdog.py`
-  never reads `webhook_log`; neither does `scripts/daily_summary.py`; and
-  there is no `webhook` row in the `heartbeat` table (only `signal_loop` and
-  `candle_stream`). So the one signal source that is **rostered `active`**
-  has no liveness check at all, while the two paper-only loops have two.
-  The daily summary reports *trades opened*, so a source producing zero
-  trades reports as a quiet day — **absence again, indistinguishable from a
-  dead upstream.** What would close this: a `webhook_log` recency check in
-  `watchdog.py` on the same market-hours gate `check_heartbeat` already uses,
-  alerting when the newest arrival is older than some multiple of the
-  observed inter-arrival time (~5.5/day in July, so a day of silence during
-  market hours is already anomalous). Not built.
+- ~~🔴 **WEBHOOK ARRIVAL FRESHNESS IS UNMONITORED**~~ — **VOID BY
+  RETIREMENT, 2026-09-04.** Recorded as an open gap earlier the same day,
+  with a `watchdog.py` recency check proposed as the fix. **That fix must NOT
+  be built.** The source is retired, so a liveness check on it would either
+  alert forever or be tuned until it can never fire — **and both are worse
+  than nothing**, the second especially, because a control that cannot fire
+  reads as a control that is passing. Corrected rather than deleted, same as
+  the 12-of-13 correction: a deleted entry stops contradicting the reasoning
+  that produced it.
+
+  🔴 **KEEP THIS HALF — it outlives the source that produced it.**
+  **Monitoring was built where the WORK was happening, not where the RISK
+  was.** The one signal source that was rostered `active` had **zero**
+  liveness checks, while the two paper-only loops had **two each**
+  (`signal_loop` and `candle_stream` heartbeats, watchdog-gated on market
+  hours). Nobody decided that; it accreted, because the loops were what was
+  being actively developed. The daily summary compounded it by reporting
+  *trades opened*, so a dead source reads as a quiet day — absence again.
+
+  > **STANDING RULE: a live signal source gets a liveness check as PART of
+  > wiring it up, not afterwards.** Not a follow-up ticket, not "once it's
+  > proven" — in the same change that makes it live. Retro-fitting a monitor
+  > requires someone to first notice the thing is unmonitored, which is
+  > exactly the observation nobody makes about a system that appears to be
+  > working. The next source starts with one.
 - **`correlation_events` is still write-only** — 3,824 rows, but they are
   per-cycle re-logs of a *standing state*, not distinct events (~130 episodes).
   Consumer proposed, not built.

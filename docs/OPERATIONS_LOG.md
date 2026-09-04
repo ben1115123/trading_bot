@@ -1759,3 +1759,66 @@ available, and the point of the measurement is that the hazard had been
 
 ---
 
+
+## 📏 Swiftalgo retirement — roster flip and evidence, 2026-09-04
+
+Dated detail. The standing conclusion — **retired by decision, not an outage,
+do not diagnose** — sits next to the Active Strategies table in CLAUDE.md,
+where the "live" claim it replaces was made.
+
+### The flip
+
+`active_strategy` ids **11** (EURUSD HOUR swiftalgo) and **13** (US500 HOUR
+swiftalgo), `active` → `inactive` at **2026-09-04T10:20:58.246542Z**.
+
+`inactive` deliberately. `webhook/receiver.py:265` is
+`status = strategy_row.get("status", "active")` and the only branches are
+`inactive` (blocks) and `paper`; **anything unrecognised falls through to live
+execution** (finding 4's fail-open default), so an invented value like
+`retired` would have been the one unsafe choice.
+
+Status vocabulary after: `inactive` **18**, `paper` **13**, `active` **0**.
+
+Backup first, host-side: `trades.bak-20260904T102031Z.db`, 325,836,800 bytes,
+996 trades / 268,129 backtest_results / 653 walkforward_runs / 31
+active_strategy, `integrity_check ok`, verified present from the host.
+
+### Dashboard effect — PREDICTED first, then confirmed
+
+| page | query | predicted | actual |
+|---|---|---|---|
+| `01_overview.py:111` | `status IN ('active','live','paper')` | 15 → 13 | **15 → 13** ✓ |
+| `07_performance.py:170` | `status = 'active'` | 2 → 0 (panel empties) | **2 → 0** ✓ |
+| `09_webhook_log.py:57` | no status filter, `_icons` | ✅ active → ❌ inactive | **✅ → ❌** ✓ |
+
+Both dashboard queries were run verbatim against the DB before and after. No
+surprise — which is the point of predicting first.
+
+### The evidence that the silence is real, and that no code caused it
+
+- Last arrival, any symbol / any result: **`2026-08-06T00:01:06Z`** (US500,
+  `BLOCKED session_filter`).
+- Last EURUSD arrival: `2026-08-05T14:19:01Z`.
+- Last webhook-sourced trade: **`2026-08-05T14:19:03Z`** (`trades`,
+  `source='tradingview_webhook'`, 215 all-time).
+- Monthly `webhook_log`: `2026-05` 5 → `06` **188** → `07` **170** → `08`
+  **19** → **0**.
+- **`git log --since=2026-07-25 --until=2026-08-14` contains exactly TWO
+  commits, both docs** — `b0c7261` and `afd7f69`, the 2026-08-12 audit
+  write-ups. **No code change was involved and none should be looked for.**
+
+### `.db-shm` / `.db-wal` — the assumption that was wrong
+
+They were taken to be leftovers from the `docker cp` rescue. Measured: the
+backups are `journal_mode=wal` (inherited from the source by
+`Connection.backup()`), so **any read, including `mode=ro`, recreates them.**
+Moved aside, the `.db` verified self-contained (`integrity_check ok`, 996 /
+268,119 / 182), and they **reappeared on the very next read** — including on a
+backup that had had none until an earlier verification opened it.
+
+12 files, ~200 KB total, against a 3.5 GB directory. **Listed, not removed:**
+deleting them is undone by the next integrity check, and a rule that silently
+reverses itself is worse than a documented exception.
+
+---
+
