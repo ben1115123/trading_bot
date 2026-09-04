@@ -1675,6 +1675,91 @@ scores written → then null/replace. Not before, and never as cleanup.
 The selector is inert at both layers right now (see Selector Disabled), which is
 what makes the deferral safe. That inertness is load-bearing until this is done.
 
+## ✅ DUKASCOPY MEASURED 2026-09-04 — a corpus that fixes BOTH open data defects
+
+**Measurement only. Nothing built, nothing cached, nothing wired in.** The
+numbers below decide whether to build; they are not themselves a change.
+
+Client: **`dukascopy-python` 4.0.1**, pip-installed to a scratchpad `--target`
+dir (WSL has no `python3-venv` and `ensurepip` is absent; no system package was
+installed and `requirements.txt` is untouched).
+
+### It clears the index blocker — verified by PRICE LEVEL, not by name
+
+| symbol | Dukascopy instrument | last close | IG 2026-08-23 | ratio | |
+|---|---|---|---|---|---|
+| US500 | `INSTRUMENT_IDX_AMERICA_E_SANDP_500` | **7674.60** | 7671 | **1.000** | ✅ index scale |
+| US100 | `INSTRUMENT_IDX_AMERICA_E_NQ_100` | **29354.15** | 29289 | **1.002** | ✅ index scale |
+| DAX | `INSTRUMENT_IDX_EUROPE_E_DAAX` | **26226.65** | 26108 | **1.005** | ✅ index scale |
+
+**These are indices, not ETF proxies** — the SPY/QQQ/EWG defect that voided ids
+29/30 is absent. Depth: **45,485–45,700 M15 bars, 23.9 months** on all three,
+against a requirement of ~10 (`WF_TRAIN_MONTHS=6` + `WF_MIN_WINDOWS=4`).
+
+⚠️ Checked by level against the 08-23 snapshots, exactly as the blocker
+demands. The name never proved anything and still doesn't.
+
+### It is a far better execution-matched series than Twelve Data
+
+Identical-timestamp bars only, Dukascopy mid built as `(bid+ask)/2` — the same
+construction as `engine.py:139-156`, so there is no bid/mid confound. Both legs
+measured against the same IG stream mid. **All values in pips.**
+
+| symbol | leg | n | mean | stdev | IQR | **median abs err** | **% bars >3 pips** |
+|---|---|---|---|---|---|---|---|
+| EURUSD | **Dukascopy** | 4280 | **−0.274** | 1.283 | **0.45** | **0.20** | **5.0%** |
+| EURUSD | Twelve Data | 3207 | +3.210 | 1.018 | 0.96 | 3.30 | **65.8%** |
+| GBPUSD | **Dukascopy** | 4340 | **+0.129** | 1.088 | **0.65** | **0.30** | 5.9% |
+| GBPUSD | Twelve Data | 3379 | +0.340 | 1.035 | 0.92 | 0.55 | 1.9% |
+| AUDUSD | **Dukascopy** | 3609 | **−0.258** | 1.232 | **0.45** | **0.25** | **5.5%** |
+| AUDUSD | Twelve Data | 2470 | +2.434 | 0.749 | 0.80 | 2.44 | 18.5% |
+| USDCAD | **Dukascopy** | 2858 | **+0.349** | 1.835 | **1.00** | **0.50** | **7.1%** |
+| USDCAD | Twelve Data | 2878 | −0.936 | 1.444 | 1.10 | 0.65 | 13.1% |
+
+**Usable overlap: 2026-07-08 → 2026-09-04, 58 days** — bounded by how long the
+bot has been capturing `candle_source_compare`, not by Dukascopy.
+
+**The systematic vendor offset is GONE.** Every Dukascopy mean is **sub-pip**
+(0.13–0.35) against Twelve Data's +3.210 EURUSD and +2.434 AUDUSD — an
+**11.7× and 9.4×** reduction. That offset was the named residual behind
+`parity-v3`, and on EURUSD/AUDUSD it was larger than the entire spread the
+engine models.
+
+🔴 **READ THE STDEV COLUMN CAREFULLY — it is the one place Twelve Data wins,
+and it is misleading.** Dukascopy's stdev is higher on all four, but its
+**IQR is roughly half** and its **median absolute error is 5–16× smaller**.
+The higher stdev is **entirely tails**: 5–7% of Dukascopy bars carry a large
+error, while Twelve Data is *uniformly* displaced — **65.8% of its EURUSD bars
+are more than 3 pips from IG mid**, which is the +3.2 offset showing up as
+near-universal error. A tighter core with a thin tail beats a wide, biased
+body for SL/TP trigger evaluation. GBPUSD is the single exception (1.9% vs
+5.9% beyond 3 pips) and should be looked at again before any build.
+
+### Depth and gaps — 24 months, clean
+
+| symbol | bars | first | last | months | weekend gaps | other >1h |
+|---|---|---|---|---|---|---|
+| EURUSD | 49,803 | 2024-09-04 | 2026-09-04 | 24.0 | 104 | 4 |
+| GBPUSD | 49,795 | 2024-09-04 | 2026-09-04 | 24.0 | 104 | 5 |
+| AUDUSD | 49,794 | 2024-09-04 | 2026-09-04 | 24.0 | 104 | 6 |
+| USDCAD | 49,793 | 2024-09-04 | 2026-09-04 | 24.0 | 104 | 6 |
+
+**104 weekend gaps over 2 years is exactly 52/year** — the series is complete,
+not thinned. Every remaining gap is a Christmas or New Year holiday
+(24.2h at 12-31 in both years, ~14–15h at 12-25). No unexplained holes.
+
+### What this does NOT resolve
+
+- **Nothing is built.** No cache written to `scripts/candle_cache/`, no
+  dependency added, nothing wired into the engine. That is a separate change.
+- **The 58-day overlap bounds the comparison, not the corpus.** These n's come
+  from the bot's own capture window; a longer verdict needs more capture time,
+  not a bigger pull.
+- **Tick data was deliberately not pulled.** Two years of tick for four
+  symbols is gigabytes and is not needed for this question. It is worth
+  revisiting for the intrabar-ordering assumption `parity-v2` currently
+  handles pessimistically (`intrabar_priority='sl'`) — **later, not now.**
+
 ## ⛔ US500 / US100 15MIN caches are ETF prices — BLOCKER, same class as DAX
 
 `scripts/candle_cache/US500_15MIN_AV.json` and `US100_15MIN_AV.json` were

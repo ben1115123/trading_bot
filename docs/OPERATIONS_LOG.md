@@ -1822,3 +1822,90 @@ reverses itself is worse than a documented exception.
 
 ---
 
+
+## 📏 Dukascopy corpus evaluation — full run record, 2026-09-04
+
+Dated detail. The decision-grade numbers live in CLAUDE.md.
+
+### Client selection — what was verified, not assumed
+
+- `python3-venv` is **absent** in this WSL (`ensurepip` missing,
+  `apt install python3.12-venv` would need sudo). Rather than install a system
+  package for a measurement, `pip3 install --target <scratchpad>/dukalib` was
+  used with `PYTHONPATH`. Same isolation, no system change, and
+  `requirements.txt` untouched.
+- **`dukascopy-python` 4.0.1** installed cleanly and imports. `dukascopy-node`
+  was not needed and was not tried — node 20.20.2 / npm 10.8.2 are present if
+  a second opinion is ever wanted.
+- `datafeed.dukascopy.com` reachable (HTTP 200) before any pull.
+
+### Symbol resolution — enumerated from the library, not guessed
+
+1,380 instrument constants across 25 groups. FX resolved on the first attempt:
+`INSTRUMENT_FX_MAJORS_{EUR_USD,GBP_USD,AUD_USD,USD_CAD}`.
+
+**Indices did NOT resolve by the obvious names.** Searching `SPX`, `NAS`,
+`GER`, `DAX` returned only equities and ETFs — `INSTRUMENT_UK_SPX_GB_GBX`,
+`INSTRUMENT_NORWAY_NAS_NO_NOK`, `INSTRUMENT_ETF_CFD_DE_TECDAXE_DE_EUR`. Any of
+those would have been a silent wrong-instrument substitution of exactly the
+SPY/QQQ/EWG kind. The real ones live under the `IDX` group (24 constants) and
+are named `INSTRUMENT_IDX_AMERICA_E_SANDP_500`,
+`INSTRUMENT_IDX_AMERICA_E_NQ_100`, `INSTRUMENT_IDX_EUROPE_E_DAAX`.
+
+**This is why the level check is non-negotiable**: three plausible-looking
+names were available and all three were wrong.
+
+### Method
+
+`fetch(instrument, interval, offer_side, start, end)` returns a UTC-indexed
+pandas frame. **M15 was requested from the library directly** — tick was not
+pulled. BID and ASK fetched separately and inner-joined on timestamp;
+`mid = (close_bid + close_ask)/2`, matching `engine.py:139-156`.
+
+Pull: 4 symbols x 2 sides, `2024-09-04 .. 2026-09-04`. ~49,800 bars per side
+per symbol; ran in background, completed cleanly.
+
+Comparison joined Dukascopy mid to `candle_source_compare.stream_close` (IG
+stream mid, `(BID_CLOSE+OFR_CLOSE)/2`) on **identical bar timestamps**, with
+the Twelve Data leg reproduced as a control from the same table's `yf_close`
+where `yf_time == stream_time`. `|delta| <= 50 pips` guard on both legs, the
+same as the earlier residual work, so the numbers are directly comparable.
+
+### Tail decomposition — why the stdev column is misleading
+
+| symbol | leg | p50 | p90 | p95 | p99 | max | >3 pips |
+|---|---|---|---|---|---|---|---|
+| EURUSD | Dukascopy | 0.20 | 0.75 | 2.77 | 5.35 | 22.70 | 5.0% |
+| EURUSD | Twelve Data | 3.30 | 4.22 | 4.54 | 5.46 | 10.03 | **65.8%** |
+| GBPUSD | Dukascopy | 0.30 | 0.71 | 3.45 | 5.10 | 14.40 | 5.9% |
+| GBPUSD | Twelve Data | 0.55 | 1.53 | 2.05 | 3.63 | 13.75 | 1.9% |
+| AUDUSD | Dukascopy | 0.25 | 0.55 | 5.10 | 5.10 | 13.30 | 5.5% |
+| AUDUSD | Twelve Data | 2.44 | 3.28 | 3.58 | 4.29 | 8.08 | 18.5% |
+| USDCAD | Dukascopy | 0.50 | 1.20 | 6.95 | 6.95 | 6.95 | 7.1% |
+| USDCAD | Twelve Data | 0.65 | 3.45 | 4.25 | 5.35 | 10.55 | 13.1% |
+
+Dukascopy's p50 and p90 are better on **all four**. Its stdev is worse on all
+four. Both are true and they are not in conflict: the distribution is a tight
+core plus a 5–7% tail, against Twelve Data's uniformly displaced body. On
+EURUSD, Twelve Data's p50 error (3.30 pips) is **larger than Dukascopy's p99**
+would be if the tail were removed.
+
+GBPUSD is the one symbol where Twelve Data has the thinner tail (1.9% vs 5.9%
+beyond 3 pips) while still losing on p50 and p90. Worth a second look before
+building.
+
+### Gaps
+
+104 weekend gaps per symbol over 2 years — exactly 52/year, so the series is
+complete. Remaining gaps >1h number 4–6 per symbol and are all holidays:
+24.2h at 2025-12-31 and 2024-12-31, ~14–15h at 12-25 in both years.
+
+### Fences honoured
+
+No file written to `scripts/candle_cache/`. No `requirements.txt` change.
+Nothing wired into the engine. No VPS access, no container change, no
+`/prices` request. `execute_trade.py` untouched. The 20 MB pull sits in the
+session scratchpad only.
+
+---
+
