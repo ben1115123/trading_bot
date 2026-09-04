@@ -2118,6 +2118,7 @@ baked into every image layer; the two backups alone were 504 MB per build.
 | `trades.bak-20260904T022720Z.db` | `import_stage4.py`'s own rule-5 backup, immediately before the parity-v3 write. **Was written to the CONTAINER's ephemeral layer and rescued to the host afterwards** — see the backup-dir defect below | 996 trades, 268,119 backtest_results, 182 walkforward_runs, 324,042,752 bytes, `integrity_check ok` |
 | `trades.bak-20260904T024323Z.db` | Before annotating `walkforward_runs` id 379 `REDUCED_GAUNTLET` → `NOT_RUNNABLE`. Taken on the HOST — the new `st_dev` guard correctly refuses this path from inside the container | 996 trades, 268,129 backtest_results, 653 walkforward_runs, 325,763,072 bytes, `integrity_check ok` |
 | `trades.bak-20260904T102031Z.db` | Before retiring the swiftalgo roster rows (ids 11, 13 → `inactive`). Host-side | 996 trades, 268,129 backtest_results, 653 walkforward_runs, 31 active_strategy, 325,836,800 bytes, `integrity_check ok` |
+| `trades.bak-20260904T124236Z.db` | Before importing the Dukascopy Stage 4 batch. Host-side | 996 trades, 268,129 backtest_results, 653 walkforward_runs, 31 active_strategy, 325,861,376 bytes, `integrity_check ok` |
 
 #### ℹ️ The `.db-shm` / `.db-wal` siblings are EXPECTED — do not treat them as litter
 
@@ -2578,7 +2579,100 @@ of what was not run.
 verdicts is either "exactly as planned" or "something is badly wrong", and those
 two look identical in the output. This entry is what makes it the first one.
 
-## ✅ STAGE 4 COMPLETE — 10 of 13 re-validated on parity-v3, 2026-09-04
+## 🔴 STAGE 4 RE-RUN ON DUKASCOPY — RANKINGS COLLAPSED, 2026-09-04
+
+**Same engine (`parity-v3`), same spread model, different corpus.** 12 of 13
+ran (id 28 excluded, see below). Imported to the VPS, idempotent on re-import.
+
+### The pre-registration was RIGHT on direction and WRONG on attribution
+
+**Predicted: rankings change.** They did — **Kendall tau = +0.067** across the
+10 strategies present in both runs. That is indistinguishable from a random
+reordering. **The Twelve Data corpus was shaping which strategies looked good.
+Everything ranked on it is VOID, not merely imprecise.**
+
+**Predicted: EURUSD and AUDUSD move most (offsets 5.5x and 4.1x their spread),
+GBPUSD and USDCAD least (0.4x, 0.8x). THAT WAS WRONG.** The biggest mover by
+far was **GBPUSD `ema_pullback`, rank 1 → rank 10, PF 2.2452 → 0.4837**, on the
+symbol predicted to move least. EURUSD's rows moved 2–4 places; USDCAD moved 1.
+
+**The real predictor was SAMPLE SIZE, not offset magnitude.** GBPUSD
+`ema_pullback` had **23 trades** on the old corpus. Its PF 2.2452 — the best
+number in the entire previous batch — was noise. The strategies with hundreds
+of trades moved a few places; the one with 23 moved nine. Offset magnitude
+predicted almost nothing.
+
+### Old vs new, per strategy
+
+| symbol | tf | strategy | old PF | new PF | Δ | old wf | new wf | trades o/n |
+|---|---|---|---|---|---|---|---|---|
+| GBPUSD | 15MIN | ema_pullback | **2.2452** | **0.4837** | **−1.762** | REJECT | REJECT | 23/85 |
+| US500 | HOUR | stoch_rsi_confluence | 0.1041 | 0.6630 | +0.559 | REJECT | **FRAGILE** | 20/36 |
+| EURUSD | 15MIN | supertrend | 1.1536 | 0.8129 | −0.341 | REJECT | REJECT | 56/173 |
+| EURUSD | 15MIN | bb_squeeze | 1.1033 | 0.7710 | −0.332 | REJECT | REJECT | 45/79 |
+| USDCAD | 15MIN | williams_r | 0.8671 | 0.7010 | −0.166 | FRAGILE | **REJECT** | 209/491 |
+| US500 | HOUR | williams_r | 0.9281 | 0.7796 | −0.149 | REJECT | REJECT | 57/121 |
+| GBPUSD | 15MIN | williams_r | 0.8919 | 1.0280 | +0.136 | REJECT | REJECT | 219/424 |
+| AUDUSD | 15MIN | williams_r | 1.0431 | 0.9254 | −0.118 | **MARGINAL** | **REJECT** | 234/467 |
+| EURUSD | 15MIN | stoch_rsi | 0.9362 | 0.8579 | −0.078 | REJECT | REJECT | 199/453 |
+| EURUSD | 15MIN | williams_r | 1.0670 | 1.1202 | +0.053 | REJECT | REJECT | 219/450 |
+| **US100** | **15MIN** | **ema_pullback** | VOID | **1.4573** | — | — | **FRAGILE** | —/84 |
+| **US500** | **15MIN** | **ema_pullback** | VOID | 0.9968 | — | — | REJECT | —/125 |
+
+ids 29/30 have **no comparison** — their old figures were ETF-scaled and void.
+They ran for the first time on real index data; **US100 `ema_pullback` is now
+the highest-PF strategy in the batch at 1.4573, FRAGILE.**
+
+**Still zero promotable.** Best walk-forward verdict anywhere is FRAGILE. The
+only MARGINAL from the old run (AUDUSD `williams_r`) fell to REJECT.
+
+### Span was NOT the explanation — controlled
+
+The Dukascopy run used 49,803 candles against Twelve Data's 29,995, so span was
+a confound. Re-ran every common strategy at **matched candle counts**:
+
+| strategy | old (TD) | new (DUKA, full) | **ctrl (DUKA, matched)** |
+|---|---|---|---|
+| GBPUSD ema_pullback | 2.2452 | 0.4837 | **0.4544** |
+| AUDUSD williams_r | 1.0431 | 0.9254 | **0.8168** |
+| USDCAD williams_r | 0.8671 | 0.7010 | **0.6307** |
+| EURUSD williams_r | 1.0670 | 1.1202 | **1.2166** |
+| US500 stoch_rsi_confluence | 0.1041 | 0.6630 | **0.6605** |
+
+**The matched-count column tracks the full-span column, not the old column.**
+The corpus is the cause; the extra span is not.
+
+*(Those 10 control rows were deleted from the local DB before export — they are
+a methodological control, not Stage 4 results, and leaving them would put two
+rows per strategy on the VPS at different candle counts. Their numbers are
+here, which is where their value is.)*
+
+### Counts — 8 of 8 derived expectations matched exactly
+
+| item | expected | actual |
+|---|---|---|
+| full 84-cell maps | 5 | **5** |
+| stability rows from those | 420 | **420** |
+| `REDUCED_GAUNTLET` | 7 | **7** |
+| `NOT_RUNNABLE` | 1 | **1** |
+| `stability_map` total | 428 | **428** |
+| `backtest_results` | 12 | **12** |
+| `walk_forward` | 12 | **12** |
+| `permutation` | 12 | **12** |
+
+Derived at run time from `roster.db` + `STABILITY_GRIDS`, not carried. id 28
+`ny_session_momentum` raises `EngineContractError` on **both** corpora
+(TwelveData idx=1103, Dukascopy idx=9523) — a corpus-independent strategy
+defect, re-verified this pass.
+
+Import: **12 + 477 inserted**, re-import **0 inserted / 489 skipped**, VPS
+`backtest_results` 268,129 → 268,141. Backup `trades.bak-20260904T124236Z.db`.
+
+## ✅ STAGE 4 (TWELVE DATA) — 10 of 13 on parity-v3, 2026-09-04 — SUPERSEDED
+
+⚠️ **The results below were produced on the Twelve Data corpus and the
+rankings did not survive the corpus change (tau +0.067). Retained as the record
+of what was believed, not as evidence.** See the Dukascopy re-run above.
 
 **Result in one line: ZERO promotable strategies. One MARGINAL, one FRAGILE,
 eight REJECT.** That is the outcome the pre-registration below anticipated, and

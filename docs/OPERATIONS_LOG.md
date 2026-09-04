@@ -2108,3 +2108,103 @@ chased.
 
 ---
 
+
+## 📏 Dukascopy Stage 4 re-run — full run record, 2026-09-04
+
+Dated detail. Verdict table and conclusions in CLAUDE.md.
+
+**Window:** 11:50:40Z → ~12:41Z, ~50 minutes for 13 strategies x 4 stages. Longer
+than the Twelve Data batch's 14 minutes because the corpus is 49,803 candles
+against 29,995 and each of the 5 x 84 stability cells is a full walk-forward.
+
+### Wiring, verified by positive signal
+
+`--source dukascopy` added to `run_backtest.py`: a loader, a dispatch branch, a
+`choices` entry and a `cache_file_name` mapping. **The default is unchanged
+(`ig`).** Proof it is selectable rather than a silent default — same strategy,
+params and seed, two corpora:
+
+```
+id=5344  cache_file=AUDUSD_15MIN_AV.json    trades=234  PF=1.0431
+id=5345  cache_file=AUDUSD_15MIN_DUKA.json  trades=268  PF=0.8168
+```
+
+The AV row reproduces the earlier Stage 4 figure exactly (234 / 1.0431), which
+is what establishes the existing path still resolves to what it always did.
+
+### Rank order, both ways
+
+```
+OLD (Twelve Data)                        NEW (Dukascopy)
+ 1. GBPUSD 15MIN ema_pullback  2.2452     1. US100  15MIN ema_pullback  1.4573
+ 2. EURUSD 15MIN supertrend    1.1536     2. EURUSD 15MIN williams_r    1.1202
+ 3. EURUSD 15MIN bb_squeeze    1.1033     3. GBPUSD 15MIN williams_r    1.0280
+ 4. EURUSD 15MIN williams_r    1.0670     4. US500  15MIN ema_pullback  0.9968
+ 5. AUDUSD 15MIN williams_r    1.0431     5. AUDUSD 15MIN williams_r    0.9254
+ 6. EURUSD 15MIN stoch_rsi     0.9362     6. EURUSD 15MIN stoch_rsi     0.8579
+ 7. US500  HOUR  williams_r    0.9281     7. EURUSD 15MIN supertrend    0.8129
+ 8. GBPUSD 15MIN williams_r    0.8919     8. US500  HOUR  williams_r    0.7796
+ 9. USDCAD 15MIN williams_r    0.8671     9. EURUSD 15MIN bb_squeeze    0.7710
+10. US500  HOUR  stoch_rsi_conf 0.1041   10. USDCAD 15MIN williams_r    0.7010
+                                         11. US500  HOUR  stoch_rsi_conf 0.6630
+                                         12. GBPUSD 15MIN ema_pullback  0.4837
+```
+
+Rank movement on the 10 common strategies: GBPUSD ema_pullback **+9**, GBPUSD
+williams_r **−6**, EURUSD bb_squeeze +4, EURUSD supertrend +3, EURUSD
+williams_r −3, AUDUSD williams_r −2, EURUSD stoch_rsi −2, and three moving 1.
+
+**Concordant pairs 24 of 45. Kendall tau +0.067.**
+
+### The prediction, scored honestly
+
+| predicted | outcome |
+|---|---|
+| rankings change | **HIT** — tau +0.067 |
+| EURUSD moves most (offset 5.5x spread) | **MISS** — moved 2–4 places |
+| AUDUSD moves most (4.1x) | **MISS** — moved 2 |
+| GBPUSD moves least (0.4x) | **MISS** — the two biggest movers, +9 and −6 |
+| USDCAD moves least (0.8x) | hit — moved 1 |
+
+The mechanism was misidentified. **Offset magnitude did not predict movement;
+sample size did.** GBPUSD `ema_pullback` at 23 trades produced the best PF in
+the old batch (2.2452) and the worst in the new (0.4837). Strategies with 200+
+trades moved a few places at most. Writing the specific shape down in advance
+is what made this scoreable rather than a vague "it moved, as expected".
+
+### Span control
+
+Every common strategy re-run at matched candle counts. Full table in CLAUDE.md;
+the pattern is that the matched column tracks the full-span column rather than
+the old one, so the corpus is the cause and the extra span is not. Those 10
+control rows were deleted locally before export — a methodological control
+rather than Stage 4 results, and keeping them would have placed two rows per
+strategy on the VPS at different counts.
+
+### Import
+
+```
+[validate] backtest_results: 12 rows OK  spread_table_sha=c0c905fc6c071dd4
+[validate] walkforward_runs: 477 rows OK spread_table_sha=c0c905fc6c071dd4
+[schema] mirror verified against database/db.py — no drift
+[WROTE] backtest_results: inserted=12  skipped=0    268129 -> 268141
+[WROTE] walkforward_runs: inserted=477 skipped=0    653 -> 1130
+re-run: inserted=0 skipped=12 / inserted=0 skipped=477, counts static
+```
+
+The first export used the default 10-minute `--since` margin and swept in 14
+rows rather than 12 — the two Item-A wiring-verification runs at 11:49, one of
+them an **Alpha Vantage** row. Caught by comparing against the derived
+expectation of 12; re-exported with `--since-margin-minutes 0`. The margin
+exists for the non-monotonic WSL clock, and here both clocks agreed, so zero
+was safe.
+
+Backup host-side first: `trades.bak-20260904T124236Z.db`, 325,861,376 bytes,
+`integrity_check ok`, recorded in the Database Backups table in the same change.
+
+The importer again needed `parity-v3` constants from `/tmp/pv3` because the
+deployed `/app` is still `cc9055d` (parity-v2) — **the deploy remains held to
+Saturday.** Container untouched, `RestartCount=0`.
+
+---
+
