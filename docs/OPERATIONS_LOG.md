@@ -1909,3 +1909,111 @@ session scratchpad only.
 
 ---
 
+
+## 📏 Dukascopy tail resolution + corpus build — 2026-09-04
+
+Dated detail. Verdict and file table in CLAUDE.md.
+
+### The methodological error that had to be fixed first
+
+The first pass at the discriminators produced a nonsense internal
+inconsistency: EURUSD showed **213 tail entries but only 22 distinct
+timestamps**. `candle_source_compare` is written once per
+`_check_symbol` call, i.e. **once per strategy**, so a symbol watched by five
+paper strategies contributes five rows per bar.
+
+Deduplicating to one observation per `(symbol, minute)`:
+
+| | raw | distinct | factor |
+|---|---|---|---|
+| all rows, EURUSD | 5,062 | 3,892 | 1.30× |
+| all rows, GBPUSD | 5,123 | 3,947 | 1.30× |
+| all rows, AUDUSD | 4,371 | 3,236 | 1.35× |
+| all rows, USDCAD | 3,447 | 2,672 | 1.29× |
+| **EURUSD tail bars** | **213** | **16** | **13.3×** |
+
+The overall duplication is a uniform ~1.3×, but the **tail** bars were
+duplicated ~13×. The divergent timestamps were re-logged across many cycles,
+which is what a stale stream buffer being read repeatedly looks like. Every
+number below is on the deduplicated set. The previously reported "5–7% of bars
+beyond 3 pips" was an artifact of this and is corrected to **0.4–0.8%**.
+
+This is the dedup caveat `database/models.py::get_spread_samples` already
+documents, encountered in a table nobody had applied it to.
+
+### (a) Hour-of-day
+
+Pooled tail rate (|delta| > 3 pips), deduplicated, all four FX symbols:
+
+```
+  21:00  paired= 394 tail= 39   9.9%   <- daily rollover, is_entry_allowed FALSE
+  20:00  paired= 490 tail=  7   1.4%
+  16:00  paired= 528 tail=  7   1.3%
+  06:00  paired= 609 tail=  5   0.8%
+  ...    thirteen hours at exactly 0.0%
+```
+
+Per-symbol share of tails in hours where `is_entry_allowed` is False:
+GBPUSD 84%, USDCAD 67%, AUDUSD 31%, EURUSD 12%.
+
+### (b) Cross-symbol coincidence
+
+66 distinct timestamps carry at least one tail bar:
+
+| on N of 4 symbols | count | share |
+|---|---|---|
+| 1 | 56 | **84.8%** |
+| 2 | 7 | 10.6% |
+| 3 | 1 | 1.5% |
+| 4 | 2 | 3.0% |
+
+Per-symbol tail rates 0.4–0.8%. Against 2,620 timestamps observed on all four
+symbols, independence predicts **0.000** all-four coincidences; **2** were
+observed. Two genuine market-wide events; the rest is independent scatter.
+
+### (c) Persistence
+
+| symbol | tail bars | runs | single-bar | longest |
+|---|---|---|---|---|
+| EURUSD | 16 | 14 | 13 (93%) | 3 |
+| GBPUSD | 31 | 27 | 25 (93%) | 3 |
+| AUDUSD | 13 | 13 | 13 (100%) | 1 |
+| USDCAD | 21 | 20 | 19 (95%) | 2 |
+
+### (d) Against our own capture's gaps
+
+Tail bars within 60 min after a >1h gap in the IG capture: EURUSD 0/16 (0%),
+AUDUSD 2/13 (15%), GBPUSD 6/31 (19%), USDCAD 5/21 (24%). Real but not
+dominant — and a reminder that the IG side is our own capture, with its own
+reconnects, not a reference truth.
+
+### GBPUSD
+
+31 tail bars, **26 of them (84%) in blocked hours**. Restricted to
+entry-allowed hours: n=3,745, mean **−0.046**, stdev **0.419**, >3 pips
+**0.1%**. Against Twelve Data's all-hours stdev of 1.035, that is ~2.5×
+tighter. The caveat came entirely from hours the bot never trades.
+
+### The build
+
+`scripts/fetch_dukascopy.py`, 12 files, ~45 MB total, into
+`scripts/candle_cache/` (gitignored, so the data is not committed — only the
+script and this record are).
+
+Mid built as `(bid+ask)/2` on each of open/high/low/close independently, read
+from `backend/backtesting/engine.py` rather than assumed, with the same NaN
+guard. BID and ASK fetched separately and inner-joined on timestamp.
+
+The script embeds the level check and **refuses to write** a file whose last
+close is more than 10% from the IG reference — the SPY/QQQ/EWG signature. Run
+on the written files: US500 7751.40 vs 7671 (1.010×), US100 29527.58 vs 29289
+(1.008×) at 15MIN; 1.010× / 1.008× at HOUR.
+
+**Additive-only proof:** md5 of all 24 pre-existing cache files captured before
+the run and re-verified after — 0 mismatches, 0 missing.
+
+Nothing consumes these files yet: no `--source dukascopy` branch, no default
+changed, Stage 4 not re-run.
+
+---
+

@@ -1748,10 +1748,85 @@ body for SL/TP trigger evaluation. GBPUSD is the single exception (1.9% vs
 not thinned. Every remaining gap is a Christmas or New Year holiday
 (24.2h at 12-31 in both years, ~14–15h at 12-25). No unexplained holes.
 
+### ✅ THE TAIL IS RESOLVED — non-traded hours plus single-bar artifacts
+
+**Verdict: CONFINED TO NON-TRADED HOURS, with the remainder single-bar
+artifacts. Not real market divergence, and not a Dukascopy corpus defect. No
+cleaning step is justified — every bar is kept.**
+
+🔴 **First, a correction to the numbers in the section above.** The ">3 pips on
+5–7% of bars" figure was measured on RAW `candle_source_compare` rows, and that
+table logs **once per strategy CHECK**, not once per bar. Deduplicating to one
+observation per `(symbol, minute)`:
+
+| | raw rows | distinct | factor |
+|---|---|---|---|
+| overall | 5,062 (EURUSD) | 3,892 | **1.30×** |
+| **the tail bars specifically** | 213 (EURUSD) | **16** | **13.3×** |
+
+**The tail was over-represented tenfold relative to the data as a whole.** The
+same divergent timestamps were re-logged across many cycles — consistent with a
+stale stream buffer being read repeatedly. **Deduplicated, the true tail rate
+is 0.4–0.8%, not 5–7%.** This is the dedup caveat `get_spread_samples`'
+docstring already warns about, hit in a new place.
+
+**(a) Hour-of-day — decisive.** Pooled tail rate by UTC hour:
+
+| hour | 21:00 | 20:00 | 16:00 | every other hour |
+|---|---|---|---|---|
+| tail rate | **9.9%** | 1.4% | 1.3% | **≤0.8%**, thirteen hours at 0.0% |
+
+**Hour 21 is the daily rollover** — the hour FX is already measured widening
+**11–19×**, and the hour `is_entry_allowed` is False for every instrument every
+day. 39 of ~100 pooled tail timestamps sit there. Share of each symbol's tails
+falling in hours the bot may not enter: **GBPUSD 84%, USDCAD 67%, AUDUSD 31%,
+EURUSD 12%**.
+
+**(b) Cross-symbol coincidence — the strongest discriminator.** Of 66 distinct
+timestamps carrying a tail bar, **84.8% appear on ONE symbol only**; 10.6% on
+two, 1.5% on three, **3.0% (2 timestamps) on all four**. Against 2,620
+timestamps observed on all four symbols, independence predicts **0.000**
+all-four coincidences and **2** were observed. So there are exactly two genuine
+market-wide events; **the other 85% is per-symbol scatter, not a feed-level or
+market-level fault.**
+
+**(c) Persistence — bad ticks, not repricing.** Single-bar runs: EURUSD 93%,
+GBPUSD 93%, AUDUSD **100%**, USDCAD 95%. Longest run anywhere: **3 bars**. A
+genuine repricing persists; these revert on the next bar.
+
+**(d) Our own capture's gaps.** Tail bars within 60 min after a >1h gap in our
+IG capture: EURUSD 0%, AUDUSD 15%, GBPUSD 19%, USDCAD 24%. A real contribution
+— **the IG side is our own capture with its own reconnects** — but not the
+dominant term.
+
+#### GBPUSD specifically — the caveat is answered, and it reverses
+
+GBPUSD was the one symbol where Twelve Data had the thinner tail (1.9% vs
+5.9%). **84% of GBPUSD's tail bars fall in hours the bot cannot enter.**
+Restricted to entry-allowed hours:
+
+| GBPUSD, `is_entry_allowed` hours only | n | mean | stdev | >3 pips |
+|---|---|---|---|---|
+| **Dukascopy vs IG mid** | **3,745** | **−0.046** | **0.419** | **0.1%** |
+| Twelve Data (all hours, for reference) | 3,379 | +0.340 | 1.035 | 1.9% |
+
+**stdev 0.419 against 1.035 — Dukascopy is ~2.5× tighter on the hours that
+actually matter.** The caveat was an artifact of including hours the bot never
+trades.
+
+#### Why no cleaning step
+
+The single-bar spikes are bad-tick-shaped, but they are 0.4–0.8% of bars,
+mostly in hours never traded, and **the comparison is symmetric — it cannot say
+which feed is wrong.** Removing them would be editing raw market data on a
+guess. `is_entry_allowed` governs ENTRIES, not candle availability: a backtest
+needs continuous bars to evaluate holds across excluded hours. **Every bar is
+kept.**
+
 ### What this does NOT resolve
 
-- **Nothing is built.** No cache written to `scripts/candle_cache/`, no
-  dependency added, nothing wired into the engine. That is a separate change.
+- ~~**Nothing is built.**~~ **BUILT 2026-09-04** — 12 `*_DUKA.json` caches,
+  see below. Still no dependency added and nothing wired into the engine.
 - **The 58-day overlap bounds the comparison, not the corpus.** These n's come
   from the bot's own capture window; a longer verdict needs more capture time,
   not a bigger pull.
@@ -1759,6 +1834,52 @@ not thinned. Every remaining gap is a Christmas or New Year holiday
   symbols is gigabytes and is not needed for this question. It is worth
   revisiting for the intrabar-ordering assumption `parity-v2` currently
   handles pessimistically (`intrabar_priority='sl'`) — **later, not now.**
+
+### 📦 THE CORPUS — 12 files written 2026-09-04, additive only
+
+`scripts/fetch_dukascopy.py` (local batch tool, **not** in `requirements.txt`,
+same status as `fetch_twelvedata.py` — the container has no use for it and
+`Dockerfile:11 COPY . .` would bake it into every layer).
+
+Naming `{SYMBOL}_{TF}_DUKA.json` + a `.provenance.json` sidecar carrying
+source, client version, **the exact instrument constant**, date range, bar
+count, the mid construction, and the level-check result.
+
+| symbol | TF | bars | range | size |
+|---|---|---|---|---|
+| EURUSD | 15MIN | 49,803 | 2024-09-04 → 2026-09-04 | 6.69 MB |
+| GBPUSD | 15MIN | 49,795 | ″ | 6.51 MB |
+| AUDUSD | 15MIN | 49,794 | ″ | 6.53 MB |
+| USDCAD | 15MIN | 49,793 | ″ | 6.56 MB |
+| **US500** | **15MIN** | **45,611** | ″ | 6.11 MB |
+| **US100** | **15MIN** | **45,604** | ″ | 6.30 MB |
+| EURUSD/GBPUSD/AUDUSD/USDCAD | HOUR | 12,448–12,450 | ″ | ~1.64 MB ea |
+| US500 | HOUR | 11,783 | ″ | 1.58 MB |
+| US100 | HOUR | 11,780 | ″ | 1.63 MB |
+
+Scope taken from `roster.db`, not from memory: the 13 paper rows need exactly
+`AUDUSD/EURUSD/GBPUSD/USDCAD 15MIN`, `US100 15MIN`, `US500 15MIN`,
+`US500 HOUR`. HOUR was pulled for the rest because re-pulling is free and
+walk-forward benefits.
+
+**Level check re-run on the FILES AS WRITTEN**, not on what was pulled — the
+script refuses to write on failure: **US500 7751.40 vs IG 7671 = 1.010×**,
+**US100 29527.58 vs 29289 = 1.008×** (15MIN); 1.010× / 1.008× at HOUR.
+**These are indices.**
+
+⚠️ **DAX was NOT pulled** — no DAX row in the roster. Its instrument
+(`INSTRUMENT_IDX_EUROPE_E_DAAX`) is in the script and measured good at 1.005×,
+so it is one command away if a DAX strategy ever returns.
+
+**Additive only, proven:** md5 of all **24** pre-existing cache files taken
+before the run and re-verified after — **0 mismatches, 0 missing.** Nothing was
+overwritten, renamed or deleted, so the `cache_file` provenance on Stage 4 rows
+already imported to the VPS stays intact. The script refuses to overwrite
+without `--force`.
+
+⚠️ **Nothing consumes these files yet.** No `--source dukascopy` branch exists
+in `run_backtest.py`, no default was changed, and Stage 4 was not re-run.
+Wiring them in is a separate change.
 
 ## ⛔ US500 / US100 15MIN caches are ETF prices — BLOCKER, same class as DAX
 
