@@ -2051,13 +2051,69 @@ The operational sequence (export on the host, import in the container, the
 root-owned-DB constraint) is in the Stage 4 re-validation section above, not in
 the archive — it is a runbook, not a record.
 
-## 🚦 GATE — do not build the spread table before these are all true
+## ✅ GATE PASSED 2026-09-03 — spread table MEASURED AND FROZEN, not yet applied
 
 The market-open filter shipped 2026-08-17 (`get_spread_samples(market_open_only=True)`,
-predicate `market_hours.is_entry_allowed`). **The table itself is deliberately
-NOT built yet.** Friday 2026-08-21 is the earliest check, and it is a check,
-not a judgement call — the criteria are fixed here while the reasoning is
-fresh.
+predicate `market_hours.is_entry_allowed`). **The gate below was re-verified
+against the frozen pool on 2026-09-03 and passed on all six symbols.** The
+criteria are retained unchanged beneath — they are the standing spec, and the
+one that was re-scoped (criterion 1, hour 21) is the reason this section is
+worth reading before touching the table again.
+
+**Full per-symbol enumeration, per-hour counts, the reproducibility check and
+two out-of-criteria observations → `docs/OPERATIONS_LOG.md`.** That record
+matters and is not filler: it carries the finding that US500 and US100 have
+**zero dispersion** in the window (median = p90 = max on 1,074 and 906
+samples), i.e. a broker-fixed spread rather than a distribution — which means
+no percentile of this pool can give those two a tail.
+
+### 📏 THE TABLE — measured, frozen, hashed. PRICE units.
+
+⚠️ **PRICE units, not pips.** EURUSD `0.00006` is **0.6 pips**, not 6. Several
+tables in this file quote pips for readability and the model being replaced is
+wrong in units, so both are given. Do not carry one column into code meant for
+the other.
+
+| symbol | median (PRICE) | readable | n |
+|---|---|---|---|
+| EURUSD | **0.00006** | 0.60 pips | 917 |
+| GBPUSD | **0.00009** | 0.90 pips | 908 |
+| AUDUSD | **0.00006** | 0.60 pips | 907 |
+| USDCAD | **0.00013** | 1.30 pips | 896 |
+| US500 | **0.6** | 0.60 index points | 1074 |
+| US100 | **2.0** | 2.00 index points | 906 |
+
+- **Frozen bounds:** `SINCE=2026-08-16T00:00` (incl) → `UNTIL=2026-08-29T00:00`
+  (excl). Two complete Mon–Fri cycles. The bounds are what make the sha
+  reproducible — the pool grows every five minutes, and it demonstrably grew
+  *between* the verification runs.
+- **`spread_table_sha = c0c905fc6c071dd4`**
+- Lives in `spread_model.py` as `MEASURED_SPREADS_2026_09`, with
+  `_PROVENANCE` (n, p90, max per symbol) and `_WINDOW` (bounds, filter,
+  source) beside it. Rebuild with `scripts/build_spread_table.py`.
+
+🔴 **THE TAIL IS UNCALIBRATED. This is a median-only table. RISK-OF-RUIN AND
+DRAWDOWN WORK MUST NOT USE IT.** Ruin lives in the tail. The pre-parity ruin
+table was already wrong by more than an order of magnitude (5.58% against a
+measured 67.3–84.3%); a median-only spread is how that happens a second time.
+`p90`/`max` are recorded in `_PROVENANCE` as context and are deliberately not
+in the table.
+
+### ⏸️ PASS A OF TWO — nothing is applied yet, and that is deliberate
+
+**Nothing in the engine reads this table.** `engine.py` is untouched,
+`CURRENT_ENGINE_VERSION` is unchanged, `SPREAD_COSTS` is intact, and
+`CURRENT_SPREAD_MODEL` **still reads `flat-roundtrip-dollars-UNCALIBRATED`**
+because that is still exactly what the engine does. The name
+`measured-2026-09-median` is **registered in `spread_model.py`'s History
+comment only**. Flipping the stamp before the engine changes would mislabel
+every row written in between — which is the single failure the stamp exists to
+prevent.
+
+**Pass B, a separate change:** apply the table in `engine.py` (one-way, at
+entry, in price units — not a flat dollar deduction at exit), recalibrate
+`NORMAL_SPREADS`, flip `CURRENT_SPREAD_MODEL`, and **bump `engine_version`** —
+changing how spread is applied IS a structural change.
 
 **Why not on 2026-08-17's pool:** n was fine (65–89/symbol, and the filtered
 distribution has only 2 distinct values, so the median is statistically
@@ -2134,14 +2190,17 @@ weeks gives **~40 per hour** and a realistic chance of catching a news day
 (NFP/CPI/FOMC), which is where the tail actually lives. Build at one week only
 if something downstream is blocked on it; otherwise prefer two.
 
-### When it is built
+### When it is built — status after pass A (2026-09-03)
 
-- `spread_model` renamed to make **median-only** explicit and impossible to
-  mistake for tail-calibrated later
-- `spread_table_sha` populated
-- provenance in code per symbol: n samples, date range, filter applied
-- commit message and script comment must state that **the tail is
-  uncalibrated and risk-of-ruin work must NOT use this table**
+| item | pass A | note |
+|---|---|---|
+| name makes **median-only** explicit | ✅ | `measured-2026-09-median`, registered in `spread_model.py`'s History comment. **Not yet stamped** — `CURRENT_SPREAD_MODEL` stays on the flat constant until pass B, because the stamp must describe what the engine does |
+| `spread_table_sha` populated | ✅ | `c0c905fc6c071dd4`, recorded as `MEASURED_SPREADS_2026_09_SHA` and re-derivable from the dict |
+| provenance in code per symbol | ✅ | `_PROVENANCE` (n, p90, max) + `_WINDOW` (bounds, filter, source, measured_at) |
+| commit message and script comment state the tail is uncalibrated | ✅ | both, plus a block in `spread_model.py` and the head of this section |
+| **applied in `engine.py`** | ⏸️ **pass B** | one-way at entry in price units, replacing the flat exit deduction |
+| **`NORMAL_SPREADS` recalibrated** | ⏸️ **pass B** | still ~5x too wide, still the reason the webhook spread filter would block nothing even if it received a value |
+| **`engine_version` bumped** | ⏸️ **pass B** | changing how spread is applied IS structural |
 
 ### 📏 MEASURED — the Sunday reopen, 2026-08-23 20:00–22:59 UTC
 

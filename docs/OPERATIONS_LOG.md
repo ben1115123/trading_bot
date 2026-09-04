@@ -1105,3 +1105,112 @@ should run the bot.
 
 
 ---
+
+
+## 📏 Spread table — gate re-verification and measurement run, 2026-09-03
+
+Dated detail for the CLAUDE.md GATE section, which carries the standing
+conclusion and the six medians. This is the run; the numbers are current state
+and live there.
+
+**Pass A of two: measured and frozen, NOT applied.** `engine.py` untouched,
+`CURRENT_ENGINE_VERSION` unchanged, `CURRENT_SPREAD_MODEL` still
+`flat-roundtrip-dollars-UNCALIBRATED`, `SPREAD_COSTS` untouched. The stamp must
+keep describing what the engine actually does or every row written between
+pass A and pass B is mislabelled.
+
+Produced by `scripts/build_spread_table.py`, run in the bot container against
+the VPS DB (`signal_log` exists there only — finding 11). No IG request issued.
+
+**Frozen bounds:** `SINCE=2026-08-16T00:00` inclusive, `UNTIL=2026-08-29T00:00`
+exclusive — two complete Mon–Fri cycles. `SINCE` reaches into Sunday 08-16
+deliberately: entry is permitted from 23:00 Sunday, so those rows are inside
+the cost model's domain, while the excluded 20:00–22:59 reopen ramp is dropped
+by the filter rather than by the bounds.
+
+**Filter:** `get_spread_samples(market_open_only=True)` →
+`market_hours.is_entry_allowed`. Never `market_open_only=False` for
+calibration.
+
+### Gate, enumerated per symbol — all six PASSED
+
+| symbol | n | first | last | permitted hours present | weekdays |
+|---|---|---|---|---|---|
+| EURUSD | 917 | 2026-08-16T23:01 | 2026-08-28T20:35 | 23/23 | Mon–Fri (+Sun) |
+| GBPUSD | 908 | 2026-08-16T23:01 | 2026-08-28T20:36 | 23/23 | Mon–Fri (+Sun) |
+| AUDUSD | 907 | 2026-08-16T23:01 | 2026-08-28T20:36 | 23/23 | Mon–Fri (+Sun) |
+| USDCAD | 896 | 2026-08-16T23:01 | 2026-08-28T20:36 | 23/23 | Mon–Fri (+Sun) |
+| US500 | 1074 | 2026-08-16T23:10 | 2026-08-28T20:35 | 23/23 | Mon–Fri (+Sun) |
+| US100 | 906 | 2026-08-16T23:11 | 2026-08-28T20:35 | 23/23 | Mon–Fri (+Sun) |
+
+Hours present on every symbol: `[0..20, 22, 23]`. Criterion 1's specifically
+named hours 18/19/20/22 — the ones that were empty on 2026-08-17 — are all
+present. **Hour 21 absent on all six, by construction, not as a gap** (the
+script asserts its ABSENCE and would flag its presence as a rollover-gate
+change). Criterion 3's ≥480 cleared by 1.9–2.2x on every symbol.
+
+Per-hour counts, EURUSD as the representative shape (the others match within a
+sample or two):
+
+```
+{0:41, 1:40, 2:40, 3:40, 4:40, 5:40, 6:38, 7:39, 8:40, 9:40, 10:40, 11:40,
+ 12:40, 13:41, 14:41, 15:40, 16:41, 17:41, 18:41, 19:41, 20:39, 22:33, 23:41}
+```
+
+Hour 22 is the thin one on every symbol (32–37 against ~40) and the reason is
+structural, not thin data: Sunday 22:00 is inside the excluded reopen ramp and
+Friday 22:00 is after the weekly close, so only Mon–Thu contribute — 8 days
+across the window rather than 10.
+
+`Sun` appearing in the weekday set is the Sunday 23:00–23:59 permitted window,
+not reopen-ramp contamination.
+
+### The measurement
+
+| symbol | n | median (price) | median (readable) | p90 | max |
+|---|---|---|---|---|---|
+| EURUSD | 917 | 0.00006 | 0.60 pips | 0.00006 | 0.00027 |
+| GBPUSD | 908 | 0.00009 | 0.90 pips | 0.00009 | 0.00054 |
+| AUDUSD | 907 | 0.00006 | 0.60 pips | 0.00009 | 0.00036 |
+| USDCAD | 896 | 0.00013 | 1.30 pips | 0.00021 | 0.00084 |
+| US500 | 1074 | 0.6 | 0.60 index points | 0.6 | 0.6 |
+| US100 | 906 | 2.0 | 2.00 index points | 2.0 | 2.0 |
+
+`p90` and `max` are context only and are not in the table. **The tail is
+uncalibrated and risk-of-ruin work must not use this table.**
+
+`spread_table_sha = c0c905fc6c071dd4`
+
+### Reproducibility, verified rather than asserted
+
+The script was run three times. All three printed the identical dict and the
+identical sha — **and the live pool grew between the runs** (samples after
+`2026-09-03T18:13` entered `signal_log` while they were executing). That is
+what makes it a real reproducibility check rather than a repeated read of a
+static table: the bounds, not the quiet, are what pinned the result.
+
+### Two observations outside the criteria
+
+1. **US500 and US100 have ZERO dispersion in the window** — median = p90 = max,
+   exactly 0.6 and 2.0 on every one of 1,074 and 906 samples. That is not a
+   market distribution; it is a broker-fixed spread on the index CFDs during
+   permitted hours. It sits consistently beside CHECK 2's rollover-hour
+   measurement (US500 flat at 1.5, US100 flat at 5.0), which reads as a second
+   fixed tier rather than a widening. **Consequence for pass B: for the two
+   indices the "median" carries no information about variability, because there
+   is none to carry — any tail work on them needs a different data source, not
+   a higher percentile of this one.**
+2. **EURUSD median = p90** (both 0.00006), so 90% of the pool sits at the
+   floor. The FX distributions are extremely tight inside permitted hours;
+   all four have max/median ratios of 4.5–6.5x, entirely in the last decile.
+
+### Why hour 21 is not waited for
+
+Recorded here because it is the second instance of CRITERIA AGE AGAINST THE
+SYSTEM THEY MEASURE and the criterion was already re-scoped on 2026-08-31: the
+21:00 rollover gate sets `is_entry_allowed` False for the whole hour, all
+instruments, and that is the exact predicate the filter uses. No amount of
+accumulation can produce an hour-21 sample in a market-open-filtered pool.
+
+---
+
