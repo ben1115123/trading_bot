@@ -695,3 +695,620 @@ against the headline remaining.
 
 
 ---
+
+<!-- moved from CLAUDE.md 2026-09-04 — the eleven worked instances behind the Unverified Controls rules — dated narratives; the rules themselves stay in CLAUDE.md -->
+
+### The self-invalidating probe — a rule with a checkable step
+
+**Two instances, both of which reported a clean negative about something that
+was in fact working:**
+
+1. **Sampled after its own teardown (2026-08-12).** A background check read a
+   sentinel file 32 seconds *after* the cleanup step had deleted it, and
+   reported `MARKER_ABSENT` for an event that had demonstrably occurred. The
+   probe was measuring its own teardown.
+2. **Ran in a process that could not hold the answer (2026-08-21).**
+   `docker exec … python3 -c "from bot.candle_stream import get_spread; ..."`
+   returned `None` for every symbol, which was read as "the stream is not warm
+   after the rebuild". It was warm. `get_spread` reads a **module-level buffer
+   populated by the Lightstreamer thread inside the long-running uvicorn
+   process**; a one-shot `exec` starts a *fresh* interpreter whose buffer is
+   empty by construction and can never be anything else. The probe could not
+   have returned a non-`None` value no matter how healthy the system was.
+
+**THE RULE — do this before trusting any probe result:**
+
+> **State what the probe would show if the thing under test were WORKING, then
+> confirm the probe is able to observe that state at all.**
+
+If you cannot describe the passing observation, or the probe cannot reach it,
+the result carries no information — a negative from such a probe is
+indistinguishable from a broken system, and will usually be read as one.
+
+Two failure modes to check for by name, because both have now happened here:
+
+- **Wrong time.** The probe runs after the artifact is gone (instance 1), or
+  before it is created. Read every probe result against the timestamps of the
+  setup and cleanup around it.
+- **Wrong process / wrong address space.** The probe looks somewhere the state
+  provably does not live (instance 2). In-memory state — module globals, warm
+  buffers, caches, thread-owned data — belongs to **one process**. A separate
+  `exec`, a fresh interpreter, a different container, or a cron job cannot see
+  it. Reach it through something that crosses the boundary: the DB, a log line,
+  an HTTP endpoint the live process serves, or an artifact it writes.
+
+Worked example of the fix, same session: the stream question was settled not by
+re-running the `exec`, but by POSTing a webhook with **no** `spread` key and
+watching the *live uvicorn process* log
+`SHADOW spread gate: ratio 1.200 ... (spread=1.2)`. That observation is only
+producible by a warm buffer, and it was made inside the process that owns one.
+
+This rule is the mirror of the marker test below. The marker test says *do not
+infer success from absence*; this one says *do not infer failure from absence
+either*, until you have shown the probe could have seen success.
+
+### The rule applied PROSPECTIVELY — do not rebuild before a dated control check
+
+The self-invalidating-probe rule above is written as a way to read a result
+after the fact. It has a forward-looking form, and it earned its place on
+2026-08-22:
+
+> **Do not restart, rebuild or redeploy in the window before a dated control
+> check. A restart can manufacture exactly the artifact the check is looking
+> for.**
+
+**The proof is CHECK 1.** `signal_log.spread` was NULL on all six symbols all
+Saturday — correct, the book was shut and there was nothing to sample. Then the
+2026-08-22 18:07 UTC rebuild re-warmed the Lightstreamer buffer from a **closed
+book**, and the very next cycle logged `spread` non-null on AUDUSD (0.00053) and
+USDCAD (0.00061). Anyone reading that column afterwards, without knowing a
+rebuild had happened minutes earlier, would have recorded criterion 4 as PASSED
+on numbers no one could have traded on. (It aged back out to NULL within the
+hour, which is its own tell.)
+
+This is the mirror of the marker test and of the retrospective rule:
+
+| rule | says |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | do not infer failure from absence either, until the probe could have seen success |
+| **this one** | **do not create the passing observation yourself** |
+| enumerate over assert | do not let the check see only what it already predicted |
+
+Concretely: a deploy is cheap to postpone and a dated check is not repeatable —
+CHECK 2's first genuine fire is a specific hour on a specific Monday. **The
+deploy waits.** Applied 2026-08-23: `40d716b` was held rather than shipped,
+with the reasoning recorded at the time rather than reconstructed after.
+
+### The remedy — the marker test
+When disabling something, prove the disable took effect with a **positive
+signal**. Never infer it from absence of activity: absence is consistent with
+both "disabled" and "would have fired but didn't happen to." Construct a probe
+whose observation *differs* between the two states — a temporary artifact only
+the new configuration can produce — observe it, then remove it.
+
+Applied 2026-08-12: a one-shot cron line writing a timestamped sentinel,
+scheduled 5 minutes out, `%` escaped as `\%` (an unescaped `%` is a newline
+separator in crontab), with ≥2 minutes of lead for cron's per-minute mtime
+poll. It fired at 17:11:01 — **that**, not the silence of the disabled job,
+established the disable.
+
+Applied again 2026-08-15 to verify this deploy: `/app/logs/daily_run.log`
+stayed absent at 06:00 UTC while Stage E **wrote** `webhook_outcomes.log` at
+06:10. Cron was demonstrably alive and reading that exact file in the same
+window, so the 06:00 no-show is a real disable rather than a dead daemon.
+
+**Corollary 1:** a test whose positive and negative branches produce the same
+observation proves nothing. The first probe proposed on 2026-08-12 — watch the
+`*/15` collector fire — was discarded because that line is identical in the old
+and new crontabs, so it fires either way.
+
+**Corollary 2:** a probe must be invalidated when its artifact is cleaned up,
+or its result read against the cleanup timestamp.
+
+**Corollary 3 (2026-08-15):** an SSH transport failure is not a command
+result. The rebuild's wrapper exited 255 (`client_loop: send disconnect:
+Broken pipe`) having shown zero build output; the build had in fact succeeded.
+The conclusion rested on end-state evidence — new image ID, new `StartedAt`,
+flipped crontab md5, cron executing — **not** on the exit code or the log.
+
+### 🔴 WHAT AN OBSERVATION COSTS — a request that FAILS is not a request that was FREE
+
+*(added 2026-08-25, from finding 38. This one was learned by destroying the
+thing being measured.)*
+
+The four rules around it all ask whether an observation carries **information**.
+This one asks what taking it **spends** — the axis none of the others cover.
+
+**The instance.** The IG historical allowance had just reset, and the two open
+unknowns (max `numpoints`, `MINUTE_15` depth per epic) were to be measured
+promptly. The probe was built on this reasoning:
+
+> Every value I try is larger than the budget I have left, so a success is
+> impossible. IG must answer either "numpoints too large" or "allowance
+> exceeded". Both are failures, so neither costs anything.
+
+**Sound except the last clause, which was never checked.** `numpoints=100000`
+and `50000` returned `error.price-history.io-error` — **not** a quota error —
+meaning IG attempted and charged them. By the third request a **four-bar**
+window was refused. ~7,200 points gone, **both unknowns still unmeasured**, and
+the allowance dead for a week.
+
+**The misread, named exactly.** This file says *"the reset time is only
+learnable from a request that SUCCEEDS. A 403 carries no allowance block."*
+That is about what a 403 can **teach** you. It says nothing about what a failed
+request **costs**. The inference was an addition to the line, not a reading of
+it.
+
+| rule | governs |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | do not infer failure from absence either |
+| prospective form | do not create the passing observation yourself |
+| enumerate over assert | do not let the check see only what it predicted |
+| **this one** | **do not assume what the observation COSTS** |
+
+> **THE RULE:** before probing a metered resource, state what the probe costs
+> **if it fails**, and say how you know. If that answer is an inference rather
+> than a measurement, start from the smallest informative request and read the
+> meter off the first response before escalating.
+
+**The correct shape, which was available the whole time:** smallest request
+first (a one-hour date-range window is four bars) → read
+`allowance.remainingAllowance` off that response → the delta **is** the cost,
+measured → escalate only while the measured cost stays affordable. Bracketing
+from above had no way to learn its own cost until after it had paid it.
+
+A probe that exhausts the resource it was measuring has destroyed the
+measurement — the same end state as a probe that could never have observed the
+passing state, reached by a different route.
+
+### 🔴 A TEST WHOSE BRANCHES CANNOT SEPARATE THE HYPOTHESES — corrected 2026-09-02
+
+*(This one is a correction to a PLAN, recorded as such. The plan was agreed in
+advance, in writing, with a decision table — and it still could not have worked.
+That is what makes it worth a section: it did not look like a guess.)*
+
+**The plan.** Read the IG allowance after the 2026-09-01 reset, and decide
+finding 38's open question from the number:
+
+> if `remaining` comes back at or near 10,000, refusals are not charged and the
+> 102,200-point storm cost nothing. If it comes back low, they are.
+
+**The read:** `remaining=5790`, `total=10000`,
+`resets_at=2026-09-08T07:18:53Z`.
+
+**Neither branch was diagnostic, and neither ever could have been.** The
+allowance is a **rolling 7-day window anchored to the first request after a
+reset** — `expiry=539812s` puts this window's start at ~**2026-09-01T07:18Z**,
+not at the 04:02 the plan assumed. Both events the test was reasoning about —
+the 2026-08-25 probe and the 2026-08-28 disconnect storm — sit in the
+**previous, expired window**. Their charges cannot appear on this meter whether
+refusals are billed or not. A high reading and a low reading are equally
+consistent with both hypotheses.
+
+**The error is specific and is NOT "the number surprised me".** It is that the
+test reasoned about which accounting window *should* apply, instead of reading
+`resets_at` **first** and deriving the window from it. `resets_at` was
+available before the decision rule was written — it had been read on
+2026-08-25 and is in this file. The window shape ("it MOVES, re-read it") is
+recorded here too. The plan used the remembered 04:02 anchor rather than the
+recorded rule about that anchor.
+
+> **THE RULE:** before running a test that decides something, state what EACH
+> branch would mean, then check that the branches are distinguishable **given
+> the system's actual bookkeeping**. If two branches are consistent with the
+> same hypotheses, the test is decorative regardless of how carefully its
+> threshold was chosen.
+
+Where it sits in the family — all five before it ask about a single
+observation; this one asks about the **decision rule** built on top of one:
+
+| rule | asks |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | could the probe observe the passing state? |
+| prospective form | did I create the passing observation myself? |
+| enumerate over assert | can the check see anything it did not predict? |
+| observation cost | what does the observation COST if it fails? |
+| **this one** | **can the branches TELL THE HYPOTHESES APART at all?** |
+
+**Finding 38 stays OPEN.** It is answerable only within a single window: read
+the meter, issue one request known to be refused, read the meter again. Zero
+delta = refusals free; non-zero = charged. Deferred deliberately — see the
+post-change-1 burn-rate hold below.
+
+### 🔴 SECOND INSTANCE, SAME DAY — and the rule did NOT prevent it
+
+*(2026-09-02, hours after the rule above was written into this file.)*
+
+**The check.** A sole-copy audit, to establish which CLAUDE.md content existed
+nowhere else before the split. Shape:
+
+```
+grep -rlF "<string>" --include='*.md' --include='*.py' . | grep -v CLAUDE.md
+```
+
+Empty output was read as **"sole copy"**.
+
+**Empty output has TWO causes.** The string is in CLAUDE.md and nowhere else —
+or **the string does not exist anywhere, because it was typed wrong.** Both
+print nothing. Same defect as the allowance test: two branches, one
+observation.
+
+**It fired.** 2 of 23 verdicts were mis-transcribed strings, not sole copies —
+`cannot separate the hypotheses` against a heading reading `CANNOT SEPARATE THE
+HYPOTHESES`, and `export_roster.py must run…` against text carrying backticks.
+Both sections existed and were intact. Caught only because the post-split
+re-probe reported them as LOST, which forced a look; had the split actually
+dropped them, the same two lines would have appeared and the *first* probe's
+false verdicts would have been the reason nobody noticed.
+
+**The fix is one extra branch:** assert **presence anywhere** before asserting
+**exclusivity**. The corrected probe prints the hit list, and separately checks
+each string against the pre-split file, so "absent" and "exclusive" can never
+share an output. 23/23 resolved, 0 absent from the baseline.
+
+> **THE PART WORTH KEEPING.** The rule against non-separating tests was written
+> into this file **that morning**, and it did not stop the same error being
+> built into a check **that afternoon** — by the same author, in a check whose
+> whole purpose was rigour. **Knowing a rule does not apply it.** A rule about
+> reasoning only fires if something forces the question at the moment the check
+> is written.
+>
+> So it gets a mechanical form, not just a statement: **for any check whose
+> conclusion rests on an EMPTY result, write down the other ways that result
+> could be empty — before running it.** If the list has more than one entry,
+> the check needs another branch. This is the marker test's "absence is not
+> evidence" turned into a step you perform rather than a principle you hold.
+
+Both instances share a tell worth recognising in the moment: the conclusion was
+attached to the **absence** of something — no charge on the meter, no grep hit.
+Absence is where this failure lives.
+
+**What the read DID establish**, and it is worth more than the question it
+failed to answer: **4,210 points spent in ~18 hours with no container restart**
+— roughly 21 gap-backfills at 200 points each. That is finding 37 leaking in
+**ordinary operation**, not under storm conditions. The 2026-08-28 number
+(511 backfills) reads as exceptional and is easy to discount; this one is the
+baseline burn and is not.
+
+### 🔴 REPEATED-OBSERVATION DUPLICATION BIASES, IT DOES NOT MERELY INFLATE — 2026-09-04
+
+**Surfaced twice now, under two different query paths, in two different tables
+with two DIFFERENT mechanisms.** Do not assume one table's shape from another's
+— measured, they disagree:
+
+| table | duplication key | factor |
+|---|---|---|
+| `signal_log` | one row per **(symbol, timeframe, strategy_name)** check | EURUSD **4.2×**, GBPUSD 1.86×, AUDUSD/USDCAD **1.0×** |
+| `candle_source_compare` | **1.0×** per `checked_at` minute — but **1.29–1.35×** per `stream_time`, because the 5-minute loop re-observes the same completed 15-minute bar across cycles | 1.30× average |
+
+`get_spread_samples()` dedups the first internally — **but that protects that
+accessor only.** Any analysis querying either table directly re-suffers it, and
+the second mechanism has no accessor guarding it at all.
+
+> **THE PART THAT MATTERS: the multiplier CORRELATES WITH THE QUANTITY BEING
+> MEASURED.** A constant inflation is harmless to a mean — it cancels. This one
+> does not. On `candle_source_compare` the average factor is 1.30×, but on the
+> **divergent** bars it was **~13×** (213 rows over 16 distinct timestamps),
+> because a stalled stream buffer gets re-read every cycle while it is stale.
+> **The anomalies are duplicated ten times more than the ordinary bars.**
+
+Consequences seen, both real:
+1. The tail rate was reported as **5–7%** of bars; deduplicated it is
+   **0.4–0.8%** — off by an order of magnitude, in the alarming direction.
+2. Dukascopy's stdev was reported **worse than Twelve Data's on all four
+   symbols**; deduplicated it is **better on all four**. The duplication was
+   loading exactly the bars where Dukascopy and IG disagreed.
+
+**Both errors pointed the same way — against the new source — because the
+duplicated bars were the divergent ones.** A reviewer sanity-checking the
+direction of the bias would have found it plausible.
+
+> **THE RULE: before computing any statistic from `signal_log` or
+> `candle_source_compare`, dedup to one observation per (symbol, bar) and state
+> which key you used.** `checked_at` and `stream_time` are different keys and
+> give different answers on the same table. If a figure was computed from rows,
+> label it as row-based — it is not wrong, it answers a different question, and
+> the two must never be compared to each other.
+
+### 🔴 THE SESSION'S DATE BANNER IS NOT A CLOCK — 2026-09-03
+
+*(Third member of the "conclusion resting on an absence" family, and the
+cheapest to fall for, because the wrong number arrives unasked.)*
+
+**What happened.** The session context asserted the date was 2026-09-04. The
+spread pool's newest sample was `2026-09-03T18:00`. Against the banner that
+reads as **~19 hours of weekday silence** — a dead signal loop on a live FX
+day. An incident investigation was opened on that basis.
+
+**There was no incident.** VPS and local WSL both read
+`2026-09-03T18:13:30Z`; the VPS is NTP-synced with NTP active. The data was
+**13 minutes old**. The banner was the only wrong clock in the room.
+
+> **THE RULE:** freshness is a comparison between two times, and BOTH have to
+> come from real clocks. Never date-check data against the session's own idea
+> of the date — read the clock on the machine that owns the data, in the same
+> command if possible.
+
+Why it belongs beside the others: the conclusion rested on an **absence** (no
+recent rows), and the absence was manufactured by the measuring instrument
+rather than by the system — the same shape as a probe sampling after its own
+teardown. It is also a live instance of the mechanical form recorded below:
+*for any check whose conclusion rests on an empty result, write down the other
+ways that result could be empty.* "My clock is wrong" was on that list and was
+not consulted.
+
+**This one has a cheap standing fix**, which is why it is worth a section:
+`ssh … 'date -u'` costs nothing and settles it outright. The 2026-09-03 check
+took four extra tool calls because the question was asked of the codebase
+first and the clock second.
+
+### 🔴 DID THE ARTIFACT ACTUALLY LAND WHERE IT WOULD BE NEEDED? — 2026-09-04
+
+*(Seventh member of the family, and the first that is not about an
+observation at all. The six before it ask whether a reading carries
+information, whether the probe could see it, whether we manufactured it, and
+what it cost. **This one asks whether the THING an operation claims to have
+produced actually EXISTS at the address that would consume it.**)*
+
+**The instance.** `import_stage4.py`'s rule-5 backup ran, returned, printed
+`integrity_check ok`, and reported a filename and a byte count. All true. The
+file was on the **container's ephemeral writable layer**, because
+`DEFAULT_BACKUP_DIR` is a HOST path while gotcha 3 forces the script to run
+INSIDE the container. 650 MB across two runs, invisible from the host,
+missing from the Database Backups table, and destroyed by the next rebuild.
+**The rollback path did not exist and reported healthy.** Found only by
+listing the host directory afterwards — nothing in the run said otherwise.
+
+Note what makes it nasty: **two individually-correct rules produced it, and
+neither owned their intersection.**
+
+| rule | correct on its own |
+|---|---|
+| gotcha 2 — "backup on the host, import in the container" | yes |
+| gotcha 3 — "the VPS DB is root-owned, so writes must be in the container" | yes |
+
+> **THE RULE:** when an operation's value is a **fallback you would only use
+> later** — a backup, a snapshot, an export, a log you plan to read after an
+> incident — **verify the artifact from the side that would CONSUME it**, not
+> from the writer's return value. The writer's success is evidence the write
+> happened *somewhere*. It is not evidence the artifact is where the reader
+> will look.
+>
+> A backup whose only evidence of success is that the call returned is not a
+> backup. Check it from the host, in the directory the runbook names.
+
+Where it sits — the family now covers the whole life of an observation and
+then one step past it:
+
+| rule | asks |
+|---|---|
+| marker test | do not infer success from absence |
+| self-invalidating probe | could the probe observe the passing state? |
+| prospective form | did I create the passing observation myself? |
+| enumerate over assert | can the check see anything it did not predict? |
+| observation cost | what does the observation COST if it fails? |
+| non-separating branches | can the branches tell the hypotheses apart? |
+| **this one** | **does the ARTIFACT exist where it will be needed?** |
+
+**Fixed, and the guard has been SEEN to fire** rather than merely added:
+`backup_target()` compares `st_dev` of the backup directory against the
+target's directory — `/app/database` is the bind mount (`st_dev=2049`), the
+container overlay is `st_dev=50` — and refuses. Demonstrated 2026-09-04 by
+pointing it at the exact path that failed silently before.
+
+### 🔴 CRITERIA AGE AGAINST THE SYSTEM THEY MEASURE — two unsatisfiable criteria now
+
+*(named 2026-08-31, on the second instance. The first was not recognised as an
+instance of anything at the time.)*
+
+**Both instances are the same defect: a criterion written before a control
+existed, then made IMPOSSIBLE TO SATISFY by that control — while still reading
+as a perfectly sensible test.**
+
+| # | criterion | written | made impossible by | how it presented |
+|---|---|---|---|---|
+| 1 | CHECK 1 criterion 4 — FX `signal_log.spread` non-null in the blocked weekend window | before the first real FX weekend | the venue being **shut** on a Saturday: no quote exists to sample, so `get_spread()` correctly returns `None` | "criterion 4 FAILED" — read as the load-bearing sampling order being broken. It was not. Re-scoped to the Sunday reopen, where the venue is open and *we* decline; **passed 111/111** |
+| 2 | Spread-table gate criterion 1 — every UTC hour 00–23 represented after market-open filtering | 2026-08-17, alongside the market-open filter itself | the **21:00 rollover gate** (deployed 2026-08-21, four days later) setting `is_entry_allowed=False` for the whole hour, which is the exact predicate the filter uses | "hour 21 empty on all six symbols" — reads as thin data, i.e. *wait longer*. Waiting can never fix it. Re-scoped to permitted hours only |
+
+**Note the direction of the failure in both cases: the criterion reported a
+problem with the SYSTEM when the problem was with the CRITERION.** Instance 1
+nearly indicted a working control. Instance 2 would have deferred the spread
+table indefinitely on a condition that no amount of accumulation can meet —
+and "wait another two weeks" is a conclusion nobody re-examines, because it
+costs nothing and sounds careful.
+
+> **THE RULE:** a criterion is a claim about the system, written at a moment in
+> time. **When the system changes, RE-READ every dated criterion that touches
+> what changed — do not wait for one to fail.** In particular, when a new
+> control narrows what the system will do, any criterion demanding an
+> observation from inside the newly-excluded region has just become
+> unsatisfiable, and it will not announce that. It will look like a shortfall.
+
+**The practical check, before treating any criterion as failed:** state what
+would have to be true for it to PASS, then confirm the current system permits
+that state at all. This is the self-invalidating-probe rule (*could the probe
+observe success?*) applied one level up, to the **specification** rather than
+the measurement. Same question, different target:
+
+| rule | asks of the... |
+|---|---|
+| self-invalidating probe | **probe** — could it have observed the passing state? |
+| **this one** | **criterion** — can the passing state still occur at all? |
+
+Both instances were caught only because the check enumerated the distribution
+instead of asserting an expected value — the hour histogram showed *which* hour
+was empty, and that it was exactly one, identically on all six symbols. An
+all-hours-present assertion returns `False` and names nothing. See ENUMERATE,
+DON'T ASSERT below; this is its fourth catch.
+
+### ENUMERATE, DON'T ASSERT — how to write a check that can teach you something
+
+The three rules above govern *whether an observation carries information*. This
+one governs *whether the observation can carry information you do not already
+have*.
+
+> **A check that tests for its own prediction can only confirm or deny that
+> prediction. A check that enumerates what actually happened can CORRECT it.**
+
+Concretely, given a `signal_log` window:
+
+| shape | what it can return | what it can never return |
+|---|---|---|
+| `WHERE error = 'entry window closed — thin reopen / pre-weekend policy'` | matched / didn't match | *which other reason fired instead, and when* |
+| `GROUP BY substr(checked_at,12,2), error` | the full distribution | — |
+
+**Both pass. Only one of them found anything.**
+
+**The instance that named this rule (2026-08-24).** CHECK 1's criterion 4 was
+written to confirm one string in the Sunday reopen window. It was run as a
+`GROUP BY hour, error` instead — and the hour-21 bucket came back carrying
+`entry window closed — daily rollover hour`, not the predicted string. That
+single unexpected bucket:
+
+- proved the 21:00 rollover gate had **already fired on a real clock**, a day
+  before CHECK 2 said it was reachable;
+- falsified this file's table asserting the Sunday reopen rule shadows that
+  gate at 21:30;
+- and revealed *how* the claim was wrong — not misread from the code, but never
+  checked against it, since `is_entry_allowed` and `_block_reason` both test
+  the rollover **first** and both carry a comment saying so.
+
+An assertion-shaped criterion 4 would have returned "111/111 FX rows non-null,
+PASS" — **completely true, and it would have taught nothing.** The CHECK 2
+error would have survived until Monday or later.
+
+**This is the fourth time a scheduled check has produced a finding outside its
+own criteria** (CHECK 1 Saturday: the criterion itself was mis-specified;
+CHECK 1 Sunday: the CHECK 2 ordering error; finding 33's two verification
+queries wrong in the manufacturing direction; and 2026-08-31's spread-gate
+hour histogram, which showed hour 21 empty on **all six symbols identically** —
+a shape that says "structural exclusion", not "thin data". An
+all-hours-present assertion would have returned `False` and named nothing).
+Treat that as the norm, not luck.
+
+**Practical form — when writing any dated check:**
+- prefer `GROUP BY` over `WHERE =`. Ask what the column contained, not whether
+  it contained what you expect.
+- **include the cases you believe are irrelevant.** The gate is all-symbols;
+  enumerate US500/US100 alongside FX even when the evidence base is FX-specific.
+  A difference between them is only visible if both are in the output.
+- report the distribution **before** stating the verdict, so an unexpected
+  bucket is seen rather than filtered out on the way to a PASS.
+- a criterion that cannot fail in an *interesting* way is a criterion that
+  cannot inform. If every non-passing outcome is "the thing is broken", the
+  check has no route to "the thing is fine and our belief about it was wrong."
+
+---
+
+<!-- moved from CLAUDE.md 2026-09-04 — the price-scale quirk description as of 2026-07-08 — the layer is currently arithmetically inert -->
+
+### Price scale quirk — ig_scale.py (fixed 2026-07-09)
+
+> **⚠️ NOT CURRENTLY IN EFFECT — measured 2026-08-18 (findings doc finding 26).**
+> Every checked symbol now classifies to **`divisor = 1.0`** on this account
+> (EURUSD REST `snapshot.bid` = 1.1578, stream buffer = 1.15817), so
+> `to_decimal`/`to_native` currently divide and multiply by one and the
+> conversion layer is arithmetically inert. The scale has flipped **at least
+> twice** — decimal on LIVE, points on DEMO after 2026-07-08, decimal on DEMO
+> now — and the last flip happened with **no account change**: the broker
+> changed representation under a running system.
+>
+> **Do NOT delete `ig_scale` as dead weight.** Its value is the
+> classification and the raise-on-ambiguity, never the arithmetic — it is the
+> only thing that compares a price against what that price ought to look like.
+> `init_price_scales(force=True)` on session recreate is load-bearing for
+> exactly this reason. The description below is the state as of 2026-07-08 and
+> is retained as history.
+
+**The 2026-07-08 diagnosis, the epic-by-epic evidence and the boundary
+conversion site list → `docs/INCIDENT_HISTORY.md`.**
+
+**Standing rules that survive the layer being inert:**
+- **Do NOT trust IG's `scalingFactor` snapshot field.** GBPUSD/AUDUSD carry
+  `scalingFactor=10000` despite already being decimal; EURUSD — the one epic
+  that needed /10000 — carried `scalingFactor=1`. Empirically disproven, not
+  assumed.
+- **Scale differs by ACCOUNT, not just by epic.** Re-run
+  `init_price_scales(..., force=True)` after ANY session recreate or account
+  switch. Never assume scale carries over.
+- **Ambiguous readings never guess** — they raise, alert, and block that symbol
+  from trading until a human resolves it.
+- All IG price reads/writes route through `to_decimal()`/`to_native()` at the
+  boundary; everything else in the codebase stays decimal.
+- ⚠️ **The paper-trade path has NO `ig_scale` conversion at all.** That is the
+  structural root of the id=824 corruption — see the bb_squeeze correction.
+
+---
+
+<!-- moved from CLAUDE.md 2026-09-04 — the USDCAD deal-currency incident write-up -->
+
+### Deal currency quirk — ig_scale.get_currency_code() (fixed 2026-07-25)
+Third per-instrument-assumption bug (after `scalingFactor` above and the
+REST `snapshotTime` account-timezone bug, see CANDLE_SOURCE section) — IG
+instrument properties are NOT uniform across epics; always derive per-epic,
+never hardcode one value for "all FX pairs." `create_open_position` had
+`currency_code="USD"` hardcoded for every symbol. USDCAD is the one FX pair
+in the roster where USD is the base, not the quote — its instrument's
+`currencies` list only contains `CAD`, no `USD` entry (confirmed via
+`fetch_market_by_epic`; EURUSD/GBPUSD/AUDUSD all list `USD`). Sending
+`currency_code="USD"` on that epic is an invalid param IG rejects with an
+unclassified `reason: 'UNKNOWN'` (not a structured margin/size code) — this
+was the root cause of every USDCAD live-trade rejection since its
+2026-07-14 activation (10/10 rejections, 100% failure rate, zero USDCAD
+trades ever placed).
+
+Fix: `ig_scale.get_currency_code(symbol)` — deal currency cached per-epic
+alongside the price-scale map, same lock, same lifecycle (`init_price_scales`
+fetches both from the one `fetch_market_by_epic` call, re-init on session
+recreate / account switch). Falls back to `'USD'` only if the lookup never
+resolved for that symbol, logged loudly (`[ig_scale] currency_code fallback
+to USD for {symbol}`) so a wrong-currency order is never sent silently.
+
+---
+
+<!-- moved from CLAUDE.md 2026-09-04 — the id=824 corruption arithmetic -->
+
+**The −$2,453.93 / 32-trade figure was wrong wherever it appeared.** It is one
+corrupted row carrying 31 clean ones:
+
+- `paper_trades` **id=824** (2026-07-21, EURUSD bb_squeeze PAPER_BUY) logged
+  native points-scale prices unconverted — `entry=11403.2, sl=11400.7,
+  tp=11408.2` — the documented EURUSD DEMO scale quirk. `sl_distance` computed
+  as `2.5` in decimal terms → `lot_size = 15/(2.5×10000) = 0.0006`, **clamped
+  up to the 0.1 floor** → `pnl = −2.5 × 0.1 × 10000 = −$2,500.00`.
+- **Excluding id=824, the other 31 trades sum to `+$46.07`**; expectancy moves
+  from −$76.69 to **+$1.49/trade**.
+
+The strategy's paper record is mildly positive, not catastrophic. It still
+fails promotion criteria on PF and expectancy — the point is that one bad row
+was misrepresenting 31 clean ones. id=824 is **unique**, the only out-of-band
+price in `paper_trades` (1,447 rows) or `trades` (894 rows). Quarantine it, do
+not delete it — it is the evidence.
+
+Root cause is structural, not a one-off: **the paper-trade path has no
+`ig_scale` conversion at all.** The boundary-conversion sites listed under
+Price scale quirk do not include it. Separately, 5 more paper rows hit the
+**opposite** clamp (sub-pip stops → lot 11–49 clamped down to 10), which
+under-risks those trades and **inflates Sharpe** — one of the four
+R:R-adjusted promotion criteria. Any `sl_distance` sanity bound must reject at
+**both** ends. See findings doc finding 3.
+
+---
+
+<!-- moved from CLAUDE.md 2026-09-04 — rule 9's worked reasoning; the operational instruction stays -->
+
+- **Rule 9 — duplication BIASES, it does not merely inflate.** A constant
+  inflation cancels out of a mean. This one does not, because the multiplier
+  correlates with the quantity measured: a stalled buffer is re-read every
+  cycle, so **the anomalies are duplicated ten times more than the ordinary
+  bars.** It reversed two published conclusions, **both in the same direction**
+  — a reviewer sanity-checking the direction would have found it plausible.
+  **Before computing any statistic from `signal_log` or
+  `candle_source_compare`, dedup to one observation per (symbol, bar) and state
+  which key you used.** `checked_at` and `stream_time` are different keys and
+  give different answers on the same table.
+
+---
